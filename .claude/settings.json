@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx jest*)",
+      "Bash(npx expo*)",
+      "Bash(npm run*)",
+      "Bash(npm test*)",
+      "Bash(python -m pytest*)",
+      "Bash(ruff*)",
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add*)",
+      "WebSearch",
+      "WebFetch(domain:claude.ai)",
+      "Bash(awk '{ if \\(length\\($0\\) > 2000\\) printf \"%d: [LONG %d chars] %.120s\\\\n\", NR, length\\($0\\), $0; }' C:/Users/Tejas/.claude/projects/c--Users-Tejas-Downloads-trace-app-2-trace/d674464d-efb3-45c1-a0fb-df92269bddf1/tool-results/artifact-2cac0751-1786772871-47e5.html)",
+      "Bash(cd \"c:/Users/Tejas/Downloads\" && ls -la 2>/dev/null | head -40)",
+      "Read(//c/Users/Tejas/Downloads/**)",
+      "Bash(set -e)",
+      "Bash(python - __TRACKED_VAR__/rest.html)",
+      "Bash(python - rest.html)",
+      "Bash(python -)",
+      "Bash(./.venv/Scripts/python.exe -m app.scripts.eval_barcode)",
+      "Bash(./.venv/Scripts/python.exe -)"
+    ],
+    "deny": [
+      "Read(./services/api/.env)",
+      "Read(./apps/mobile/.env)",
+      "Edit(./services/api/.env)",
+      "Edit(./apps/mobile/.env)",
+      "Bash(rm -rf*)"
+    ]
+  }
+}

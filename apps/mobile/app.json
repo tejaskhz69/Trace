@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "Trace",
+    "slug": "trace",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "trace",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.trace.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Trace uses your camera to identify food and read nutrition labels.",
+        "NSPhotoLibraryUsageDescription": "Pick a photo of your meal to log it.",
+        "NSHealthShareUsageDescription": "Trace reads your steps, sleep, and workouts to explain changes in your energy expenditure.",
+        "NSHealthUpdateUsageDescription": "Trace can write your weight and nutrition back to Apple Health."
+      },
+      "entitlements": {
+        "com.apple.developer.healthkit": true,
+        "com.apple.developer.healthkit.access": []
+      }
+    },
+    "android": {
+      "package": "com.trace.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0F14"
+      },
+      "permissions": [
+        "CAMERA",
+        "android.permission.health.READ_STEPS",
+        "android.permission.health.READ_ACTIVE_CALORIES_BURNED",
+        "android.permission.health.READ_TOTAL_CALORIES_BURNED",
+        "android.permission.health.READ_SLEEP",
+        "android.permission.health.READ_EXERCISE",
+        "android.permission.health.READ_DISTANCE",
+        "android.permission.health.READ_WEIGHT",
+        "android.permission.health.WRITE_WEIGHT"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Trace uses your camera to identify food."
+        }
+      ],
+      [
+        "@kingstinct/react-native-healthkit",
+        {
+          "NSHealthShareUsageDescription": "Trace reads your steps, sleep, and workouts to explain changes in your energy expenditure. Your activity is never added to your calorie target.",
+          "NSHealthUpdateUsageDescription": "Trace can write your weight and nutrition back to Apple Health so your other apps stay in sync.",
+          "background": false
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

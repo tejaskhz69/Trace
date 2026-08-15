@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+node_modules/
+.expo/
+dist/
+*.jsonl.gz
+.pytest_cache/
+.expo/
+*.tsbuildinfo

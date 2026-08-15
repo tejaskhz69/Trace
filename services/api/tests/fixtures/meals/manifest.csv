@@ -1,0 +1,3 @@
+file,cuisine,dish,truth_kcal,truth_source,grams,has_scale_ref,hidden_fat,notes
+example-001-delete-me.jpg,indian-north,"Dal tadka, 2 roti",540,weighed,"150,80",yes,high,Template row. Rows whose file starts with example- are ignored.
+example-002-delete-me.jpg,packaged,Yoga Bar protein bar,210,label,60,yes,none,Template row. Shot next to its own nutrition panel.

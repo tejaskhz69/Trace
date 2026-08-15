@@ -1,0 +1,33 @@
+# Minimum floors rather than exact pins.
+#
+# WHY: exact pins (==) freeze you to versions that may predate your Python.
+# pydantic-core, asyncpg, bcrypt and Pillow all ship compiled code, so if no
+# prebuilt wheel matches your interpreter, pip silently falls back to building
+# from source -- which on Windows means a Rust/C toolchain and a 20-minute
+# hang. Floors let pip resolve to whatever has a wheel for your version.
+#
+# Install with:
+#   python -m pip install --only-binary=:all: -r requirements.txt
+#
+# --only-binary=:all: makes pip REFUSE to compile. If something genuinely has
+# no wheel for your Python you get a clear error in seconds instead of a hang.
+
+fastapi>=0.118.0
+uvicorn>=0.37.0
+sqlmodel>=0.0.24
+sqlalchemy[asyncio]>=2.0.43
+asyncpg>=0.30.0
+pydantic>=2.12.0
+pydantic-settings>=2.11.0
+email-validator>=2.3.0
+python-multipart>=0.0.20
+PyJWT>=2.10.1
+bcrypt>=4.3.0
+httpx>=0.28.1
+google-genai>=1.0.0
+Pillow>=11.3.0
+alembic>=1.16.5
+
+# dev
+pytest>=8.4.2
+pytest-asyncio>=1.2.0
