@@ -25,10 +25,12 @@ generated using `sqlmodel.sql.sqltypes.AutoString()` 101 times without an
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
 import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import text
@@ -217,3 +219,621 @@ class TestMigrationsBuildTheSchema:
         """Drift found during the Alembic adoption audit, fixed by revision 2."""
         found = await _inspect(migrated_db)
         assert "ix_users_phone" in found["indexes"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3a
+#
+# THE PROBLEM THESE FIXTURES SOLVE
+# `migrated_db` above builds a database from nothing, which proves the
+# migrations RUN but can say nothing about whether they PRESERVE anything --
+# an empty database has no data to preserve. So the fixtures below seed known
+# rows at the revision BEFORE Phase 3a, then migrate over them.
+#
+# Same guard, same scratch-database discipline, same drop-in-finally. `trace`
+# is never opened; the only non-scratch connection anywhere in this file is to
+# `postgres`, in order to issue CREATE DATABASE.
+# ---------------------------------------------------------------------------
+
+#: The revision Phase 3a builds on. Downgrading to here unwinds the whole
+#: phase and stops at the baseline's RuntimeError wall.
+PRE_PHASE_3A = "a05140b6e849"
+
+_FOOD_COLUMNS = (
+    "id, source, source_id, name, brand, barcode, names_i18n, calories, "
+    "protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg, saturated_fat_g, "
+    "micronutrients, is_liquid, serving_sizes, countries, data_quality, "
+    "is_verified, moderation_status, search_text, log_count, created_at, "
+    "updated_at"
+)
+
+
+def _row(
+    id_: str,
+    source: str,
+    *,
+    source_id=None,
+    barcode=None,
+    names_i18n=None,
+    search_text: str = "",
+    name: str = "Seed",
+) -> dict:
+    return {
+        "id": id_,
+        "source": source,
+        "source_id": source_id,
+        "name": name,
+        "brand": None,
+        "barcode": barcode,
+        "names_i18n": json.dumps(names_i18n or {}),
+        "search_text": search_text,
+    }
+
+
+#: THE IDLI ROW IS THE REAL SHAPE, copied from the live catalogue.
+#:
+#: `names_i18n` is not an alias bag: it also carries basis, makes, data_notes,
+#: validation and preparation_key -- and routers/preparations.py reads
+#: preparation_key from it at request time. If a migration disturbs this
+#: column that endpoint breaks silently in production, so it is asserted
+#: byte-for-byte below.
+IDLI_NAMES_I18N = {
+    "basis": "prepared",
+    "makes": None,
+    "aliases": ["idli", "aachi", "aachi idli"],
+    "data_notes": (
+        "OFF files this under a dry-mix barcode at 133 kcal/100 g. That is an "
+        "AS-PREPARED panel."
+    ),
+    "validation": [],
+    "preparation_key": "idli_steamed",
+}
+
+SEED_ROWS = (
+    _row("seed-curated-idli", "curated", source_id="seed-idli", name="Idli",
+         barcode="8901234567894", names_i18n=IDLI_NAMES_I18N,
+         search_text="idli indian south aachi idli"),
+    # source_id present -> deterministic USDA URL.
+    _row("seed-usda-with-id", "usda_fdc", source_id="173944", name="Egg, whole"),
+    # source_id absent -> URL must stay NULL. Do not invent URLs.
+    _row("seed-usda-no-id", "usda_fdc", source_id=None, name="Egg, no id"),
+    # barcode present -> deterministic Open Food Facts URL.
+    _row("seed-off-with-barcode", "openfoodfacts", barcode="4006381333931",
+         name="Creme Fraiche"),
+    # barcode absent -> URL must stay NULL.
+    _row("seed-off-no-barcode", "openfoodfacts", barcode=None, name="No barcode"),
+    # THE NON-TERMINATION CASE: ifct maps TO 'unknown'.
+    _row("seed-ifct", "ifct", source_id="ifct-1", name="Ifct dish"),
+    _row("seed-user", "user", name="User food"),
+    _row("seed-ai", "ai_estimated", name="AI guess"),
+    _row("seed-nutritionix", "nutritionix", source_id="nx-1", name="Nx food"),
+)
+
+_INSERT = text(
+    "INSERT INTO food_items (" + _FOOD_COLUMNS + ") VALUES ("
+    " :id, CAST(:source AS foodsource), :source_id, :name, :brand, :barcode,"
+    " CAST(:names_i18n AS jsonb), 100, 5, 10, 2, 1, 1, 50, 0.5,"
+    " CAST('{}' AS jsonb), false, CAST('[]' AS jsonb), CAST('[]' AS jsonb),"
+    " 0.85, false, 'approved', :search_text, 0, now(), now())"
+)
+
+
+def _alembic(url: str, *args: str) -> subprocess.CompletedProcess:
+    """Run alembic against ONE scratch database.
+
+    DATABASE_URL is injected per-subprocess, the same mechanism conftest.py
+    uses to redirect the suite at trace_test. Nothing here can reach `trace`.
+    """
+    env = dict(os.environ, DATABASE_URL=url)
+    return subprocess.run(
+        [str(ALEMBIC_EXE), *args],
+        cwd=str(API_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _assert_ok(result: subprocess.CompletedProcess, what: str) -> None:
+    assert result.returncode == 0, (
+        f"{what} failed.\n\nstdout:\n{result.stdout[-2000:]}"
+        f"\n\nstderr:\n{result.stderr[-3000:]}"
+    )
+
+
+async def _seed(url: str) -> None:
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as conn:
+            for row in SEED_ROWS:
+                await conn.execute(_INSERT, row)
+    finally:
+        await engine.dispose()
+
+
+async def _fetch(url: str, row_id: str) -> dict:
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    text("SELECT * FROM food_items WHERE id = :i"), {"i": row_id}
+                )
+            ).mappings().first()
+        assert row is not None, f"{row_id} vanished"
+        return dict(row)
+    finally:
+        await engine.dispose()
+
+
+async def _count(url: str, table: str = "food_items") -> int:
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as conn:
+            return (await conn.execute(text(f"SELECT count(*) FROM {table}"))).scalar()
+    finally:
+        await engine.dispose()
+
+
+@asynccontextmanager
+async def _scratch_database():
+    """Create a uniquely named database, yield its URL, always drop it."""
+    name = _scratch_name()
+
+    # THE GUARD, identical to the one on `migrated_db`. This context manager
+    # drops a database; anything other than a freshly generated scratch name
+    # means something has gone wrong, and the cost of being wrong is real data.
+    assert name.startswith("trace_migtest_"), name
+    assert name not in ("trace", "trace_test"), name
+
+    base = _base_url()
+    admin = create_async_engine(f"{base}/postgres", isolation_level="AUTOCOMMIT")
+    async with admin.connect() as conn:
+        await conn.execute(text(f'CREATE DATABASE "{name}"'))
+    try:
+        yield f"{base}/{name}"
+    finally:
+        async with admin.connect() as conn:
+            await conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :n AND pid <> pg_backend_pid()"
+                ),
+                {"n": name},
+            )
+            await conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        await admin.dispose()
+
+
+@pytest.fixture
+async def seeded_then_migrated_db():
+    """Rows written BEFORE Phase 3a, then migrated over.
+
+    upgrade a05140b6e849 -> seed -> upgrade head. This is the only arrangement
+    that can prove "existing data is unchanged", because a fresh database has
+    no existing data to leave alone.
+    """
+    async with _scratch_database() as url:
+        _assert_ok(_alembic(url, "upgrade", PRE_PHASE_3A), "upgrade to pre-3a")
+        await _seed(url)
+        _assert_ok(_alembic(url, "upgrade", "head"), "upgrade to head")
+        yield url
+
+
+@pytest.fixture
+async def downgraded_db():
+    """Phase 3a applied, then genuinely reversed.
+
+    Unlike the baseline -- which was stamped, never applied, and whose
+    downgrade is therefore disabled -- these four revisions really ran, so
+    reversing them is a real rollback rather than a deletion.
+    """
+    async with _scratch_database() as url:
+        _assert_ok(_alembic(url, "upgrade", "head"), "upgrade to head")
+        await _seed(url)
+        _assert_ok(_alembic(url, "downgrade", PRE_PHASE_3A), "downgrade to pre-3a")
+        yield url
+
+
+class TestPhase3aSchema:
+    async def test_the_six_columns_exist(self, migrated_db):
+        found = await _inspect(migrated_db)
+        expected = {
+            "source_licence", "source_url", "verification_tier",
+            "last_verified_at", "gtin14", "name_normalized",
+        }
+        missing = expected - found["cols"].get("food_items", set())
+        assert not missing, f"migration did not add: {sorted(missing)}"
+
+    async def test_food_aliases_exists(self, migrated_db):
+        found = await _inspect(migrated_db)
+        assert "food_aliases" in found["tables"]
+
+    async def test_food_aliases_has_every_column(self, migrated_db):
+        found = await _inspect(migrated_db)
+        expected = {
+            "id", "food_item_id", "alias", "normalized", "lang", "script",
+            "alias_type", "source", "confidence", "is_active",
+            "created_at", "updated_at",
+        }
+        assert expected <= found["cols"].get("food_aliases", set())
+
+    async def test_the_original_tables_survive(self, migrated_db):
+        """Phase 3a adds one table and removes none: 23 -> 24."""
+        found = await _inspect(migrated_db)
+        assert len(found["tables"] - {ALEMBIC_TABLE}) == 24
+        for original in ("food_items", "users", "meal_logs", "recipes", "set_logs"):
+            assert original in found["tables"]
+
+    async def test_all_three_alias_indexes_exist(self, migrated_db):
+        found = await _inspect(migrated_db)
+        for name in ("ix_alias_normalized", "ix_alias_food",
+                     "ix_alias_normalized_trgm"):
+            assert name in found["indexes"], name
+
+    async def test_the_alias_trigram_index_keeps_its_operator_class(self, migrated_db):
+        """The same failure this file already guards for food_items.
+
+        Rebuilt without gin_trgm_ops the index still exists, the app still
+        starts, every other test still passes -- and every fuzzy alias lookup
+        silently becomes a sequential scan.
+        """
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                indexdef = (
+                    await conn.execute(
+                        text(
+                            "SELECT indexdef FROM pg_indexes "
+                            "WHERE indexname = 'ix_alias_normalized_trgm'"
+                        )
+                    )
+                ).scalar()
+        finally:
+            await engine.dispose()
+        assert indexdef and "gin_trgm_ops" in indexdef, indexdef
+        assert "USING gin" in indexdef
+
+    async def test_the_food_item_lookup_indexes_exist(self, migrated_db):
+        found = await _inspect(migrated_db)
+        assert "ix_food_gtin14" in found["indexes"]
+        assert "ix_food_name_normalized" in found["indexes"]
+
+    async def test_concurrent_indexes_are_valid(self, migrated_db):
+        """A cancelled CREATE INDEX CONCURRENTLY leaves an INVALID index.
+
+        It exists, it is maintained on every write, and the planner never uses
+        it. Asserting existence alone would pass; this asserts indisvalid.
+        """
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                invalid = (
+                    await conn.execute(
+                        text(
+                            "SELECT indexrelid::regclass::text FROM pg_index "
+                            "WHERE NOT indisvalid"
+                        )
+                    )
+                ).scalars().all()
+        finally:
+            await engine.dispose()
+        assert invalid == [], f"invalid indexes present: {invalid}"
+
+
+class TestPhase3aConstraints:
+    async def _insert_alias(self, url: str, **over) -> None:
+        values = {
+            "id": "a1", "food_item_id": "seed-curated-idli", "alias": "idli",
+            "normalized": "idli", "lang": "", "script": "latn",
+            "alias_type": "canonical", "source": "curated", "confidence": 1.0,
+        }
+        values.update(over)
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO food_aliases (id, food_item_id, alias,"
+                        " normalized, lang, script, alias_type, source,"
+                        " confidence, is_active, created_at, updated_at)"
+                        " VALUES (:id, :food_item_id, :alias, :normalized, :lang,"
+                        " :script, :alias_type, :source, :confidence, true,"
+                        " now(), now())"
+                    ),
+                    values,
+                )
+        finally:
+            await engine.dispose()
+
+    async def test_a_valid_alias_inserts(self, seeded_then_migrated_db):
+        await self._insert_alias(seeded_then_migrated_db)
+        assert await _count(seeded_then_migrated_db, "food_aliases") == 1
+
+    async def test_alias_type_check_rejects_an_unknown_value(
+        self, seeded_then_migrated_db
+    ):
+        with pytest.raises(Exception) as exc:
+            await self._insert_alias(seeded_then_migrated_db, alias_type="bogus")
+        assert "ck_alias_type" in str(exc.value)
+
+    async def test_source_check_rejects_an_unknown_value(
+        self, seeded_then_migrated_db
+    ):
+        with pytest.raises(Exception) as exc:
+            await self._insert_alias(seeded_then_migrated_db, source="scraped")
+        assert "ck_alias_source" in str(exc.value)
+
+    async def test_confidence_check_rejects_out_of_range(
+        self, seeded_then_migrated_db
+    ):
+        with pytest.raises(Exception) as exc:
+            await self._insert_alias(seeded_then_migrated_db, confidence=1.5)
+        assert "ck_alias_confidence" in str(exc.value)
+
+    async def test_unique_constraint_binds_on_empty_lang(
+        self, seeded_then_migrated_db
+    ):
+        """THE REASON lang IS NOT NULL.
+
+        PostgreSQL treats NULLs as distinct in a UNIQUE constraint. Had lang
+        stayed nullable, this second insert would succeed and the constraint
+        would be silently useless for every alias without a language tag --
+        which is exactly what transliterations are.
+        """
+        await self._insert_alias(seeded_then_migrated_db, id="a1")
+        with pytest.raises(Exception) as exc:
+            await self._insert_alias(seeded_then_migrated_db, id="a2")
+        assert "uq_alias_food_norm_lang" in str(exc.value)
+
+    async def test_same_normalized_different_lang_is_allowed(
+        self, seeded_then_migrated_db
+    ):
+        await self._insert_alias(seeded_then_migrated_db, id="a1", lang="")
+        await self._insert_alias(seeded_then_migrated_db, id="a2", lang="ta")
+        assert await _count(seeded_then_migrated_db, "food_aliases") == 2
+
+    async def test_foreign_key_rejects_an_unknown_food(self, seeded_then_migrated_db):
+        with pytest.raises(Exception) as exc:
+            await self._insert_alias(
+                seeded_then_migrated_db, food_item_id="does-not-exist"
+            )
+        assert "foreign key" in str(exc.value).lower() or "food_item_id" in str(exc.value)
+
+    async def test_deleting_a_food_cascades_to_its_aliases(
+        self, seeded_then_migrated_db
+    ):
+        await self._insert_alias(seeded_then_migrated_db)
+        engine = create_async_engine(seeded_then_migrated_db)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text("DELETE FROM food_items WHERE id = :i"),
+                    {"i": "seed-curated-idli"},
+                )
+        finally:
+            await engine.dispose()
+        assert await _count(seeded_then_migrated_db, "food_aliases") == 0
+
+
+class TestExistingDataSurvives:
+    """Seeded before Phase 3a, asserted after it."""
+
+    async def test_row_count_is_unchanged(self, seeded_then_migrated_db):
+        assert await _count(seeded_then_migrated_db) == len(SEED_ROWS)
+
+    async def test_names_i18n_is_byte_identical(self, seeded_then_migrated_db):
+        after = await _fetch(seeded_then_migrated_db, "seed-curated-idli")
+        assert after["names_i18n"] == IDLI_NAMES_I18N
+
+    async def test_preparation_key_still_resolves(self, seeded_then_migrated_db):
+        """routers/preparations.py:136 reads this key at request time."""
+        after = await _fetch(seeded_then_migrated_db, "seed-curated-idli")
+        assert after["names_i18n"]["preparation_key"] == "idli_steamed"
+        # No key silently dropped, including the prose ones.
+        assert set(after["names_i18n"]) == set(IDLI_NAMES_I18N)
+
+    async def test_barcode_is_unchanged(self, seeded_then_migrated_db):
+        """gtin14 is additive. The original string must survive verbatim."""
+        after = await _fetch(seeded_then_migrated_db, "seed-curated-idli")
+        assert after["barcode"] == "8901234567894"
+
+    async def test_search_text_is_unchanged(self, seeded_then_migrated_db):
+        after = await _fetch(seeded_then_migrated_db, "seed-curated-idli")
+        assert after["search_text"] == "idli indian south aachi idli"
+
+    async def test_data_quality_and_is_verified_are_unchanged(
+        self, seeded_then_migrated_db
+    ):
+        after = await _fetch(seeded_then_migrated_db, "seed-curated-idli")
+        assert after["data_quality"] == 0.85
+        assert after["is_verified"] is False
+
+    async def test_gtin14_and_name_normalized_are_still_empty(
+        self, seeded_then_migrated_db
+    ):
+        """Checkpoint 2 adds the columns; Checkpoint 3's script fills them."""
+        after = await _fetch(seeded_then_migrated_db, "seed-curated-idli")
+        assert after["gtin14"] is None
+        assert after["name_normalized"] == ""
+
+
+class TestTheBackfill:
+    """M5. The first test here is the vacuity guard for the class above.
+
+    Without it, every "unchanged" assertion would pass just as happily if the
+    migrations had silently done nothing at all.
+    """
+
+    async def test_the_backfill_actually_ran(self, seeded_then_migrated_db):
+        after = await _fetch(seeded_then_migrated_db, "seed-curated-idli")
+        assert after["source_licence"] == "user"
+        assert after["verification_tier"] == 5
+
+    async def test_usda_maps_to_public_domain_tier_2(self, seeded_then_migrated_db):
+        after = await _fetch(seeded_then_migrated_db, "seed-usda-with-id")
+        assert after["source_licence"] == "public-domain"
+        assert after["verification_tier"] == 2
+
+    async def test_openfoodfacts_maps_to_odbl_tier_6(self, seeded_then_migrated_db):
+        after = await _fetch(seeded_then_migrated_db, "seed-off-with-barcode")
+        assert after["source_licence"] == "odbl"
+        assert after["verification_tier"] == 6
+
+    async def test_nutritionix_maps_to_proprietary_tier_3(
+        self, seeded_then_migrated_db
+    ):
+        after = await _fetch(seeded_then_migrated_db, "seed-nutritionix")
+        assert after["source_licence"] == "proprietary"
+        assert after["verification_tier"] == 3
+
+    async def test_ai_estimates_rank_last(self, seeded_then_migrated_db):
+        after = await _fetch(seeded_then_migrated_db, "seed-ai")
+        assert after["verification_tier"] == 7
+
+    async def test_ifct_stays_unknown_and_the_backfill_terminates(
+        self, seeded_then_migrated_db
+    ):
+        """THE NON-TERMINATION CASE.
+
+        ifct maps TO 'unknown'. Had the drain predicate been
+        `source_licence = 'unknown'` -- the obvious choice -- these rows would
+        satisfy it after every pass and M5 would loop forever. Reaching this
+        assertion at all is the proof that it terminates; the tier is what
+        proves the row was nevertheless processed.
+        """
+        after = await _fetch(seeded_then_migrated_db, "seed-ifct")
+        assert after["source_licence"] == "unknown"
+        assert after["verification_tier"] == 5
+
+    async def test_unknown_licence_is_never_exportable(self, seeded_then_migrated_db):
+        from app.services.licensing import Licence, is_exportable
+
+        after = await _fetch(seeded_then_migrated_db, "seed-ifct")
+        assert not is_exportable(Licence(after["source_licence"]))
+
+    async def test_usda_url_is_deterministic(self, seeded_then_migrated_db):
+        after = await _fetch(seeded_then_migrated_db, "seed-usda-with-id")
+        assert after["source_url"] == (
+            "https://fdc.nal.usda.gov/fdc-app.html#/food-details/173944"
+        )
+
+    async def test_openfoodfacts_url_is_deterministic(self, seeded_then_migrated_db):
+        after = await _fetch(seeded_then_migrated_db, "seed-off-with-barcode")
+        assert after["source_url"] == (
+            "https://world.openfoodfacts.org/product/4006381333931"
+        )
+
+    async def test_missing_source_id_leaves_the_url_null(
+        self, seeded_then_migrated_db
+    ):
+        """Do not invent URLs. A dead link is worse than no link."""
+        after = await _fetch(seeded_then_migrated_db, "seed-usda-no-id")
+        assert after["source_url"] is None
+        assert after["source_licence"] == "public-domain"
+
+    async def test_missing_barcode_leaves_the_url_null(self, seeded_then_migrated_db):
+        after = await _fetch(seeded_then_migrated_db, "seed-off-no-barcode")
+        assert after["source_url"] is None
+        assert after["source_licence"] == "odbl"
+
+    async def test_sources_without_a_public_record_get_no_url(
+        self, seeded_then_migrated_db
+    ):
+        for row_id in ("seed-curated-idli", "seed-user", "seed-ai",
+                       "seed-nutritionix", "seed-ifct"):
+            after = await _fetch(seeded_then_migrated_db, row_id)
+            assert after["source_url"] is None, row_id
+
+    async def test_the_migration_mapping_agrees_with_the_service(self):
+        """The migration inlines its mapping so it stays frozen in time.
+
+        That duplication is deliberate -- a migration must not import code
+        that keeps changing -- but the two copies must still say the same
+        thing today, or ranking and export gating disagree with the data.
+        """
+        import importlib.util
+
+        from app.models import FoodSource
+        from app.services.licensing import licence_for, tier_for
+
+        # LOADED BY PATH, NOT BY NAME. `import alembic.versions...` resolves
+        # to the installed alembic library, which has no `versions` package --
+        # the migrations directory is not importable, it is only ever executed
+        # by alembic itself.
+        path = (
+            API_DIR / "alembic" / "versions"
+            / "d3e6a9c14b52_backfill_food_source_metadata.py"
+        )
+        spec = importlib.util.spec_from_file_location("_m5_under_test", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for source_value, licence, tier, _prefix, _column in module._MAPPING:
+            member = FoodSource(source_value)
+            assert licence_for(member).value == licence, source_value
+            assert int(tier_for(member)) == tier, source_value
+
+        covered = {row[0] for row in module._MAPPING}
+        assert covered == {m.value for m in FoodSource}, "a source is unmapped"
+
+
+class TestDowngrade:
+    """These four revisions were APPLIED, so reversing them is a real rollback.
+
+    The baseline is the opposite case -- stamped, never applied -- which is
+    why its downgrade raises instead.
+    """
+
+    async def test_the_six_columns_are_gone(self, downgraded_db):
+        found = await _inspect(downgraded_db)
+        cols = found["cols"].get("food_items", set())
+        for name in ("source_licence", "source_url", "verification_tier",
+                     "last_verified_at", "gtin14", "name_normalized"):
+            assert name not in cols, f"{name} survived the downgrade"
+
+    async def test_food_aliases_is_gone(self, downgraded_db):
+        found = await _inspect(downgraded_db)
+        assert "food_aliases" not in found["tables"]
+
+    async def test_the_lookup_indexes_are_gone(self, downgraded_db):
+        found = await _inspect(downgraded_db)
+        assert "ix_food_gtin14" not in found["indexes"]
+        assert "ix_food_name_normalized" not in found["indexes"]
+
+    async def test_every_seeded_row_survived(self, downgraded_db):
+        assert await _count(downgraded_db) == len(SEED_ROWS), (
+            "downgrade destroyed food rows"
+        )
+
+    async def test_pre_existing_columns_are_untouched_by_the_downgrade(
+        self, downgraded_db
+    ):
+        after = await _fetch(downgraded_db, "seed-curated-idli")
+        assert after["barcode"] == "8901234567894"
+        assert after["names_i18n"] == IDLI_NAMES_I18N
+        assert after["search_text"] == "idli indian south aachi idli"
+        assert after["data_quality"] == 0.85
+
+    async def test_the_search_index_survives_the_downgrade(self, downgraded_db):
+        """ix_food_search_trgm predates Phase 3a and must not be collateral."""
+        found = await _inspect(downgraded_db)
+        assert "ix_food_search_trgm" in found["indexes"]
+        assert "ix_food_barcode" in found["indexes"]
+
+    async def test_the_original_23_tables_remain(self, downgraded_db):
+        found = await _inspect(downgraded_db)
+        assert len(found["tables"] - {ALEMBIC_TABLE}) == 23
+
+
+class TestIsolation:
+    def test_the_scratch_name_can_never_be_a_real_database(self):
+        """The guard itself. A bug here is a bug that deletes real data."""
+        for _ in range(200):
+            name = _scratch_name()
+            assert name.startswith("trace_migtest_")
+            assert name not in ("trace", "trace_test", "postgres")
+
+    async def test_fixtures_never_point_at_trace(self, seeded_then_migrated_db):
+        assert "/trace_migtest_" in seeded_then_migrated_db
+        assert not seeded_then_migrated_db.rstrip("/").endswith("/trace")
+        assert not seeded_then_migrated_db.rstrip("/").endswith("/trace_test")

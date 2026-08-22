@@ -19,10 +19,22 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import Column, DateTime, Index, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    SmallInteger,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
+from sqlmodel.sql.sqltypes import AutoString
 
 
 def _utcnow() -> datetime:
@@ -243,6 +255,11 @@ class FoodItem(SQLModel, table=True):
             postgresql_using="gin",
             postgresql_ops={"search_text": "gin_trgm_ops"},
         ),
+        # Phase 3a. Both are built CONCURRENTLY by migration e4f7b0d25c63
+        # against the live table; declared here so `create_all` builds them
+        # for tests and so autogenerate does not report drift.
+        Index("ix_food_gtin14", "gtin14"),
+        Index("ix_food_name_normalized", "name_normalized"),
     )
 
     id: str = Field(default_factory=_uuid, primary_key=True)
@@ -290,6 +307,140 @@ class FoodItem(SQLModel, table=True):
     search_text: str = Field(default="", sa_column=Column(Text))
     log_count: int = 0                   # popularity -> search ranking
 
+    # --- Phase 3a: provenance and normalised lookup keys -------------------
+    #
+    # EVERY DEFAULT BELOW IS A CONSTANT LITERAL, deliberately. PostgreSQL 11+
+    # adds a column with a constant DEFAULT by catalog update alone; a
+    # non-constant default such as now() forces a full rewrite of all 578,773
+    # rows. That is why `last_verified_at` defaults to NULL rather than to a
+    # timestamp.
+
+    #: Fail-closed. 'unknown' is a real value, never NULL: a row whose licence
+    #: nobody has established must be excluded from exports, and NULL would
+    #: make that a three-way test at every call site instead of one.
+    source_licence: str = Field(
+        default="unknown",
+        sa_column=Column(Text, nullable=False, server_default="unknown"),
+    )
+    #: Deep link to the upstream record. The plan's rule is "do not hide the
+    #: source"; a licence name alone does not let a user verify a number.
+    source_url: Optional[str] = None
+    #: 1-7, LOWER IS BETTER. See services/licensing.Tier. An ordinal, which
+    #: `data_quality` cannot be: that float is smeared over 51 values with
+    #: 107,863 rows on 0.51 alone, so it cannot express "a curated dish
+    #: outranks a crowd-sourced product".
+    verification_tier: int = Field(
+        default=6,
+        sa_column=Column(SmallInteger, nullable=False, server_default="6"),
+    )
+    last_verified_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    #: Normalised barcode, GTIN-14. `barcode` above is left EXACTLY as the
+    #: source sent it -- this is an additional lookup key, never a
+    #: replacement, so the existing /barcode endpoint is unaffected.
+    gtin14: Optional[str] = None
+    #: normalize(name), for exact-match ranking without a correlated subquery.
+    name_normalized: str = Field(
+        default="",
+        sa_column=Column(Text, nullable=False, server_default=""),
+    )
+
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class FoodAlias(SQLModel, table=True):
+    """One name a food is known by, with provenance.
+
+    WHY A TABLE AND NOT MORE JSONB
+    `names_i18n` cannot be indexed per alias, cannot record where an alias came
+    from, and cannot be moderated. Measured on the live catalogue: of 578,773
+    rows, 347 carry any alias at all, 168 of those are empty lists -- including
+    Sambar and Masala dosa -- and NOT ONE row anywhere holds a native-script
+    name. That is why `पोहे`, `தோசை` and `சாம்பார்` each return zero results.
+
+    `names_i18n` IS NOT REPLACED BY THIS TABLE. It also carries `basis`,
+    `makes`, `data_notes`, `validation` and `preparation_key`, and
+    routers/preparations.py reads `preparation_key` from it at runtime. This
+    table sits alongside it; nothing migrates out of it.
+
+    `food_items.search_text` stays the read cache, rebuilt from these rows --
+    the same shape as Recipe caching its composition from RecipeIngredient. The
+    search query is therefore unchanged, which is what preserves the measured
+    257 ms by construction rather than by hope.
+    """
+
+    __tablename__ = "food_aliases"
+    __table_args__ = (
+        # `lang` IS NOT NULL FOR THIS CONSTRAINT'S SAKE.
+        #
+        # PostgreSQL treats NULLs as DISTINCT inside a UNIQUE constraint, so a
+        # nullable `lang` would let ('poha', 'avalakki', NULL) be inserted an
+        # unlimited number of times without ever colliding -- silently
+        # disabling this constraint for exactly the rows least likely to carry
+        # a language tag, i.e. transliterations. NULLS NOT DISTINCT would also
+        # fix it but requires PG 15+; '' works on every version.
+        UniqueConstraint(
+            "food_item_id", "normalized", "lang", name="uq_alias_food_norm_lang"
+        ),
+        # Text + CHECK rather than PG enums: extending the vocabulary later is
+        # then DROP/ADD CONSTRAINT inside an ordinary transaction, instead of
+        # the ALTER TYPE dance that cannot run in one.
+        CheckConstraint(
+            "alias_type IN ('canonical','regional','transliteration',"
+            "'colloquial','misspelling','brand_variant')",
+            name="ck_alias_type",
+        ),
+        CheckConstraint(
+            "source IN ('curated','import','ai','user')",
+            name="ck_alias_source",
+        ),
+        CheckConstraint(
+            "confidence >= 0.0 AND confidence <= 1.0",
+            name="ck_alias_confidence",
+        ),
+        Index("ix_alias_normalized", "normalized"),
+        Index(
+            "ix_alias_normalized_trgm",
+            "normalized",
+            postgresql_using="gin",
+            postgresql_ops={"normalized": "gin_trgm_ops"},
+        ),
+        Index("ix_alias_food", "food_item_id"),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    #: AutoString, not Text, to match food_items.id exactly.
+    food_item_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("food_items.id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
+    #: As displayed: 'पोहे', 'avalakki', "Haldiram's".
+    alias: str = Field(sa_column=Column(Text, nullable=False))
+    #: services.food_text.normalize(alias). What search actually matches on.
+    normalized: str = Field(sa_column=Column(Text, nullable=False))
+    #: BCP-47, or '' for unspecified. See the UniqueConstraint note above.
+    lang: str = Field(
+        default="", sa_column=Column(Text, nullable=False, server_default="")
+    )
+    #: ISO 15924: latn, deva, taml, telu, knda, beng, gujr, mlym, guru.
+    script: str = Field(
+        default="latn",
+        sa_column=Column(Text, nullable=False, server_default="latn"),
+    )
+    alias_type: str = Field(sa_column=Column(Text, nullable=False))
+    #: An AI-generated alias is searchable but must never raise a food's
+    #: verification_tier. Recording provenance here is what keeps that
+    #: enforceable rather than aspirational.
+    source: str = Field(sa_column=Column(Text, nullable=False))
+    confidence: float = Field(
+        default=1.0, sa_column=Column(Float, nullable=False, server_default="1.0")
+    )
+    is_active: bool = Field(
+        default=True, sa_column=Column(Boolean, nullable=False, server_default="true")
+    )
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
     updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
