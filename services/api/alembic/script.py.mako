@@ -9,6 +9,9 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+# Autogenerate emits `sqlmodel.sql.sqltypes.AutoString()` for every str column
+# but its own template only imports sqlalchemy, so the name is never bound.
+import sqlmodel  # noqa: F401 -- may be unused; see comment above
 ${imports if imports else ""}
 
 # revision identifiers, used by Alembic.
