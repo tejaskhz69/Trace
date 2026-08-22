@@ -1,18 +1,24 @@
 /**
- * HOME — instrument panel.
+ * Tab 1 · Home — ported from the design artifact.
  *
- * Screen order is exactly as specified:
- *   1. CALORIES REMAINING  — the hero, correct at any hour of the day
- *   2. ACTIVITY TODAY      — what you've actually done
- *   3. COACH               — the one comment
+ * Three cards, in this order:
+ *   1. REMAINING TODAY  — the full ring, a macro strip, and a sentence
+ *   2. WORTH WATCHING   — the micronutrient ledger, with a real over state
+ *   3. ACTIVITY TODAY   — steps / sleep / trained, seven days, and a sentence
  *
- * The calorie block leads with what's LEFT, not what's eaten, because that's
- * the number a user is actually asking for when they open the app at 3pm.
- * "2,847 eaten" requires mental arithmetic; "53 left" is the answer.
+ * WHY THE RING IS A FULL CIRCLE
+ * Each arc is one macro's share of the day's calorie target, so the segments
+ * sum to the target and THE GAP IS WHAT'S LEFT. That is why the centre number
+ * and the gap always agree — they are the same quantity drawn two ways. An
+ * arc-per-macro-progress ring can't make that promise.
  *
- * Performance rules carried over unchanged: skeleton paints first, fetch
- * after InteractionManager, every animation on a shared value, nothing
- * animated via setState.
+ * WHY EVERY CARD ENDS IN A SENTENCE
+ * A chart states a fact; the sentence says what to do about it. That is the
+ * voice of the redesign, and the reason the app reads as explaining rather
+ * than reporting. `Plain` is the primitive; keep it to one or two sentences.
+ *
+ * Performance rules unchanged: skeleton paints first, fetch after
+ * InteractionManager, animation on shared values, never setState.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -24,372 +30,270 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useFocusEffect, useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import { useFocusEffect } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import {
-  Button,
-  Gauge,
+  Cell,
+  DayBars,
   Label,
+  LedgerBar,
   Panel,
-  Readout,
-  Rule,
+  Plain,
+  Ring,
   Skeleton,
-  Sparkbar,
-  StatCell,
+  type RingSegment,
 } from '../../src/components/instrument';
+import { api, type ProgressReport } from '../../src/lib/api';
+import { StreakPanel } from '../../src/components/streak-panel';
 import { useAuth } from '../../src/state/useAuth';
 import { useToday } from '../../src/state/useToday';
-import { useCoach } from '../../src/state/useCoach';
-import {
-  HAIRLINE,
-  leverStyle,
-  palette,
-  radius,
-  space,
-  type,
-} from '../../src/theme';
+import { useAccent, useSurfaces } from '../../src/state/useTheme';
+import { motion, palette, space, type } from '../../src/theme';
 
-function clock(): string {
+const KCAL_PER_G = { protein: 4, carbs: 4, fat: 9 } as const;
+
+/** "FRI · 15 AUG", matching the artifact's masthead. */
+function stamp(): string {
   const d = new Date();
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const day = d.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+  const mon = d.toLocaleDateString('en-US', { month: 'short' }).toUpperCase();
+  return `${day} · ${d.getDate()} ${mon}`;
+}
+
+function initials(name: string | null, email: string): string {
+  const src = (name ?? email).trim();
+  const parts = src.split(/[\s@.]+/).filter(Boolean);
+  return (parts[0]?.[0] ?? '?').concat(parts[1]?.[0] ?? '').toUpperCase();
 }
 
 export default function HomeScreen() {
-  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const surfaces = useSurfaces();
+  const accent = useAccent();
   const user = useAuth((s) => s.user);
-  const { summary, loading, refreshing, load, refresh } = useToday();
-  const { briefing, load: loadCoach } = useCoach();
-  const [now, setNow] = useState(clock());
 
+  const summary = useToday((s) => s.summary);
+  const loading = useToday((s) => s.loading);
+  const refreshing = useToday((s) => s.refreshing);
+  const load = useToday((s) => s.load);
+  const refresh = useToday((s) => s.refresh);
+
+  const [ready, setReady] = useState(false);
+
+  /**
+   * Streak, consistency, and whether the phase is working.
+   *
+   * Fetched here rather than inside the panel so a failure degrades to
+   * "no panel" instead of a broken card on the first screen of the app.
+   */
+  const [progress, setProgress] = useState<ProgressReport | null>(null);
+
+  // Paint the skeleton first, fetch after the navigation animation settles.
   useEffect(() => {
     const task = InteractionManager.runAfterInteractions(() => {
+      setReady(true);
       load();
-      loadCoach();
     });
-    // The header clock is the only thing on this screen driven by an
-    // interval, and it updates once a minute -- not once a second.
-    const id = setInterval(() => setNow(clock()), 60_000);
-    return () => {
-      task.cancel();
-      clearInterval(id);
-    };
-  }, [load, loadCoach]);
+    return () => task.cancel();
+  }, [load]);
 
   useFocusEffect(
     useCallback(() => {
+      if (!ready) return;
       load();
-    }, [load]),
+      // Refetched on focus, not just on mount: logging a meal from the
+      // Nutrition tab is exactly what flips "today open" to "today done",
+      // and coming back to a stale streak would look like the log failed.
+      let alive = true;
+      api
+        .progressReport()
+        .then((r) => alive && setProgress(r))
+        .catch(() => undefined);
+      return () => {
+        alive = false;
+      };
+    }, [ready, load]),
   );
 
-  const eaten = summary?.calories ?? 0;
+  const ring = useMemo(() => {
+    if (!summary) return null;
+    const target = summary.calorie_target ?? 0;
+    // Each arc is the macro's ENERGY contribution, not its gram count, so the
+    // three arcs are directly comparable and sum to calories eaten.
+    const segments: RingSegment[] = [
+      { value: summary.protein_g * KCAL_PER_G.protein, color: palette.protein },
+      { value: summary.carbs_g * KCAL_PER_G.carbs, color: palette.carbs },
+      { value: summary.fat_g * KCAL_PER_G.fat, color: palette.fat },
+    ];
+    return { segments, target, left: Math.round(target - summary.calories) };
+  }, [summary]);
+
+  if (!ready || (loading && !summary)) {
+    return (
+      <View style={[styles.screen, { backgroundColor: surfaces.void }]}>
+        <View style={{ height: insets.top + 44 }} />
+        <View style={styles.body}>
+          <Skeleton height={300} />
+          <Skeleton height={210} />
+          <Skeleton height={230} />
+        </View>
+      </View>
+    );
+  }
+
   const target = summary?.calorie_target ?? null;
-  const remaining = target != null ? Math.round(target - eaten) : null;
-  const over = remaining != null && remaining < 0;
-  const fraction = target && target > 0 ? eaten / target : 0;
-
-  const activity = briefing?.activity_today ?? null;
-  const stepHistory = useMemo(
-    () => briefing?.step_history ?? [],
-    [briefing?.step_history],
-  );
-
-  const showSkeleton = loading && !summary;
+  const eaten = Math.round(summary?.calories ?? 0);
+  const left = ring?.left ?? 0;
+  const onTrack = target !== null && left >= 0;
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <View style={[styles.screen, { backgroundColor: surfaces.void }]}>
+      <View style={[styles.bar, { paddingTop: insets.top + space.sm }]}>
+        <View style={styles.brand}>
+          <View style={[styles.dot, { backgroundColor: accent.brand }]} />
+          <Text style={styles.brandText}>TRACE</Text>
+        </View>
+        <View style={styles.barR}>
+          <Text style={styles.stamp}>{stamp()}</Text>
+          <View style={[styles.avatar, { borderColor: surfaces.hairlineBright }]}>
+            <Text style={styles.avatarText}>
+              {initials(user?.display_name ?? null, user?.email ?? '')}
+            </Text>
+          </View>
+        </View>
+      </View>
+
       <ScrollView
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[
+          styles.body,
+          { paddingBottom: insets.bottom + space.xxl },
+        ]}
+        showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => {
-              refresh();
-              loadCoach({ force: true });
-            }}
+            onRefresh={refresh}
             tintColor={palette.textFaint}
           />
         }
-        removeClippedSubviews
-        scrollEventThrottle={16}
       >
-        {/* ---- Masthead ---------------------------------------------- */}
-        <View style={styles.masthead}>
-          <View>
-            <Label color={palette.textGhost}>TRACE</Label>
-            <Text style={styles.mastheadName}>
-              {user?.display_name || user?.email?.split('@')[0] || 'Athlete'}
-            </Text>
-          </View>
-          <View style={styles.mastheadRight}>
-            <Text style={styles.clock}>{now}</Text>
-            <Label color={palette.textGhost}>
-              {new Date().toLocaleDateString('en-GB', {
-                weekday: 'short',
-                day: 'numeric',
-                month: 'short',
-              })}
-            </Label>
-          </View>
-        </View>
-
-        {showSkeleton ? (
-          <HomeSkeleton />
-        ) : (
-          <>
-            {/* ============ 1. CALORIES REMAINING ==================== */}
-            <Animated.View entering={FadeInDown.duration(240)}>
-              <Panel padded={false}>
-                <View style={styles.calBody}>
-                  <View style={styles.calHeaderRow}>
-                    <Label color={over ? palette.warn : palette.signal}>
-                      {over ? 'Over budget' : 'Remaining today'}
-                    </Label>
-                    <Label color={palette.textGhost}>
-                      {target ? `Target ${Math.round(target).toLocaleString()}` : 'No target yet'}
-                    </Label>
-                  </View>
-
-                  <View style={styles.calReadoutRow}>
-                    <Readout
-                      value={remaining != null ? Math.abs(remaining) : eaten}
-                      color={over ? palette.warn : palette.text}
-                    />
-                    <Text style={styles.calUnit}>kcal</Text>
-                  </View>
-
-                  <Text style={styles.calSub}>
-                    {remaining == null
-                      ? `${Math.round(eaten).toLocaleString()} eaten · log a few days and I'll set your target`
-                      : over
-                        ? `${Math.round(eaten).toLocaleString()} eaten · ${Math.abs(remaining)} over`
-                        : `${Math.round(eaten).toLocaleString()} eaten of ${Math.round(target!).toLocaleString()}`}
-                  </Text>
-
-                  <View style={styles.gaugeWrap}>
-                    <Gauge fraction={fraction} height={10} />
+        {/* ---------------------------------------------- 1 · REMAINING */}
+        <Animated.View entering={FadeInDown.duration(motion.base)}>
+          <Panel
+            label="Remaining today"
+            right={
+              target === null ? (
+                <Label color={palette.textFaint}>No target</Label>
+              ) : (
+                <Label color={onTrack ? accent.brand : palette.warn}>
+                  {onTrack ? 'On track' : 'Over'}
+                </Label>
+              )
+            }
+          >
+            {target === null ? (
+              <Plain>
+                You don&apos;t have a calorie target yet. Finish setup and
+                Trace will build your week.
+              </Plain>
+            ) : (
+              <>
+                <View style={styles.ringWrap}>
+                  <Ring segments={ring!.segments} total={target}>
+                    <Text style={styles.ringNum}>{left.toLocaleString()}</Text>
+                    <Text style={styles.ringUnit}>KCAL LEFT</Text>
+                  </Ring>
+                  <View style={styles.ringFeet}>
+                    <Text style={styles.foot}>{eaten.toLocaleString()} EATEN</Text>
+                    <Text style={styles.foot}>
+                      {Math.round(target).toLocaleString()} TARGET
+                    </Text>
                   </View>
                 </View>
 
-                <Rule />
-
-                {/* Macro strip */}
-                <View style={styles.macroStrip}>
+                {/* The ring can't label its own arcs at this size; the strip does. */}
+                <View style={styles.row}>
                   <MacroCell
                     label="Protein"
-                    value={summary?.protein_g ?? 0}
-                    target={summary?.protein_target_g ?? null}
+                    value={summary!.protein_g}
+                    target={summary!.protein_target_g}
                     color={palette.protein}
                   />
-                  <Rule vertical />
                   <MacroCell
                     label="Carbs"
-                    value={summary?.carbs_g ?? 0}
-                    target={null}
+                    value={summary!.carbs_g}
+                    target={summary!.carb_target_g}
                     color={palette.carbs}
                   />
-                  <Rule vertical />
                   <MacroCell
                     label="Fat"
-                    value={summary?.fat_g ?? 0}
-                    target={null}
+                    value={summary!.fat_g}
+                    target={summary!.fat_target_g}
                     color={palette.fat}
                   />
                 </View>
 
-                <Rule />
+                <Plain style={styles.gapT} tone={onTrack ? 'signal' : 'warn'}>
+                  {onTrack
+                    ? `You've eaten ${eaten.toLocaleString()} today. About ${roomInFood(left)} worth of room left.`
+                    : `You're ${Math.abs(left).toLocaleString()} kcal over today. One day doesn't decide the week — get back on target tomorrow.`}
+                </Plain>
+              </>
+            )}
+          </Panel>
+        </Animated.View>
 
-                {/* Quick log */}
-                <View style={styles.actionRow}>
-                  <Button
-                    label="Scan"
-                    onPress={() => router.push('/scan')}
-                    compact
-                    style={styles.actionBtn}
-                  />
-                  <Button
-                    label="Barcode"
-                    variant="outline"
-                    compact
-                    onPress={() =>
-                      router.push({ pathname: '/scan', params: { mode: 'barcode' } })
-                    }
-                    style={styles.actionBtn}
-                  />
-                  <Button
-                    label="Search"
-                    variant="outline"
-                    compact
-                    onPress={() => router.push('/(tabs)/log')}
-                    style={styles.actionBtn}
-                  />
-                </View>
-              </Panel>
-            </Animated.View>
+        {/* ------------------------------------------- 2 · CONSISTENCY
+            The streak AND the phase verdict, together. See
+            components/streak-panel.tsx for why they are never separated. */}
+        {progress ? (
+          <Animated.View entering={FadeInDown.duration(motion.base).delay(30)}>
+            <StreakPanel report={progress} />
+          </Animated.View>
+        ) : null}
 
-            {/* ============ 2. ACTIVITY TODAY ======================== */}
-            <Animated.View entering={FadeInDown.duration(240).delay(50)}>
-              <Panel
-                label="Activity today"
-                right={
-                  activity?.synced_at ? (
-                    <Label color={palette.textGhost}>SYNCED</Label>
-                  ) : (
-                    <Label color={palette.textGhost}>NO DATA</Label>
-                  )
-                }
-              >
-                {activity ? (
-                  <View style={{ gap: space.lg }}>
-                    <View style={styles.statRow}>
-                      <StatCell
-                        label="Steps"
-                        value={(activity.steps ?? 0).toLocaleString()}
-                        delta={
-                          activity.steps_vs_baseline != null
-                            ? {
-                                value: `${activity.steps_vs_baseline >= 0 ? '+' : ''}${activity.steps_vs_baseline}%`,
-                                positive: activity.steps_vs_baseline >= 0,
-                              }
-                            : null
-                        }
-                      />
-                      <Rule vertical />
-                      <StatCell
-                        label="Active"
-                        value={Math.round(activity.active_energy_kcal ?? 0)}
-                        unit="kcal"
-                        align="center"
-                      />
-                      <Rule vertical />
-                      <StatCell
-                        label="Training"
-                        value={activity.sessions_today ?? 0}
-                        unit={activity.sessions_today === 1 ? 'set' : 'sets'}
-                        align="right"
-                      />
-                    </View>
+        {/* ------------------------------------------- 3 · WORTH WATCHING */}
+        <Animated.View entering={FadeInDown.duration(motion.base).delay(40)}>
+          <WatchList summary={summary} />
+        </Animated.View>
 
-                    {stepHistory.length > 2 && (
-                      <View style={{ gap: space.sm }}>
-                        <Sparkbar values={stepHistory} height={30} />
-                        <View style={styles.sparkLegend}>
-                          <Label color={palette.textGhost}>7 days</Label>
-                          <Label color={palette.textGhost}>Today</Label>
-                        </View>
-                      </View>
-                    )}
-
-                    {/* The honesty note — active energy is context, not budget */}
-                    <Text style={styles.footnote}>
-                      Active energy is shown for context. It is not added to your
-                      target — your weight trend already accounts for it.
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={{ gap: space.md }}>
-                    <Text style={styles.emptyText}>
-                      Connect Apple Health to see steps, sleep, and workouts here.
-                      It explains changes in your burn — it never changes your
-                      calorie target.
-                    </Text>
-                    <Button
-                      label="Connect health"
-                      variant="outline"
-                      compact
-                      onPress={() => router.push('/(tabs)/progress')}
-                    />
-                  </View>
-                )}
-              </Panel>
-            </Animated.View>
-
-            {/* ============ 3. COACH ================================= */}
-            <Animated.View entering={FadeInDown.duration(240).delay(100)}>
-              <Panel
-                label="Coach"
-                right={
-                  briefing?.primary ? (
-                    <Label color={leverStyle[briefing.primary.lever]?.color ?? palette.textFaint}>
-                      {leverStyle[briefing.primary.lever]?.label || ''}
-                    </Label>
-                  ) : null
-                }
-                onPress={() => router.push('/(tabs)/progress')}
-              >
-                {briefing?.primary ? (
-                  <View style={{ gap: space.md }}>
-                    <Text style={styles.coachHeadline}>
-                      {briefing.primary.headline}
-                    </Text>
-                    <Text style={styles.coachDetail}>{briefing.primary.detail}</Text>
-
-                    {briefing.primary.action ? (
-                      <View style={styles.actionCallout}>
-                        <View
-                          style={[
-                            styles.actionBar,
-                            {
-                              backgroundColor:
-                                leverStyle[briefing.primary.lever]?.color ??
-                                palette.signal,
-                            },
-                          ]}
-                        />
-                        <Text style={styles.actionText}>
-                          {briefing.primary.action}
-                        </Text>
-                      </View>
-                    ) : null}
-
-                    {briefing.prompts.length > 0 && (
-                      <>
-                        <Rule />
-                        <Text style={styles.promptText}>
-                          {briefing.prompts[0]}
-                        </Text>
-                      </>
-                    )}
-
-                    <View style={styles.coachFooter}>
-                      <Label color={palette.textGhost}>
-                        {`Confidence ${Math.round(briefing.primary.confidence * 100)}%`}
-                      </Label>
-                      <Label color={palette.textGhost}>
-                        {`Data ${Math.round(briefing.data_completeness * 100)}%`}
-                      </Label>
-                    </View>
-                  </View>
-                ) : (
-                  <Text style={styles.emptyText}>
-                    Keep logging. Once I have about two weeks of food, weight and
-                    training, I&apos;ll tell you the one thing worth changing.
-                  </Text>
-                )}
-              </Panel>
-            </Animated.View>
-
-            {/* ---- Today's meals, secondary ------------------------- */}
-            {summary?.meals?.length ? (
-              <Animated.View entering={FadeIn.duration(240).delay(150)}>
-                <Panel label={`Logged · ${summary.meals.length}`} padded={false}>
-                  {summary.meals.map((m, i) => (
-                    <React.Fragment key={String(m.id)}>
-                      {i > 0 && <Rule />}
-                      <MealRow meal={m} />
-                    </React.Fragment>
-                  ))}
-                </Panel>
-              </Animated.View>
-            ) : null}
-          </>
-        )}
+        {/* -------------------------------------------- 4 · ACTIVITY TODAY */}
+        <Animated.View entering={FadeInDown.duration(motion.base).delay(80)}>
+          <Panel
+            label="Activity today"
+            right={<Label color={palette.textFaint}>Not connected</Label>}
+          >
+            <View style={styles.row}>
+              <Cell label="Steps" value="—" sub="connect a source" />
+              <Cell label="Sleep" value="—" sub="connect a source" />
+              <Cell label="Trained" value="—" sub="log a session" />
+            </View>
+            <DayBars
+              values={[0, 0, 0, 0, 0, 0, 0]}
+              labels={['S', 'M', 'T', 'W', 'T', 'F', 'S']}
+              color={palette.seriesWeight}
+              height={62}
+            />
+            <Plain style={styles.gapT}>
+              Connect Apple Health, Strava or Garmin in Profile and your movement
+              shows up here. Whatever it says,{' '}
+              <Text style={styles.b}>you don&apos;t need to eat it back</Text> —
+              it&apos;s already in your target.
+            </Plain>
+          </Panel>
+        </Animated.View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
+/**
+ * One macro in the strip below the ring. The top rule is the ring's legend —
+ * that colour and this colour are the same channel, which is the only reason
+ * the ring is readable without labels on its arcs.
+ */
 function MacroCell({
   label,
   value,
@@ -401,143 +305,173 @@ function MacroCell({
   target: number | null;
   color: string;
 }) {
+  const g = Math.round(value);
+  const left = target === null ? null : Math.round(target - value);
   return (
-    <View style={styles.macroCell}>
-      <Label color={palette.textFaint}>{label}</Label>
-      <View style={styles.macroValueRow}>
-        <Text style={[type.valueSm, { color: palette.text }]}>
-          {Math.round(value)}
-        </Text>
-        <Text style={styles.macroUnit}>
-          {target ? `/${Math.round(target)}g` : 'g'}
-        </Text>
-      </View>
-      <View style={styles.macroBarTrack}>
-        <View
-          style={[
-            styles.macroBarFill,
-            {
-              backgroundColor: color,
-              width: `${Math.min(100, target ? (value / target) * 100 : Math.min(value / 2, 100))}%`,
-            },
-          ]}
-        />
-      </View>
-    </View>
+    <Cell
+      label={label}
+      value={g}
+      unit="g"
+      keyColor={color}
+      sub={left === null ? 'no target' : left >= 0 ? `${left} g left` : `${-left} g over`}
+      subTone={left !== null && left < 0 ? 'danger' : 'flat'}
+    />
   );
 }
 
-function MealRow({ meal }: { meal: Record<string, unknown> }) {
-  const low = meal.kcal_low as number | null;
-  const high = meal.kcal_high as number | null;
+/**
+ * The micronutrient ledger.
+ *
+ * Bars are only rendered for nutrients we actually have data for. A day of
+ * home-cooked food logged by hand will have no sodium figures at all, and an
+ * empty bar reading "0 / 2,300" would be a lie in the reassuring direction.
+ */
+function WatchList({ summary }: { summary: ReturnType<typeof useToday.getState>['summary'] }) {
+  if (!summary) return null;
+
+  const rows = [
+    {
+      label: 'SODIUM',
+      value: summary.sodium_mg,
+      target: summary.sodium_limit_mg,
+      unit: 'mg',
+      color: palette.seriesWeight,
+    },
+    {
+      label: 'POTASSIUM',
+      value: summary.potassium_mg,
+      target: summary.potassium_target_mg,
+      unit: 'mg',
+      color: palette.seriesWeight,
+    },
+    {
+      label: 'SUGARS',
+      value: summary.sugars_g,
+      target: summary.sugars_limit_g,
+      unit: 'g',
+      color: palette.seriesEnergy,
+    },
+    {
+      label: 'FIBRE',
+      value: summary.fiber_g,
+      target: summary.fiber_target_g,
+      unit: 'g',
+      color: palette.seriesStrength,
+    },
+  ];
+
+  const known = rows.filter((r) => r.value !== null && r.target !== null);
+  // Only sodium and sugars are ceilings. Potassium and fibre are floors to
+  // reach, so exceeding them is good and must never be flagged as "over".
+  const over = known.filter(
+    (r) => (r.label === 'SODIUM' || r.label === 'SUGARS') && r.value! > r.target!,
+  );
+
   return (
-    <View style={styles.mealRow}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.mealName} numberOfLines={1}>
-          {String(meal.display_name ?? 'Meal')}
-        </Text>
-        <Label color={palette.textGhost}>
-          {String(meal.serving_label ?? `${Math.round(Number(meal.grams ?? 0))} g`)}
-        </Label>
-      </View>
-      <View style={{ alignItems: 'flex-end' }}>
-        <Text style={[type.valueSm, { color: palette.text }]}>
-          {Math.round(Number(meal.calories ?? 0))}
-        </Text>
-        {low != null && high != null && (
-          <Label color={palette.textGhost}>
-            ±{Math.round((high - low) / 2)}
-          </Label>
-        )}
-      </View>
-    </View>
+    <Panel
+      label="Worth watching"
+      right={
+        known.length === 0 ? (
+          <Label color={palette.textFaint}>No data</Label>
+        ) : over.length > 0 ? (
+          <Label color={palette.danger}>{over.length} over</Label>
+        ) : (
+          <Label color={palette.textFaint}>All under</Label>
+        )
+      }
+    >
+      {known.length === 0 ? (
+        <Plain>
+          None of today&apos;s foods carry sodium or sugar data yet. Scanning a
+          barcode or picking from the database fills this in.
+        </Plain>
+      ) : (
+        <>
+          <View style={styles.ledger}>
+            {known.map((r) => (
+              <LedgerBar
+                key={r.label}
+                label={r.label}
+                value={Math.round(r.value!)}
+                target={Math.round(r.target!)}
+                unit={r.unit}
+                color={r.color}
+              />
+            ))}
+          </View>
+          {over.length > 0 ? (
+            <Plain style={styles.gapT} tone="danger">
+              {over[0].label === 'SODIUM' ? 'Sodium' : 'Sugars'} is{' '}
+              <Text style={styles.b}>
+                {Math.round(over[0].value! - over[0].target!).toLocaleString()}{' '}
+                {over[0].unit} over
+              </Text>
+              . Restaurant gravies and packaged snacks carry most of it.
+            </Plain>
+          ) : (
+            <Plain style={styles.gapT}>
+              Everything&apos;s inside its limit today.
+            </Plain>
+          )}
+        </>
+      )}
+    </Panel>
   );
 }
 
-function HomeSkeleton() {
-  return (
-    <View style={{ gap: space.md }}>
-      <Skeleton height={260} />
-      <Skeleton height={150} />
-      <Skeleton height={170} />
-    </View>
-  );
+/**
+ * Turn a calorie gap into food, because "600 kcal" is not something most
+ * people can picture and "two rotis and a bowl of dal" is.
+ */
+function roomInFood(kcal: number): string {
+  if (kcal >= 900) return 'a full dinner';
+  if (kcal >= 600) return 'two rotis and a bowl of dal';
+  if (kcal >= 400) return 'a plate of rice and curry';
+  if (kcal >= 250) return 'a bowl of curd and fruit';
+  if (kcal >= 120) return 'a piece of fruit';
+  return 'a cup of tea';
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: palette.void },
-  scroll: {
-    padding: space.lg,
-    gap: space.md,
-    paddingBottom: space.xxxl,
-  },
-
-  masthead: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: space.xs,
-  },
-  mastheadName: { ...type.title, color: palette.text, marginTop: 2 },
-  mastheadRight: { alignItems: 'flex-end', gap: 2 },
-  clock: { ...type.valueSm, color: palette.textDim },
-
-  // --- Calories ---------------------------------------------------------
-  calBody: { padding: space.lg, gap: space.sm },
-  calHeaderRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  calReadoutRow: { flexDirection: 'row', alignItems: 'baseline', gap: space.sm },
-  calUnit: { ...type.heading, color: palette.textFaint },
-  calSub: { ...type.caption, color: palette.textDim },
-  gaugeWrap: { marginTop: space.sm },
-
-  macroStrip: { flexDirection: 'row' },
-  macroCell: { flex: 1, padding: space.md, gap: space.xs },
-  macroValueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 2 },
-  macroUnit: { ...type.labelSm, color: palette.textFaint },
-  macroBarTrack: {
-    height: 3,
-    backgroundColor: palette.raised,
-    borderRadius: 2,
-    overflow: 'hidden',
-    marginTop: 2,
-  },
-  macroBarFill: { height: '100%', borderRadius: 2 },
-
-  actionRow: { flexDirection: 'row', gap: space.sm, padding: space.md },
-  actionBtn: { flex: 1, paddingHorizontal: 0 },
-
-  // --- Activity ---------------------------------------------------------
-  statRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
-  sparkLegend: { flexDirection: 'row', justifyContent: 'space-between' },
-  footnote: {
-    ...type.caption,
-    fontSize: 11,
-    lineHeight: 16,
-    color: palette.textGhost,
-  },
-
-  // --- Coach ------------------------------------------------------------
-  coachHeadline: { ...type.heading, color: palette.text },
-  coachDetail: { ...type.body, color: palette.textDim },
-  actionCallout: { flexDirection: 'row', gap: space.md, alignItems: 'stretch' },
-  actionBar: { width: 2, borderRadius: 1 },
-  actionText: { ...type.body, color: palette.text, flex: 1, fontWeight: '500' },
-  promptText: { ...type.caption, color: palette.textDim, paddingTop: space.md },
-  coachFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingTop: space.xs,
-  },
-
-  // --- Meals ------------------------------------------------------------
-  mealRow: {
+  screen: { flex: 1 },
+  bar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
+    justifyContent: 'space-between',
     paddingHorizontal: space.lg,
-    paddingVertical: space.md,
+    paddingBottom: space.md,
   },
-  mealName: { ...type.body, color: palette.text, fontWeight: '500' },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  dot: { width: 7, height: 7, borderRadius: 3.5 },
+  brandText: { ...type.label, fontSize: 11, letterSpacing: 2, color: palette.text },
+  barR: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  stamp: { ...type.labelSm, color: palette.textDim, letterSpacing: 1 },
+  avatar: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: StyleSheet.hairlineWidth,
+    backgroundColor: palette.raised,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: { ...type.labelSm, fontSize: 10.5, color: palette.textDim },
 
-  emptyText: { ...type.body, color: palette.textDim },
+  body: { padding: space.lg, gap: space.md },
+
+  ringWrap: { alignItems: 'center' },
+  ringNum: { ...type.figure, fontSize: 42, color: palette.text },
+  ringUnit: { ...type.labelSm, color: palette.textDim, marginTop: 2 },
+  ringFeet: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignSelf: 'stretch',
+    marginTop: space.xs,
+  },
+  foot: { ...type.labelSm, fontSize: 9.5, color: palette.textFaint },
+
+  row: { flexDirection: 'row', gap: 9, marginTop: space.xs },
+  ledger: { gap: 14 },
+  gapT: { marginTop: space.md },
+  b: { fontFamily: type.heading.fontFamily, color: palette.text },
 });

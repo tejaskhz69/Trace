@@ -27,7 +27,19 @@
       "Bash(python - rest.html)",
       "Bash(python -)",
       "Bash(./.venv/Scripts/python.exe -m app.scripts.eval_barcode)",
-      "Bash(./.venv/Scripts/python.exe -)"
+      "Bash(./.venv/Scripts/python.exe -)",
+      "Bash(winget install *)",
+      "WebFetch(domain:vxstrainer.ai)",
+      "Bash(.venv/Scripts/python.exe -m app.scripts.sync_schema)",
+      "Bash(.venv/Scripts/python.exe -m app.scripts.sync_schema --apply)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -q)",
+      "Bash(powershell -NoProfile -Command 'Get-NetTCPConnection -LocalPort 8000 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force; '\\\\''killed PID '\\\\'' + $_.OwningProcess }')",
+      "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process -Filter \"Name='\\\\''python.exe'\\\\''\" | Where-Object { $_.CommandLine -like '\\\\''*uvicorn*'\\\\'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force; '\\\\''killed leftover '\\\\'' + $_.ProcessId }')",
+      "Bash(powershell -NoProfile -Command \"Stop-Process -Id 44784 -Force; Start-Sleep -Milliseconds 800; 'killed 44784'\")",
+      "Bash(netstat -ano)",
+      "Bash(powershell -NoProfile -Command \"Get-Process -Id 47912 -ErrorAction SilentlyContinue | Select-Object Id,ProcessName; Stop-Process -Id 47912 -Force -ErrorAction SilentlyContinue\")",
+      "Bash(npx tsc *)",
+      "Bash(.venv/Scripts/python.exe -c ' *)"
     ],
     "deny": [
       "Read(./services/api/.env)",

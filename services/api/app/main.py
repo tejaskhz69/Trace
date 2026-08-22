@@ -29,8 +29,11 @@ from .routers import (
     auth,
     chat,
     foods,
+    insights,
     meals,
+    onboarding,
     preparations,
+    recipes,
     recognition,
     weight,
     workouts,
@@ -139,9 +142,12 @@ async def root() -> dict:
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(foods.router)
+app.include_router(insights.router)
 app.include_router(health_router.router)
+app.include_router(onboarding.router)
 app.include_router(preparations.router)
 app.include_router(meals.router)
+app.include_router(recipes.router)
 app.include_router(recognition.router)
 app.include_router(weight.router)
 app.include_router(workouts.router)

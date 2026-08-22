@@ -11,16 +11,29 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from ..db import get_session
 from ..models import Exercise, SetLog, User, WorkoutSession
-from ..schemas import SetLogRequest, StrengthPoint, WorkoutSessionRequest
-from ..services.adjudication import epley_e1rm, ewma
+from ..schemas import (
+    SetLogRequest,
+    StrengthPoint,
+    VoiceCommitRequest,
+    WorkoutSessionRequest,
+)
+from ..services import strength
+from ..services.adjudication import ewma
+from ..services.volume import build_report as build_volume_report
+from ..services.workout_voice import transcribe_workout
 from .auth import current_user
+
+# How far back a "current best" reaches. Long enough that a deload week does
+# not reset your record, short enough that a personal best from last winter is
+# not the bar you are held to today.
+REFERENCE_WINDOW_DAYS = 42
 
 router = APIRouter(prefix="/api/workouts", tags=["workouts"])
 
@@ -45,6 +58,121 @@ async def list_exercises(
         }
         for e in rows
     ]
+
+
+@router.get("/catalogue")
+async def exercise_catalogue(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+    q: str | None = Query(default=None, max_length=80),
+    limit_per_group: int = Query(default=50, le=200),
+) -> dict:
+    """The Trainer tab's exercise list: grouped by muscle, with the user's
+    own working weight and trend against last week.
+
+    ONE QUERY FOR THE WHOLE LIST, not one per row. A naive implementation
+    fetches 736 exercises then asks the database for each one's history, which
+    is 737 round trips -- and at ~130 ms each against a database in another
+    region that is a minute and a half of loading. The two aggregates below
+    are computed set-wise and joined in memory.
+
+    `working_weight` is the heaviest non-warmup set in the last 30 days, not
+    an all-time best: the list is answering "what am I lifting on this right
+    now", and a PR from eight months ago is the wrong answer to that.
+    """
+    now = datetime.now(timezone.utc)
+    recent_cut = now - timedelta(days=30)
+    this_week_cut = now - timedelta(days=7)
+    last_week_cut = now - timedelta(days=14)
+
+    stmt = select(Exercise)
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        # Match the muscle group too, so "chest" finds the chest exercises
+        # rather than only the ones with "chest" in their name.
+        stmt = stmt.where(
+            Exercise.name.ilike(needle) | Exercise.muscle_group.ilike(needle)  # type: ignore[union-attr]
+        )
+    exercises = (await session.execute(stmt)).scalars().all()
+
+    # Heaviest working set per exercise in the last 30 days.
+    working = dict(
+        (
+            await session.execute(
+                select(SetLog.exercise_id, func.max(SetLog.weight_kg))
+                .where(
+                    SetLog.user_id == user.id,
+                    SetLog.performed_at >= recent_cut,
+                    SetLog.is_warmup == False,  # noqa: E712
+                )
+                .group_by(SetLog.exercise_id)  # type: ignore[arg-type]
+            )
+        ).all()
+    )
+
+    # Best e1RM this week and the week before, for the trend arrow. e1RM
+    # rather than raw weight, so adding a rep counts as progress -- which is
+    # what actually happens between sessions.
+    async def best_e1rm(since, until) -> dict[str, float]:
+        rows = (
+            await session.execute(
+                select(SetLog.exercise_id, func.max(SetLog.e1rm))
+                .where(
+                    SetLog.user_id == user.id,
+                    SetLog.performed_at >= since,
+                    SetLog.performed_at < until,
+                    SetLog.is_warmup == False,  # noqa: E712
+                )
+                .group_by(SetLog.exercise_id)  # type: ignore[arg-type]
+            )
+        ).all()
+        return {k: v for k, v in rows if v is not None}
+
+    this_week = await best_e1rm(this_week_cut, now)
+    last_week = await best_e1rm(last_week_cut, this_week_cut)
+
+    groups: dict[str, list[dict]] = {}
+    for e in exercises:
+        now_v, prev_v = this_week.get(e.id), last_week.get(e.id)
+        # Only claim a delta when BOTH weeks have data. "0.0%" against a week
+        # you didn't train is a fabricated comparison, and the client renders
+        # a null as a dash instead.
+        delta = (
+            round((now_v - prev_v) / prev_v * 100, 1)
+            if now_v is not None and prev_v not in (None, 0)
+            else None
+        )
+        groups.setdefault(e.muscle_group, []).append(
+            {
+                "id": e.id,
+                "name": e.name,
+                "muscle_group": e.muscle_group,
+                "secondary_muscles": e.secondary_muscles or [],
+                "equipment": e.equipment,
+                "is_compound": e.is_compound,
+                "working_weight_kg": working.get(e.id),
+                "delta_pct": delta,
+            }
+        )
+
+    # Exercises the user actually lifts float to the top of their group; the
+    # rest fall back to alphabetical so the list is predictable.
+    out = []
+    for name in sorted(groups):
+        items = sorted(
+            groups[name],
+            key=lambda x: (x["working_weight_kg"] is None, x["name"].lower()),
+        )
+        out.append(
+            {
+                "muscle_group": name,
+                "count": len(items),
+                "exercises": items[:limit_per_group],
+            }
+        )
+    # Groups the user has trained come first.
+    out.sort(key=lambda g: (not any(e["working_weight_kg"] for e in g["exercises"]),))
+    return {"groups": out, "total": len(exercises)}
 
 
 @router.post("/sessions", status_code=201)
@@ -85,6 +213,20 @@ async def log_set(
         )
     ) or 0
 
+    # RIR is the honest input; RPE is the same scale inverted. Accept either,
+    # prefer RIR, and store both so nothing the user actually typed is lost.
+    rir = payload.rir
+    if rir is None and payload.rpe is not None:
+        rir = max(0.0, 10.0 - payload.rpe)
+    rpe = payload.rpe if payload.rpe is not None else strength.rpe_from_rir(rir)
+
+    reference = (
+        None
+        if payload.is_warmup
+        else await _reference_e1rm(session, user.id, payload.exercise_id)
+    )
+    ex = await session.get(Exercise, payload.exercise_id)
+
     entry = SetLog(
         session_id=session_id,
         user_id=user.id,
@@ -92,14 +234,284 @@ async def log_set(
         set_index=index,
         weight_kg=payload.weight_kg,
         reps=payload.reps,
-        rpe=payload.rpe,
+        rpe=rpe,
+        rir=rir,
         is_warmup=payload.is_warmup,
-        e1rm=epley_e1rm(payload.weight_kg, payload.reps),
+        # RIR-adjusted, not plain Epley. A set stopped three reps short is
+        # evidence of a heavier set, and ignoring that under-rates almost
+        # every set a sensible lifter performs.
+        e1rm=strength.e1rm(payload.weight_kg, payload.reps, rir),
     )
     session.add(entry)
     await session.commit()
     await session.refresh(entry)
-    return {"id": entry.id, "set_index": entry.set_index, "e1rm": entry.e1rm}
+
+    # The verdict travels back with the write, so the client renders it
+    # without a second round trip while the lifter is still standing there.
+    a = strength.assess_set(
+        weight_kg=payload.weight_kg,
+        reps=payload.reps,
+        rir=rir,
+        reference_e1rm=reference,
+        equipment=ex.equipment if ex else None,
+    )
+    return {
+        "id": entry.id,
+        "set_index": entry.set_index,
+        "e1rm": entry.e1rm,
+        "rir": rir,
+        "rpe": rpe,
+        "verdict": a.verdict.value,
+        "headline": a.headline,
+        "detail": a.detail,
+        "load_pct": a.load_pct,
+        "reference_e1rm": a.reference_e1rm,
+        "route": {
+            "reps_needed": a.route.reps_needed,
+            "weight_needed_kg": a.route.weight_needed_kg,
+        },
+    }
+
+
+async def _reference_e1rm(
+    session: AsyncSession, user_id: str, exercise_id: str
+) -> float | None:
+    """The best estimate we already had for this lift.
+
+    Warm-ups are excluded. A warm-up single at 60% is not a claim about your
+    max, and letting one set the reference would make it bounce around and
+    turn every real working set into a fake personal record.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=REFERENCE_WINDOW_DAYS)
+    return await session.scalar(
+        select(func.max(SetLog.e1rm)).where(
+            SetLog.user_id == user_id,
+            SetLog.exercise_id == exercise_id,
+            SetLog.performed_at >= since,
+            SetLog.is_warmup == False,  # noqa: E712
+        )
+    )
+
+
+@router.get("/sessions/{session_id}/next-set")
+async def next_set(
+    session_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+    exercise_id: str = Query(...),
+) -> dict:
+    """Everything the live set screen needs, in one request.
+
+    The lifter is standing at the bar between sets. Two round trips is one too
+    many, so the prescription, the reference max, what they have already done
+    in this session and the rest timer all come back together.
+    """
+    ws = await session.get(WorkoutSession, session_id)
+    if ws is None or ws.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Workout session not found.")
+
+    ex = await session.get(Exercise, exercise_id)
+    if ex is None:
+        raise HTTPException(status_code=404, detail="Exercise not found.")
+
+    reference = await _reference_e1rm(session, user.id, exercise_id)
+
+    done = (
+        await session.execute(
+            select(SetLog)
+            .where(
+                SetLog.session_id == session_id,
+                SetLog.exercise_id == exercise_id,
+            )
+            .order_by(SetLog.set_index)  # type: ignore[arg-type]
+        )
+    ).scalars().all()
+
+    # Prefer the last set in THIS session; fall back to the last one anywhere.
+    last = next((s for s in reversed(done) if not s.is_warmup), None)
+    if last is None:
+        last = (
+            await session.execute(
+                select(SetLog)
+                .where(
+                    SetLog.user_id == user.id,
+                    SetLog.exercise_id == exercise_id,
+                    SetLog.is_warmup == False,  # noqa: E712
+                )
+                .order_by(SetLog.performed_at.desc())  # type: ignore[union-attr]
+                .limit(1)
+            )
+        ).scalars().first()
+
+    p = strength.prescribe_next_set(
+        last_weight_kg=last.weight_kg if last else None,
+        last_reps=last.reps if last else None,
+        last_rir=last.rir if last else None,
+        reference_e1rm=reference,
+        is_compound=ex.is_compound,
+        equipment=ex.equipment,
+    )
+
+    return {
+        "exercise": {
+            "id": ex.id,
+            "name": ex.name,
+            "muscle_group": ex.muscle_group,
+            "equipment": ex.equipment,
+            "is_compound": ex.is_compound,
+        },
+        "reference_e1rm": round(reference, 1) if reference else None,
+        "weight_step_kg": strength.weight_step(ex.equipment),
+        "prescription": {
+            "weight_kg": p.weight_kg,
+            "reps": p.reps,
+            "target_rir": p.target_rir,
+            "rest_s": p.rest_s,
+            "note": p.note,
+        },
+        "sets_done": [
+            {
+                "set_index": s.set_index,
+                "weight_kg": s.weight_kg,
+                "reps": s.reps,
+                "rir": s.rir,
+                "e1rm": s.e1rm,
+                "is_warmup": s.is_warmup,
+                "verdict": (
+                    None
+                    if s.is_warmup
+                    else strength.assess_set(
+                        weight_kg=s.weight_kg,
+                        reps=s.reps,
+                        rir=s.rir,
+                        reference_e1rm=reference,
+                    ).verdict.value
+                ),
+            }
+            for s in done
+        ],
+    }
+
+
+@router.post("/sessions/{session_id}/finish")
+async def finish_session(
+    session_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+) -> dict:
+    """Close the session and hand back the summary in the same response."""
+    ws = await session.get(WorkoutSession, session_id)
+    if ws is None or ws.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Workout session not found.")
+    if ws.ended_at is None:
+        ws.ended_at = datetime.now(timezone.utc)
+        session.add(ws)
+        await session.commit()
+    return await session_summary(session_id, session, user)
+
+
+@router.get("/sessions/{session_id}/summary")
+async def session_summary(
+    session_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+) -> dict:
+    """The SESSION COMPLETE card: what that hour in the gym actually proved."""
+    ws = await session.get(WorkoutSession, session_id)
+    if ws is None or ws.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Workout session not found.")
+
+    rows = (
+        await session.execute(
+            select(SetLog, Exercise.name, Exercise.muscle_group)
+            .join(Exercise, Exercise.id == SetLog.exercise_id)  # type: ignore[arg-type]
+            .where(SetLog.session_id == session_id)
+            .order_by(SetLog.performed_at)  # type: ignore[arg-type]
+        )
+    ).all()
+
+    logged = [
+        strength.LoggedSet(
+            exercise_id=s.exercise_id,
+            exercise_name=name,
+            weight_kg=s.weight_kg,
+            reps=s.reps,
+            rir=s.rir,
+            is_warmup=s.is_warmup,
+            e1rm=s.e1rm,
+        )
+        for s, name, _ in rows
+    ]
+
+    # Muscle split, by share of the session's volume rather than by set count.
+    # Sets treat a 20 kg lateral raise and a 140 kg squat as equal work, which
+    # is how a leg day ends up reading as "40% shoulders".
+    split_load: dict[str, float] = {}
+    for s, _, muscle in rows:
+        split_load[muscle] = split_load.get(muscle, 0.0) + s.weight_kg * s.reps
+    split_total = sum(split_load.values())
+    muscle_split = [
+        {"muscle": m, "volume_kg": round(v, 1),
+         "pct": round(v / split_total * 100, 1) if split_total else 0.0}
+        for m, v in sorted(split_load.items(), key=lambda kv: -kv[1])
+    ]
+
+    # The reference each lift is judged against must EXCLUDE this session --
+    # otherwise every set is compared against itself and nothing is ever a
+    # personal record. One query for all of them, not one per exercise.
+    since = ws.started_at - timedelta(days=REFERENCE_WINDOW_DAYS)
+    prev_rows = (
+        await session.execute(
+            select(SetLog.exercise_id, func.max(SetLog.e1rm))
+            .where(
+                SetLog.user_id == user.id,
+                SetLog.session_id != session_id,
+                SetLog.performed_at >= since,
+                SetLog.performed_at < ws.started_at,
+                SetLog.is_warmup == False,  # noqa: E712
+            )
+            .group_by(SetLog.exercise_id)  # type: ignore[arg-type]
+        )
+    ).all()
+    previous = {k: v for k, v in prev_rows if v is not None}
+
+    ended = ws.ended_at or datetime.now(timezone.utc)
+    duration = max(0, int((ended - ws.started_at).total_seconds() // 60))
+
+    s = strength.summarise_session(
+        logged, previous_bests=previous, duration_min=duration or None
+    )
+
+    return {
+        "session_id": session_id,
+        "routine_name": ws.routine_name,
+        "started_at": ws.started_at.isoformat(),
+        "ended_at": ws.ended_at.isoformat() if ws.ended_at else None,
+        "duration_min": s.duration_min,
+        "total_sets": s.total_sets,
+        "total_reps": sum(r.reps for r, _, _ in rows),
+        "volume_kg": s.volume_kg,
+        "avg_rpe": s.avg_rpe,
+        "muscle_split": muscle_split,
+        "purple_sets": s.purple_sets,
+        "lifts_moved_up": s.lifts_moved_up,
+        "headline": s.headline,
+        "exercises": [
+            {
+                "exercise_id": e.exercise_id,
+                "name": e.exercise_name,
+                "sets": e.sets,
+                "top_weight_kg": e.top_weight_kg,
+                "volume_kg": e.volume_kg,
+                "best_e1rm": e.best_e1rm,
+                "previous_e1rm": e.previous_e1rm,
+                "delta_pct": e.delta_pct,
+                "trend": e.trend.value,
+                "set_verdicts": e.set_verdicts,
+            }
+            for e in s.exercises
+        ],
+    }
 
 
 @router.get("/sessions/last-performance")
@@ -141,6 +553,77 @@ async def last_performance(
         ],
         "best_e1rm": max((r.e1rm for r in rows if r.e1rm), default=None),
     }
+
+
+@router.get("/strength/overview")
+async def strength_overview(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+    weeks: int = Query(default=10, ge=4, le=52),
+    top: int = Query(default=3, ge=1, le=6),
+) -> dict:
+    """The Progress tab's strength chart: the user's main lifts on one axis.
+
+    `strength/progress` answers "how is THIS exercise going" and takes an
+    exercise_id. This answers "how is my training going" and picks the lifts
+    itself -- ranked by how many weeks they actually appear in, then by load,
+    so a heavy one-off doesn't outrank the squat you do every week.
+    """
+    since = datetime.now(timezone.utc) - timedelta(weeks=weeks)
+    rows = (
+        await session.execute(
+            select(SetLog, Exercise.name)
+            .join(Exercise, Exercise.id == SetLog.exercise_id)  # type: ignore[arg-type]
+            .where(
+                SetLog.user_id == user.id,
+                SetLog.performed_at >= since,
+                SetLog.is_warmup == False,  # noqa: E712
+            )
+            .order_by(SetLog.performed_at)  # type: ignore[arg-type]
+        )
+    ).all()
+
+    # exercise_id -> {name, week -> best e1rm}
+    by_ex: dict[str, dict] = {}
+    for s, name in rows:
+        if s.e1rm is None:
+            continue
+        d = s.performed_at.date()
+        week = d - timedelta(days=d.weekday())
+        entry = by_ex.setdefault(s.exercise_id, {"name": name, "weeks": {}})
+        entry["weeks"][week] = max(entry["weeks"].get(week, 0.0), s.e1rm)
+
+    ranked = sorted(
+        by_ex.values(),
+        key=lambda e: (len(e["weeks"]), max(e["weeks"].values(), default=0.0)),
+        reverse=True,
+    )[:top]
+
+    series = []
+    for e in ranked:
+        pts = [
+            {"week_start": w.isoformat(), "e1rm": round(v, 1)}
+            for w, v in sorted(e["weeks"].items())
+        ]
+        # Change is measured across the points we actually have. A lift with a
+        # single week gets None rather than 0 -- "no change" and "no comparison"
+        # are different claims and the client renders them differently.
+        change = (
+            round(pts[-1]["e1rm"] - pts[0]["e1rm"], 1) if len(pts) >= 2 else None
+        )
+        series.append({"name": e["name"], "points": pts, "change_kg": change})
+
+    rising = [s for s in series if s["change_kg"] is not None and s["change_kg"] > 0]
+    if not series:
+        headline = None
+    elif len(rising) == len([s for s in series if s["change_kg"] is not None]):
+        headline = "All rising"
+    elif rising:
+        headline = f"{len(rising)} of {len(series)} rising"
+    else:
+        headline = "Holding"
+
+    return {"weeks": weeks, "series": series, "headline": headline}
 
 
 @router.get("/strength/progress", response_model=list[StrengthPoint])
@@ -188,3 +671,213 @@ async def strength_progress(
             )
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Voice logging
+# ---------------------------------------------------------------------------
+
+# Roughly four minutes of compressed speech. The whole-session flow means
+# someone can narrate a full workout -- eight exercises, thirty sets -- in one
+# recording, so the single-set budget was far too tight. Still bounded, so a
+# recorder left running in a pocket cannot post a 40 MB file.
+MAX_AUDIO_BYTES = 12 * 1024 * 1024
+
+ALLOWED_AUDIO = {
+    "audio/m4a", "audio/mp4", "audio/x-m4a", "audio/aac",
+    "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
+    "audio/webm", "audio/ogg", "audio/3gpp", "audio/amr",
+}
+
+
+@router.post("/voice")
+async def voice_log(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+    audio: UploadFile = File(...),
+    unit: str = Form(default="kg"),
+) -> dict:
+    """Speak a set, get a PROPOSAL back. This endpoint never writes a set.
+
+    "three sets of bench press at sixty kilos, ten to fifteen reps"
+
+    WHY NOTHING IS SAVED HERE
+    A misheard "sixty" as "sixteen" entering the training history silently
+    corrupts the e1RM, and the strength trend is half of what this product
+    claims to know. So the response is something to confirm, and the existing
+    `POST /sessions/{id}/sets` is still the only way a set is written. The
+    round trip costs one tap and buys the entire feature its trustworthiness.
+
+    THE MODEL DOES NOT PICK THE EXERCISE. It returns the phrase as spoken;
+    `workout_voice.match_exercise` maps that onto the catalogue here, so the
+    mapping is deterministic, testable, and cannot drift when the model
+    changes underneath us.
+    """
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty audio upload.")
+    if len(raw) > MAX_AUDIO_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio is {len(raw) // 1024} KB; the limit is "
+                   f"{MAX_AUDIO_BYTES // 1024} KB. Record a shorter clip.",
+        )
+
+    mime = (audio.content_type or "").split(";")[0].strip().lower()
+    if mime not in ALLOWED_AUDIO:
+        # Don't reject outright -- phone recorders report a zoo of MIME types
+        # and refusing a valid clip over a header is a worse failure than
+        # letting the model tell us it cannot read it. Fall back to m4a, which
+        # is what Expo's recorder produces on both platforms.
+        mime = "audio/m4a"
+
+    catalogue = [
+        (e.id, e.name)
+        for e in (await session.execute(select(Exercise.id, Exercise.name))).all()
+    ]
+    if not catalogue:
+        raise HTTPException(
+            status_code=503,
+            detail="The exercise catalogue is empty. Seed it before voice logging.",
+        )
+
+    try:
+        result = await transcribe_workout(
+            raw,
+            mime_type=mime,
+            catalogue=catalogue,
+            default_unit="lb" if unit.lower() == "lb" else "kg",
+        )
+    except RuntimeError as exc:  # no API key configured
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {
+        "transcript": result.transcript,
+        "model": result.model_used,
+        "latency_ms": result.latency_ms,
+        "duration_min": result.duration_min,
+        "total_sets": result.total_sets,
+        "needs_attention": result.needs_attention,
+        "entries": [
+            {
+                "exercise_phrase": e.exercise_phrase,
+                "exercise_id": e.exercise_id,
+                "exercise_name": e.exercise_name,
+                "match_score": e.match_score,
+                "alternatives": e.alternatives,
+                "weight_was_converted": e.weight_was_converted,
+                "unit_assumed": e.unit_assumed,
+                "confidence": e.confidence,
+                "warnings": e.warnings,
+                "sets": [
+                    {
+                        "reps": st.reps,
+                        "weight_kg": st.weight_kg,
+                        "rir": st.rir,
+                        "is_warmup": st.is_warmup,
+                        "reps_low": st.reps_low,
+                        "reps_high": st.reps_high,
+                    }
+                    for st in e.sets
+                ],
+            }
+            for e in result.entries
+        ],
+    }
+
+
+@router.post("/voice/commit", status_code=201)
+async def commit_voice_workout(
+    payload: VoiceCommitRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+) -> dict:
+    """Write a whole reviewed session in one call.
+
+    THIS IS THE POINT OF THE FEATURE. Logging a workout set by set is thirty
+    interactions; narrating it and confirming once is two. The user speaks,
+    checks what was heard on one screen, and taps save -- and every set lands
+    with its e1RM computed, in the order performed, inside a single session.
+
+    STILL EXACTLY ONE CONFIRM, AND THAT IS DELIBERATE.
+    The tedium worth removing is the per-exercise typing, not the human
+    glance. A misheard "sixty" as "sixteen" would enter the training history,
+    move the estimated max, and corrupt the strength verdict -- which is half
+    of what this product claims to know. One screen, one tap, everything
+    saved; zero taps is a different and much worse product.
+
+    ATOMIC. One transaction for the session and every set in it. A partial
+    commit would leave a session holding half a workout, which is worse than
+    no session at all -- the volume chart and the per-lift trend would both
+    quietly report numbers that never happened.
+    """
+    if not payload.entries:
+        raise HTTPException(status_code=400, detail="No sets to save.")
+
+    ids = {e.exercise_id for e in payload.entries}
+    known = set(
+        (
+            await session.execute(select(Exercise.id).where(Exercise.id.in_(ids)))  # type: ignore[union-attr]
+        )
+        .scalars()
+        .all()
+    )
+    missing = ids - known
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{len(missing)} exercise(s) could not be found. Re-pick them.",
+        )
+
+    equipment = {
+        r[0]: r[1]
+        for r in (
+            await session.execute(
+                select(Exercise.id, Exercise.equipment).where(Exercise.id.in_(ids))  # type: ignore[union-attr]
+            )
+        ).all()
+    }
+
+    started = payload.started_at or datetime.now(timezone.utc)
+    ws = WorkoutSession(
+        user_id=user.id,
+        routine_name=payload.routine_name or "Voice log",
+        started_at=started,
+        # Narration happens AFTER the workout, so the session is closed on
+        # arrival. Leaving it open would make it the "resume workout" banner
+        # and let tomorrow's sets fall into yesterday's session.
+        ended_at=started + timedelta(minutes=payload.duration_min)
+        if payload.duration_min
+        else datetime.now(timezone.utc),
+        notes=payload.transcript,
+    )
+    session.add(ws)
+    await session.flush()  # need ws.id before the set rows, same transaction
+
+    written = 0
+    for entry in payload.entries:
+        for index, st in enumerate(entry.sets):
+            rir = st.rir
+            session.add(
+                SetLog(
+                    session_id=ws.id,
+                    user_id=user.id,
+                    exercise_id=entry.exercise_id,
+                    set_index=index,
+                    weight_kg=st.weight_kg or 0.0,
+                    reps=st.reps,
+                    rir=rir,
+                    rpe=strength.rpe_from_rir(rir),
+                    is_warmup=st.is_warmup,
+                    e1rm=strength.e1rm(st.weight_kg or 0.0, st.reps, rir),
+                    performed_at=started,
+                )
+            )
+            written += 1
+
+    await session.commit()
+
+    # Hand back the summary so the client can go straight to the session card
+    # instead of saving, navigating, and fetching again.
+    summary = await session_summary(ws.id, session, user)
+    return {"session_id": ws.id, "sets_written": written, "summary": summary}

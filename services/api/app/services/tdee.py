@@ -231,6 +231,14 @@ def recommend_targets(
 
     target = round(raw_target / 10) * 10  # round to a friendly number
 
+    # Rounding to the nearest 10 can land BELOW the floor we just enforced --
+    # a 1,383 kcal BMR gives a floor of 1,522, which rounds to 1,520. Two
+    # kilocalories is nutritionally meaningless, but a safety floor that the
+    # very next line can round through is not a safety floor, and the next
+    # person to read this would reasonably assume it holds. Round up instead.
+    if target < floor:
+        target += 10
+
     protein_g = round(weight_kg * (2.0 if goal_type == "lose" else 1.6))
     fat_g = round(max(weight_kg * 0.6, target * 0.20 / 9))
     carb_g = round(max(0.0, (target - protein_g * 4 - fat_g * 9) / 4))
@@ -263,3 +271,183 @@ def recommend_targets(
             "fiber_g_per_1000_kcal": FIBER_G_PER_1000_KCAL,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# The maintenance readout -- what the user actually sees
+# ---------------------------------------------------------------------------
+#
+# The blended number above is the honest answer, but a bare "2,514" invites
+# more trust than any expenditure estimate deserves. So the readout always
+# carries three things a single number cannot:
+#
+#   the BAND    how wide the uncertainty still is
+#   the SOURCE  how many weigh-ins and logged days produced it
+#   the DELTA   how far it sits from what a formula would have guessed
+#
+# The third one is the whole pitch. If our number always agreed with
+# Mifflin-St Jeor we would be an expensive calculator; when it disagrees by
+# 200 kcal, that gap IS the product, and the user should see it.
+
+# A prediction equation carries roughly this much error on an individual --
+# Mifflin-St Jeor's published SEE is about 10%, and it is worse at the tails.
+BAND_MAX_PCT = 0.18
+
+# ...and this is the floor. Even with a year of perfect data, true daily
+# expenditure moves with NEAT, thermic effect and water. Claiming +/-1% would
+# be a lie told in a confident voice.
+BAND_MIN_PCT = 0.04
+
+
+@dataclass
+class MaintenanceReadout:
+    maintenance_kcal: float
+    band_low: float
+    band_high: float
+    band_pct: float
+    dialed_pct: int              # 0-100, how tight the band has become
+    is_data_driven: bool
+    prior_kcal: float
+    observed_kcal: float | None
+    vs_calculator: float | None  # measured - calculator, signed
+    weigh_ins: int
+    logged_days: int
+    eating_kcal: float | None
+    eating_delta: float | None
+    expected_rate_kg_per_week: float | None
+    source_line: str
+
+
+def maintenance_readout(
+    result: ExpenditureResult,
+    *,
+    recent_intake_kcal: float | None = None,
+    total_weigh_ins: int | None = None,
+    total_logged_days: int | None = None,
+) -> MaintenanceReadout:
+    """Turn an ExpenditureResult into the numbers the maintenance card shows.
+
+    `total_weigh_ins` / `total_logged_days` describe the user's whole history,
+    not just the estimation window -- the card is answering "how much have I
+    given you to work with", and "106 weigh-ins" is a fairer answer to that
+    than "21 days of window".
+
+    `expected_rate_kg_per_week` is a projection from an energy balance, not a
+    promise. It is only produced when we have an intake to project from.
+    """
+    kcal = result.tdee_blended
+    band_pct = BAND_MIN_PCT + (BAND_MAX_PCT - BAND_MIN_PCT) * (1 - result.confidence)
+    half = kcal * band_pct
+
+    # `dialed` is derived from the band rather than stored beside it, so the
+    # bar and the range on screen can never disagree with each other.
+    dialed = (BAND_MAX_PCT - band_pct) / (BAND_MAX_PCT - BAND_MIN_PCT)
+
+    data_driven = result.tdee_observed is not None and result.confidence > 0
+    vs_calc = (
+        round(kcal - result.tdee_prior, 0) if data_driven else None
+    )
+
+    weigh_ins = total_weigh_ins if total_weigh_ins is not None else result.weigh_ins
+    logged = total_logged_days if total_logged_days is not None else result.logged_days
+
+    eating_delta = None
+    rate = None
+    if recent_intake_kcal is not None:
+        eating_delta = round(recent_intake_kcal - kcal, 0)
+        rate = round(eating_delta * 7 / KCAL_PER_KG_TISSUE, 2)
+
+    if data_driven:
+        source = (
+            f"Calculator guessed {result.tdee_prior:,.0f} · "
+            f"I measured {kcal:,.0f} from {weigh_ins} weigh-ins "
+            f"+ {logged} logged days"
+        )
+    else:
+        # Say WHY it is still a guess. "Not enough data" with no path forward
+        # is the least useful sentence an app can show.
+        need = []
+        if weigh_ins < MIN_WEIGH_INS:
+            need.append(f"{MIN_WEIGH_INS - weigh_ins} more weigh-ins")
+        if logged < MIN_LOGGED_DAYS:
+            need.append(f"{MIN_LOGGED_DAYS - logged} more logged days")
+        tail = " · ".join(need) if need else "a few more days of data"
+        source = f"Still the calculator's guess — {tail} and I can measure it"
+
+    return MaintenanceReadout(
+        maintenance_kcal=round(kcal, 0),
+        band_low=round(kcal - half, 0),
+        band_high=round(kcal + half, 0),
+        band_pct=round(band_pct, 4),
+        dialed_pct=int(round(max(0.0, min(1.0, dialed)) * 100)),
+        is_data_driven=data_driven,
+        prior_kcal=round(result.tdee_prior, 0),
+        observed_kcal=(
+            round(result.tdee_observed, 0)
+            if result.tdee_observed is not None
+            else None
+        ),
+        vs_calculator=vs_calc,
+        weigh_ins=weigh_ins,
+        logged_days=logged,
+        eating_kcal=round(recent_intake_kcal, 0) if recent_intake_kcal else None,
+        eating_delta=eating_delta,
+        expected_rate_kg_per_week=rate,
+        source_line=source,
+    )
+
+
+def maintenance_history(
+    *,
+    intake_by_day: dict[date, float],
+    trend_series: list[tuple[date, float | None, float]],
+    tdee_prior: float,
+    window_days: int = 21,
+    max_points: int = 90,
+) -> list[dict]:
+    """The band chart: what our estimate WAS on each past day.
+
+    This is a re-run of the estimator against progressively less data, not a
+    smoothing of the current number -- so the chart genuinely shows the band
+    narrowing as evidence arrived, which is the story the card is telling. A
+    fabricated taper would be a much prettier lie.
+
+    Capped at `max_points` by strided sampling; the shape is what matters and
+    a 400-day chart on a phone is 400 invisible pixels of work.
+    """
+    if len(trend_series) < 2:
+        return []
+
+    # Only days where an estimate is even possible.
+    start = max(2, WASHOUT_DAYS + 7)
+    days = list(range(start, len(trend_series) + 1))
+    if not days:
+        return []
+    # Ceiling division, not floor: floor overshoots the cap (383 days at
+    # max_points=60 gives stride 6, which yields 64 points, not 60).
+    stride = max(1, -(-len(days) // max_points))
+    days = days[::stride]
+    if days[-1] != len(trend_series):
+        days.append(len(trend_series))
+
+    out: list[dict] = []
+    for n in days:
+        head = trend_series[:n]
+        as_of = head[-1][0]
+        r = estimate_expenditure(
+            intake_by_day={d: v for d, v in intake_by_day.items() if d <= as_of},
+            trend_series=head,
+            tdee_prior=tdee_prior,
+            window_days=window_days,
+        )
+        band_pct = BAND_MIN_PCT + (BAND_MAX_PCT - BAND_MIN_PCT) * (1 - r.confidence)
+        half = r.tdee_blended * band_pct
+        out.append(
+            {
+                "date": as_of.isoformat(),
+                "kcal": round(r.tdee_blended, 0),
+                "low": round(r.tdee_blended - half, 0),
+                "high": round(r.tdee_blended + half, 0),
+            }
+        )
+    return out

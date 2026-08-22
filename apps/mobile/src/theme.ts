@@ -56,6 +56,43 @@ export const surfaces = {
 
 export type Surfaces = (typeof surfaces)[Mode];
 
+/**
+ * Accent choice -- a real user setting, not a preview toggle. It lives in
+ * Profile › Appearance.
+ *
+ * ONLY THE INTERACTION ACCENT CHANGES: buttons, the active tab, a selected
+ * chip, the rule down the left of a callout. The chart series and the macro
+ * channels below are IDENTICAL in both accents, because those carry data, and
+ * data must not restyle on a preference -- a protein bar that is green in one
+ * accent and grey in the other is no longer a legend the user can learn.
+ *
+ * That separation is the whole reason this is safe to ship as a toggle.
+ */
+export type Accent = 'green' | 'white';
+
+export const accents = {
+  green: {
+    brand: '#3DDC84',
+    brandDim: '#2A9A5C',
+    /** Text drawn ON the accent. Must stay legible on the brand fill. */
+    brandInk: '#06210F',
+    brandSoft: 'rgba(61,220,132,0.08)',
+    brandTint: 'rgba(61,220,132,0.14)',
+    /** Body copy inside a callout, tinted toward the accent. */
+    plainText: '#D6E2DC',
+  },
+  white: {
+    brand: '#EDF1F6',
+    brandDim: '#8A97A3',
+    brandInk: '#07090B',
+    brandSoft: 'rgba(237,241,246,0.06)',
+    brandTint: 'rgba(237,241,246,0.12)',
+    plainText: '#CFD7DD',
+  },
+} as const;
+
+export type AccentTokens = (typeof accents)[Accent];
+
 export const palette = {
   // --- Surfaces: the `dark` ramp, as the static default -----------------
   // Screens that theme themselves read these from useSurfaces() instead;
@@ -95,6 +132,11 @@ export const palette = {
   seriesWeight: '#2E86D9',
   seriesEnergy: '#C2871F',
   seriesSleep: '#9A5FD0',
+  // The fifth series. Used for the WIDEST / SHORTEST end of a scale -- a
+  // quick-added meal in the certainty strip, a nutrient well under target.
+  // Distinct from `danger` on purpose: this marks "least certain" or "most
+  // short", which is information, not an alarm.
+  seriesAlert: '#C4566B',
 
   // --- Progress direction ------------------------------------------------
   // Always paired with a ▲/▼/— glyph so the meaning survives for the ~8% of

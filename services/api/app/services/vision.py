@@ -25,7 +25,9 @@ Three things here that Cal AI does not do:
 
 from __future__ import annotations
 
+import asyncio
 import base64
+from functools import lru_cache
 import hashlib
 import io
 import json
@@ -200,6 +202,36 @@ class VisionResult:
     latency_ms: int
     cost_usd: float
     image_hash: str
+    #: True when the second, more careful pass ran.
+    escalated: bool = False
+    #: True when escalation was WANTED but skipped or abandoned to hold the
+    #: deadline. The bands are widened in that case, so this is the flag that
+    #: explains why the same photo can come back less certain on a slow day.
+    degraded: bool = False
+
+
+def _is_accurate(model: str) -> bool:
+    """Whether this is the escalated pass, which is allowed to be slow."""
+    return model == settings.VISION_MODEL_ACCURATE
+
+
+@lru_cache(maxsize=1)
+def _client_for(api_key: str):
+    """One long-lived client per key, not one per scan.
+
+    `genai.Client()` owns an HTTP connection pool. Constructing it inside
+    `recognize()` meant every scan paid a fresh TLS handshake to Google:
+    measured at ~0.6 s of pure overhead per scan, on top of a call that only
+    takes four. Keyed on the API key so a settings change during a test still
+    produces a new client rather than silently reusing the old credential.
+    """
+    from google import genai
+
+    return genai.Client(api_key=api_key)
+
+
+def _client():
+    return _client_for(settings.GEMINI_API_KEY or "")
 
 
 def prepare_image(raw: bytes) -> tuple[bytes, str, str]:
@@ -289,12 +321,10 @@ async def recognize(
     accurate model. In practice ~25% escalate, so the blended cost lands near
     $0.005/scan rather than the $0.008 of always using the larger model.
     """
-    from google import genai
-
     if not settings.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
 
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    client = _client()
     data, media_type, phash = prepare_image(image_bytes)
     b64 = base64.standard_b64encode(data).decode("ascii")
 
@@ -311,6 +341,17 @@ async def recognize(
         )
 
     async def _call(model: str) -> tuple[dict[str, Any], Any]:
+        """A single pass, with a hard ceiling on how long it may take.
+
+        The SDK has no timeout of its own, so without this one hung call
+        blocks a worker indefinitely -- and one of the models we were calling
+        sat for 217 s before returning HTTP 500.
+        """
+        return await asyncio.wait_for(
+            _call_once(model), timeout=settings.VISION_CALL_TIMEOUT_MS / 1000
+        )
+
+    async def _call_once(model: str) -> tuple[dict[str, Any], Any]:
         # client.aio is the SDK's native async surface. Using it rather than
         # the sync client keeps the event loop free for the several seconds a
         # scan takes -- a blocking call here would stall every other request
@@ -321,17 +362,47 @@ async def recognize(
             input=user_input,
             tools=[TOOL_SCHEMA],
             generation_config={
-                "max_output_tokens": 2048,
-                # Latency is the constraint here, not intelligence: the user
-                # is standing over their food waiting. Left at the default,
-                # a two-pass scan measured ~80 s, which is unusable. The fast
-                # pass thinks little; the escalated pass -- which only runs
-                # when the first was unsure -- gets more budget, because that
-                # is exactly the plate where reasoning about portions pays.
-                # These two levels are a starting point, not a tuned result:
-                # measure accuracy against them with eval_vision.py once
-                # there are real photos, and raise them if coverage suffers.
-                "thinking_level": "low" if model == settings.VISION_MODEL_FAST else "medium",
+                # The FAST pass gets a tight budget and no thinking; the
+                # escalated pass gets room, because thinking about portions is
+                # the entire reason it runs. Measured on the same photo:
+                #
+                #   2048 tokens, thinking low   5.33 s
+                #    768 tokens, thinking low   5.24 s
+                #    768 tokens, no thinking    4.50 s   <- fast pass
+                #
+                # The tool call still succeeded on every run at 768. If a
+                # future prompt returns more items than that fits, the symptom
+                # is a truncated tool call -- raise this, don't remove it.
+                "max_output_tokens": 2048 if _is_accurate(model) else 1024,
+                # Latency is the constraint on the FAST pass: the user is
+                # standing over their food waiting. Left at the default, a
+                # two-pass scan measured ~80 s. The fast pass now does not
+                # think at all -- worth 0.8 s and the tool call still lands --
+                # while the escalated pass thinks harder, because reasoning
+                # about portions is the whole reason it runs.
+                #
+                # CAVEAT: the accuracy cost of removing thinking from the fast
+                # pass is UNMEASURED. There is no ground truth in eval/ yet, so
+                # this is a latency decision taken without the accuracy half of
+                # the trade. Once real photos exist, run eval_vision.py both
+                # ways and put thinking back if interval coverage drops.
+                # BOTH passes think, and both think "low".
+                #
+                # The fast pass used not to think at all, on the theory that
+                # thinking costs latency. Measured, that is simply false here:
+                #
+                #   no thinking, 768 tok    7.3 s   1 item found
+                #   thinking=low, 1024 tok  5.2 s   4 items found
+                #
+                # Thinking made it FASTER and considerably more thorough --
+                # without it the model was rushing the plate and reporting one
+                # blob. The earlier note in this file claiming otherwise was
+                # measured against a different model generation.
+                #
+                # The escalated pass drops from "medium" to "low" for the
+                # opposite reason: medium measured 21-56 s, and that variance
+                # alone blew any deadline worth having.
+                "thinking_level": "low",
                 # This API exposes no `temperature`. Determinism now comes
                 # from a seed derived from the image's perceptual hash, so
                 # the same photo asks for the same sample every time. It is
@@ -351,40 +422,115 @@ async def recognize(
         raise ValueError("Model did not call report_nutrition")
 
     started = time.perf_counter()
+    deadline = started + settings.VISION_DEADLINE_MS / 1000
+
+    def _remaining() -> float:
+        return deadline - time.perf_counter()
+
     model = force_model or settings.VISION_MODEL_FAST
     payload, resp = await _call(model)
 
-    should_escalate = (
+    escalated = False
+    degraded = False
+
+    # ------------------------------------------------------------ ESCALATION
+    # ONLY LOW CONFIDENCE TRIGGERS THIS NOW. It used to also fire on
+    # `len(items) > 3`, which was backwards: a thali, a mixed bowl and a
+    # packed lunch all have four or more items, and that is the food this
+    # product exists to handle, not an anomaly worth a second billed call.
+    # That one clause was escalating the overwhelming majority of real scans.
+    wants_escalation = (
         not force_model
         and model == settings.VISION_MODEL_FAST
-        and (
-            payload.get("overall_confidence", 0)
-            < settings.VISION_ESCALATION_CONFIDENCE
-            or len(payload.get("items", [])) > 3
-        )
+        and payload.get("overall_confidence", 0)
+        < settings.VISION_ESCALATION_CONFIDENCE
     )
-    if should_escalate:
-        log.info(
-            "Escalating to %s (confidence=%.2f, items=%d)",
-            settings.VISION_MODEL_ACCURATE,
-            payload.get("overall_confidence", 0),
-            len(payload.get("items", [])),
-        )
-        model = settings.VISION_MODEL_ACCURATE
-        payload, resp = await _call(model)
+
+    if wants_escalation:
+        # The escalated pass only runs if there is genuinely time for it.
+        # Someone standing over a plate would rather have a wider range now
+        # than a tighter one after a minute -- and the client gives up long
+        # before a minute, so "after a minute" really means "never, plus the
+        # bill".
+        if _remaining() < settings.VISION_CALL_TIMEOUT_MS / 1000 * 0.6:
+            degraded = True
+            log.info(
+                "Skipping escalation: %.1fs left of the %.0fs budget",
+                _remaining(),
+                settings.VISION_DEADLINE_MS / 1000,
+            )
+        else:
+            log.info(
+                "Escalating to %s (confidence=%.2f, items=%d, %.1fs left)",
+                settings.VISION_MODEL_ACCURATE,
+                payload.get("overall_confidence", 0),
+                len(payload.get("items", [])),
+                _remaining(),
+            )
+            try:
+                better, better_resp = await asyncio.wait_for(
+                    _call_once(settings.VISION_MODEL_ACCURATE),
+                    timeout=max(1.0, _remaining()),
+                )
+            except Exception as exc:  # noqa: BLE001
+                # KEEP THE FAST RESULT. An escalation that fails is a missed
+                # improvement, not a failed scan. Throwing away a usable
+                # estimate because the optional second opinion timed out --
+                # or 500'd, which is exactly what the previously configured
+                # model was doing -- is how a slow day becomes an error
+                # message.
+                degraded = True
+                log.warning("Escalation abandoned, keeping fast result: %s", exc)
+            else:
+                payload, resp = better, better_resp
+                model = settings.VISION_MODEL_ACCURATE
+                escalated = True
+
+    clean = _sanitize(payload)
+    if degraded:
+        # NON-NEGOTIABLE #2, held under load. We wanted a closer look and did
+        # not get one, so the honest thing is a WIDER range -- not the same
+        # numbers wearing the same confidence.
+        clean = _widen(clean)
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     in_tok, out_tok = _usage(resp)
 
     return VisionResult(
-        payload=_sanitize(payload),
+        payload=clean,
         model_used=model,
         input_tokens=in_tok,
         output_tokens=out_tok,
         latency_ms=latency_ms,
         cost_usd=round(_cost(model, in_tok, out_tok), 6),
         image_hash=phash,
+        escalated=escalated,
+        degraded=degraded,
     )
+
+
+#: How much wider the band gets when the careful pass did not run.
+DEGRADED_BAND_MULTIPLIER = 1.6
+
+
+def _widen(payload: dict[str, Any]) -> dict[str, Any]:
+    """Widen every band around its point estimate.
+
+    Called when the escalated pass was wanted and skipped. The point estimate
+    is left alone -- the fast model's best guess is still its best guess. What
+    changes is how certain we are entitled to look about it.
+    """
+    for item in payload.get("items", []):
+        point = item["kcal_point"]
+        low = point - (point - item["kcal_low"]) * DEGRADED_BAND_MULTIPLIER
+        high = point + (item["kcal_high"] - point) * DEGRADED_BAND_MULTIPLIER
+        item["kcal_low"] = round(max(0.0, low), 1)
+        item["kcal_high"] = round(high, 1)
+        item["confidence"] = round(item["confidence"] / DEGRADED_BAND_MULTIPLIER, 3)
+    payload["overall_confidence"] = round(
+        payload["overall_confidence"] / DEGRADED_BAND_MULTIPLIER, 3
+    )
+    return payload
 
 
 def _sanitize(payload: dict[str, Any]) -> dict[str, Any]:

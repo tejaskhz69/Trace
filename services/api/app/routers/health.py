@@ -42,6 +42,8 @@ from ..models import (
 )
 from ..services import activity as act
 from ..services import coach as coach_svc
+from ..services import sports as sports_svc
+from ..services import streak as streak_svc
 from .adjudication import weekly_verdict
 from .auth import current_user
 
@@ -666,3 +668,447 @@ async def activity_summary(
             "to your calorie target — your weight trend already accounts for it."
         ),
     }
+
+
+# ===========================================================================
+# SPORT AND ACTIVITY LOGGING
+#
+# The Activities tab used to be nine chips that set a local variable and did
+# nothing -- tapping one had no effect anywhere, which is exactly how it was
+# reported. These three endpoints are what make it a real screen: the
+# catalogue to render, a way to save a session, and a way to read them back
+# alongside whatever Strava and the watch sent.
+#
+# EVERY ONE OF THEM RETURNS BURN AS CONTEXT. Nothing here adjusts a calorie
+# target, and `where_this_goes` says so on the wire so the client cannot
+# quietly decide otherwise. See services/activity.py for the argument and
+# tests/test_sports.py::TestNeverFeedsTheCalorieTarget for the guard.
+# ===========================================================================
+
+
+class SportOut(BaseModel):
+    key: str
+    name: str
+    group: str
+    met: float
+    #: True when the MET is interpolated rather than taken from the
+    #: Compendium. Surfaced so the UI can mark the number as a rougher guess.
+    estimated: bool
+    tracks_distance: bool
+
+
+class SportsResponse(BaseModel):
+    sports: list[SportOut]
+    #: The user's current body mass, so the client can preview a burn as the
+    #: duration dial moves without a round trip per tap. Null when we have
+    #: none on file -- the client then widens the band and says why, rather
+    #: than quietly substituting an average and looking equally confident.
+    weight_kg: Optional[float]
+
+
+@router.get("/sports", response_model=SportsResponse)
+async def list_sports(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+) -> SportsResponse:
+    """The sport catalogue, plus the one number needed to price a session."""
+    return SportsResponse(
+        sports=[
+            SportOut(
+                key=s.key,
+                name=s.name,
+                group=s.group,
+                met=s.met,
+                estimated=s.estimated,
+                tracks_distance=s.tracks_distance,
+            )
+            for s in sports_svc.SPORTS
+        ],
+        weight_kg=await _latest_weight_kg(session, user),
+    )
+
+
+class ActivityLogRequest(BaseModel):
+    sport: str
+    duration_minutes: float
+    intensity: str = "moderate"
+    started_at: Optional[datetime] = None
+    distance_km: Optional[float] = Field(default=None, ge=0, le=1000)
+    mean_heart_rate: Optional[float] = Field(default=None, ge=30, le=240)
+    #: Let the user overrule us. A chest strap beats a MET table, and
+    #: refusing their measured number in favour of our population average
+    #: would be the wrong kind of confident.
+    active_energy_kcal: Optional[float] = Field(default=None, ge=0, le=10000)
+
+
+class BurnOut(BaseModel):
+    low: int
+    point: int
+    high: int
+    band: int
+    met_used: float
+    assumed_weight: bool
+    met_estimated: bool
+    measured: bool = False
+
+
+class ActivityOut(BaseModel):
+    id: str
+    sport: str
+    name: str
+    started_at: datetime
+    duration_minutes: float
+    distance_km: Optional[float]
+    mean_heart_rate: Optional[float]
+    source: str
+    burn: Optional[BurnOut]
+
+
+class ActivityLogResponse(BaseModel):
+    activity: ActivityOut
+    where_this_goes: list[tuple[str, str]]
+    target_explainer: str
+
+
+async def _latest_weight_kg(session: AsyncSession, user: User) -> float | None:
+    """Body mass for the MET formula, most recent first.
+
+    Falls back to the profile weight, then to nothing at all -- and "nothing"
+    is handled by widening the band rather than by inventing a number.
+    """
+    row = await session.scalar(
+        select(WeightEntry)
+        .where(WeightEntry.user_id == user.id)
+        .order_by(WeightEntry.measured_on.desc())  # type: ignore[union-attr]
+        .limit(1)
+    )
+    if row is not None and row.weight_kg:
+        return float(row.weight_kg)
+    return float(user.weight_kg) if getattr(user, "weight_kg", None) else None
+
+
+def _burn_for(
+    sport_key: str,
+    duration_minutes: float,
+    weight_kg: float | None,
+    intensity: str,
+    measured_kcal: float | None,
+) -> BurnOut | None:
+    try:
+        est = sports_svc.estimate_burn(
+            sport_key, duration_minutes, weight_kg, intensity
+        )
+    except sports_svc.SportError:
+        return None
+
+    if measured_kcal is not None:
+        # A MEASURED NUMBER WINS, and it wins with a narrow band rather than
+        # our wide one -- the same rule the ride screen applies when a power
+        # meter disagrees with Strava's model. The band is not zero because a
+        # wearable is not a calorimeter.
+        point = round(measured_kcal)
+        margin = max(1, round(point * 0.08))
+        return BurnOut(
+            low=point - margin,
+            point=point,
+            high=point + margin,
+            band=margin,
+            met_used=est.met_used,
+            assumed_weight=False,
+            met_estimated=False,
+            measured=True,
+        )
+
+    return BurnOut(
+        low=est.low,
+        point=est.point,
+        high=est.high,
+        band=est.band,
+        met_used=est.met_used,
+        assumed_weight=est.assumed_weight,
+        met_estimated=est.met_estimated,
+    )
+
+
+@router.post("/activities", response_model=ActivityLogResponse, status_code=201)
+async def log_activity(
+    payload: ActivityLogRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+) -> ActivityLogResponse:
+    """Log a session the user did and told us about."""
+    sport = sports_svc.BY_KEY.get(payload.sport) or sports_svc.find(payload.sport)
+    if sport is None:
+        raise HTTPException(status_code=422, detail=f"Unknown sport: {payload.sport}")
+
+    weight = await _latest_weight_kg(session, user)
+    try:
+        sports_svc.estimate_burn(
+            sport.key, payload.duration_minutes, weight, payload.intensity
+        )
+    except sports_svc.SportError as exc:
+        # Refuse rather than bank a nonsense session. A stuck timer that
+        # writes 6,000 kcal of "activity" poisons the training load for weeks.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    started = payload.started_at or datetime.now(timezone.utc)
+    row = ExternalWorkout(
+        user_id=user.id,
+        # Manual entries still need a unique external_id: the table's
+        # uniqueness constraint is what makes device sync idempotent, and a
+        # NULL here would collide the moment someone logs two sessions.
+        external_id=f"manual:{user.id}:{started.isoformat()}:{sport.key}",
+        activity_type=sport.key,
+        started_at=started,
+        ended_at=started + timedelta(minutes=payload.duration_minutes),
+        duration_minutes=payload.duration_minutes,
+        active_energy_kcal=payload.active_energy_kcal,
+        distance_km=payload.distance_km,
+        mean_heart_rate=payload.mean_heart_rate,
+        source=HealthSource.manual,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+
+    return ActivityLogResponse(
+        activity=ActivityOut(
+            id=row.id,
+            sport=sport.key,
+            name=sport.name,
+            started_at=row.started_at,
+            duration_minutes=row.duration_minutes,
+            distance_km=row.distance_km,
+            mean_heart_rate=row.mean_heart_rate,
+            source=row.source.value,
+            burn=_burn_for(
+                sport.key,
+                payload.duration_minutes,
+                weight,
+                payload.intensity,
+                payload.active_energy_kcal,
+            ),
+        ),
+        where_this_goes=list(sports_svc.WHERE_THIS_GOES),
+        target_explainer=sports_svc.TARGET_EXPLAINER,
+    )
+
+
+@router.get("/activities", response_model=list[ActivityOut])
+async def list_activities(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+    days: int = Query(default=14, ge=1, le=365),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[ActivityOut]:
+    """Recent sessions, manual and imported, newest first.
+
+    One list rather than two. The artifact separates "what did you do" from
+    "arrived on their own" visually, but they are the same kind of thing and
+    splitting them in the API would mean the client had to merge and re-sort
+    two feeds to render one timeline.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(ExternalWorkout)
+            .where(
+                ExternalWorkout.user_id == user.id,
+                ExternalWorkout.started_at >= since,
+            )
+            .order_by(ExternalWorkout.started_at.desc())  # type: ignore[union-attr]
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    weight = await _latest_weight_kg(session, user)
+    out: list[ActivityOut] = []
+    for r in rows:
+        sport = sports_svc.BY_KEY.get(r.activity_type) or sports_svc.find(
+            r.activity_type
+        )
+        out.append(
+            ActivityOut(
+                id=r.id,
+                sport=r.activity_type,
+                name=sport.name if sport else r.activity_type.replace("_", " ").title(),
+                started_at=r.started_at,
+                duration_minutes=r.duration_minutes,
+                distance_km=r.distance_km,
+                mean_heart_rate=r.mean_heart_rate,
+                source=r.source.value if hasattr(r.source, "value") else str(r.source),
+                burn=(
+                    _burn_for(
+                        sport.key,
+                        r.duration_minutes,
+                        weight,
+                        "moderate",
+                        r.active_energy_kcal,
+                    )
+                    if sport
+                    else None
+                ),
+            )
+        )
+    return out
+
+
+@router.delete("/activities/{activity_id}", status_code=204)
+async def delete_activity(
+    activity_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+) -> None:
+    """Remove a session. Mistyped durations are the common case."""
+    row = await session.get(ExternalWorkout, activity_id)
+    # The ownership check is folded into the 404 on purpose: a distinct 403
+    # would confirm that someone else's activity id exists.
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Activity not found.")
+    await session.delete(row)
+    await session.commit()
+
+
+# ===========================================================================
+# CONSISTENCY, AND WHETHER THE PHASE IS WORKING
+#
+# ONE ENDPOINT RETURNS BOTH, and that is a design decision rather than a
+# convenience. A streak shown on its own is a slot machine: forty days of
+# diligent logging on a bulk that has added nothing but fat is not an
+# achievement, and an app that congratulates you for it is lying pleasantly.
+#
+# Returning them together means the client cannot render the flattering half
+# without the honest half -- it would have to deliberately discard a field it
+# already has.
+# ===========================================================================
+
+
+class ConsistencyOut(BaseModel):
+    current_streak: int
+    longest_streak: int
+    days_logged: int
+    window_days: int
+    consistency_pct: float
+    logged_today: bool
+    data_confidence: float
+    milestone: Optional[str]
+    next_milestone: Optional[str]
+    days_to_next: Optional[int]
+    headline: str
+
+
+class PhaseOut(BaseModel):
+    verdict: str
+    goal: str
+    weeks_elapsed: float
+    start_weight_kg: Optional[float]
+    current_weight_kg: Optional[float]
+    total_change_kg: Optional[float]
+    rate_kg_per_week: Optional[float]
+    target_rate_kg_per_week: Optional[float]
+    headline: str
+    detail: str
+    notes: list[str]
+
+
+class ProgressOut(BaseModel):
+    consistency: ConsistencyOut
+    phase: PhaseOut
+
+
+@router.get("/consistency", response_model=ProgressOut)
+async def consistency_and_phase(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+    window_days: int = Query(default=30, ge=7, le=365),
+) -> ProgressOut:
+    """How consistently they've logged, and whether the phase is working."""
+    today = date.today()
+
+    # ---- what counts as "used the app" --------------------------------
+    # A logged MEAL, specifically. Opening the app is not participation, and
+    # a streak that counts app opens would reward the wrong behaviour and
+    # give the TDEE engine nothing extra to work with.
+    since = today - timedelta(days=max(window_days, 400))
+    rows = (
+        await session.execute(
+            sa_select(func.date(MealLog.logged_at)).where(
+                MealLog.user_id == user.id,
+                func.date(MealLog.logged_at) >= since,
+            ).distinct()
+        )
+    ).scalars().all()
+    logged_days = {r if isinstance(r, date) else date.fromisoformat(str(r)) for r in rows}
+
+    con = streak_svc.consistency(logged_days, today, window_days=window_days)
+
+    # ---- the phase ----------------------------------------------------
+    weights = (
+        await session.execute(
+            select(WeightEntry)
+            .where(WeightEntry.user_id == user.id)
+            .order_by(WeightEntry.measured_on)  # type: ignore[arg-type]
+        )
+    ).scalars().all()
+
+    start_kg: float | None = None
+    current_kg: float | None = None
+    started_on = None
+    if weights:
+        # SMOOTHED at both ends, never a single morning. One salty dinner at
+        # either end of the window would otherwise swing the computed rate by
+        # more than the entire effect being measured.
+        head = weights[: min(3, len(weights))]
+        tail = weights[-min(7, len(weights)) :]
+        start_kg = sum(w.weight_kg for w in head) / len(head)
+        current_kg = sum(w.weight_kg for w in tail) / len(tail)
+        started_on = weights[0].measured_on
+
+    target_rate = _target_rate_for(user)
+    ph = streak_svc.phase_progress(
+        goal=user.goal_type.value if hasattr(user.goal_type, "value") else str(user.goal_type),
+        start_weight_kg=start_kg,
+        current_weight_kg=current_kg,
+        started_on=started_on,
+        today=today,
+        target_rate_kg_per_week=target_rate,
+    )
+
+    return ProgressOut(
+        consistency=ConsistencyOut(**con.__dict__),
+        phase=PhaseOut(
+            verdict=ph.verdict.value,
+            goal=ph.goal,
+            weeks_elapsed=ph.weeks_elapsed,
+            start_weight_kg=round(ph.start_weight_kg, 2) if ph.start_weight_kg else None,
+            current_weight_kg=(
+                round(ph.current_weight_kg, 2) if ph.current_weight_kg else None
+            ),
+            total_change_kg=ph.total_change_kg,
+            rate_kg_per_week=ph.rate_kg_per_week,
+            target_rate_kg_per_week=ph.target_rate_kg_per_week,
+            headline=ph.headline,
+            detail=ph.detail,
+            notes=ph.notes,
+        ),
+    )
+
+
+def _target_rate_for(user: User) -> float | None:
+    """The weekly rate this user's goal implies, in kg.
+
+    Conservative on purpose. A faster bulk is mostly fat and a faster cut
+    costs muscle, so the defaults sit where the literature puts the best
+    ratio of tissue gained to tissue regretted -- not where someone impatient
+    would put them.
+    """
+    goal = user.goal_type.value if hasattr(user.goal_type, "value") else str(user.goal_type)
+    if goal == "gain":
+        return 0.25
+    if goal == "lose":
+        # Scaled to body mass: 0.7%/week is the usual ceiling before lifts
+        # start dropping, and 0.7% of 60 kg is a very different number from
+        # 0.7% of 110 kg.
+        mass = user.starting_weight_kg or 75.0
+        return -round(mass * 0.006, 2)
+    return 0.0

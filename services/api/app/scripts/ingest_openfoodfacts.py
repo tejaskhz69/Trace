@@ -136,9 +136,77 @@ def build_search_text(name: str, brand: str | None, categories: list[str]) -> st
     return " ".join(p for p in parts if p).lower()
 
 
+#: Postgres's wire protocol caps a single statement at 65535 bind parameters,
+#: and asyncpg enforces 32767. A multi-row INSERT sends one parameter PER
+#: COLUMN PER ROW, so the real row limit is that cap divided by the number of
+#: keys on each dict -- 19 today, which makes it 1724, not the 2000 this
+#: script was batching at.
+#:
+#: That is why a full import died with "the number of query arguments cannot
+#: exceed 32767" after streaming for a minute. It is computed rather than
+#: hardcoded because the failure mode of getting it wrong is a crash three
+#: gigabytes into a two-hour job, and adding one column to FoodItem would
+#: silently reintroduce it.
+MAX_BIND_PARAMS = 32_767
+
+
+def _rows_per_statement() -> int:
+    """How many rows fit under the bind-parameter cap.
+
+    COUNTED FROM THE TABLE, NOT FROM THE DICT, and that distinction is the
+    whole bug. Each dict here has 19 keys, so dividing the cap by 19 gives
+    1724 rows -- and that still failed, because SQLAlchemy also binds a
+    parameter for every column with a Python-side default that the dict
+    omits (id, created_at, is_verified and the rest). Measured, the real cost
+    is 24 params per row against 19 keys.
+
+    Using the full column count is a slight over-estimate and therefore always
+    safe, and it tracks the model automatically: add a column and the batch
+    shrinks by itself instead of failing an hour into an import.
+    """
+    per_row = max(1, len(FoodItem.__table__.columns))
+    return max(1, MAX_BIND_PARAMS // per_row)
+
+
+def _safe_chunks(
+    batch: list[dict[str, Any]],
+) -> Iterator[list[dict[str, Any]]]:
+    """Split a batch into slices Postgres will actually accept."""
+    rows = _rows_per_statement()
+    for i in range(0, len(batch), rows):
+        yield batch[i : i + rows]
+
+
+def _dedupe(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse rows that share a conflict key, keeping the last.
+
+    Postgres refuses an INSERT ... ON CONFLICT DO UPDATE that would touch the
+    same row twice in one statement -- "ON CONFLICT DO UPDATE command cannot
+    affect row a second time" -- and it aborts the whole statement when it
+    happens. The full Open Food Facts dump DOES contain repeated codes, so a
+    two-hour import died on one duplicate about 1.6 M products in, having
+    written nothing since its last successful batch.
+
+    The uniqueness constraint is (source, source_id). Keeping the LAST
+    occurrence rather than the first matches what the upsert would have done
+    had the rows arrived in separate statements.
+    """
+    seen: dict[tuple[Any, Any], dict[str, Any]] = {}
+    for row in batch:
+        seen[(row.get("source"), row.get("source_id"))] = row
+    return list(seen.values())
+
+
 async def flush(batch: list[dict[str, Any]]) -> int:
     if not batch:
         return 0
+    written = 0
+    for chunk in _safe_chunks(_dedupe(batch)):
+        written += await _flush_chunk(chunk)
+    return written
+
+
+async def _flush_chunk(batch: list[dict[str, Any]]) -> int:
     async with SessionLocal() as session:
         stmt = pg_insert(FoodItem).values(batch)
         stmt = stmt.on_conflict_do_update(

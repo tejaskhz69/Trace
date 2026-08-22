@@ -114,6 +114,9 @@ _OFF_FIELDS = ",".join(
         "nutriments",
         "completeness",
         "image_front_small_url",
+        # Lets us distinguish a product that genuinely HAS no calories
+        # from one nobody has filled in yet. See _off_to_resolved.
+        "no_nutrition_data",
     ]
 )
 
@@ -139,18 +142,59 @@ def _off_to_resolved(product: dict[str, Any]) -> ResolvedFood | None:
     if not name:
         return None
 
-    # Reject rows with no usable nutrition -- a name-only hit is worse than a
-    # miss, because the user logs it and gets 0 kcal silently.
     protein = _f(n.get("proteins_100g"))
     carbs = _f(n.get("carbohydrates_100g"))
     fat = _f(n.get("fat_100g"))
+
     if kcal <= 0:
         # Reconstruct from macros if energy is missing but macros aren't.
         derived = protein * 4 + carbs * 4 + fat * 9
-        if derived <= 0:
+        if derived > 0:
+            kcal = derived
+        elif not _has_real_nutrition(product, n):
+            # Genuinely nothing here. A name-only hit is worse than a miss,
+            # because the user logs it and silently banks 0 kcal.
             return None
-        kcal = derived
+        # ELSE: falls through with kcal == 0, deliberately.
+        #
+        # ZERO IS A LEGITIMATE ANSWER and this used to be the bug. Bottled
+        # water, black coffee, diet soda, sparkling water and sugar-free gum
+        # all have a real, filled-in nutrition table that reads zero, and
+        # rejecting them made the scanner report "we couldn't find this
+        # product" for some of the most commonly scanned items in a store --
+        # Kirkland Purified Water among them. "No data" and "no calories"
+        # are different facts and only the first one is a miss.
 
+    return _build_off_food(product, n, name, kcal, protein, carbs, fat)
+
+
+def _has_real_nutrition(product: dict[str, Any], n: dict[str, Any]) -> bool:
+    """Does this product carry a nutrition table that genuinely reads zero?
+
+    Two independent signals, because OFF's data is uneven:
+
+      * `no_nutrition_data` set means the contributor explicitly said there is
+        nothing to record -- that IS the answer, not an omission.
+      * an energy or macro key PRESENT in `nutriments` means someone typed a
+        number, and a typed 0 is data. An absent key means nobody typed
+        anything, which is a miss.
+    """
+    if str(product.get("no_nutrition_data") or "").strip() in {"1", "true", "on"}:
+        return True
+    keys = (*_ENERGY_KEYS, "proteins_100g", "carbohydrates_100g", "fat_100g")
+    return any(k in n for k in keys)
+
+
+def _build_off_food(
+    product: dict[str, Any],
+    n: dict[str, Any],
+    name: str,
+    kcal: float,
+    protein: float,
+    carbs: float,
+    fat: float,
+) -> ResolvedFood | None:
+    """Assemble the ResolvedFood once the nutrition question is settled."""
     serving_g = _parse_serving_grams(product.get("serving_size")) or _f(
         product.get("serving_quantity"), 0
     )
@@ -381,6 +425,11 @@ async def usda_search(
 # ---------------------------------------------------------------------------
 
 
+# Below this many free results, a search is thin enough to be worth a metered
+# call. Above it, paying would buy nothing the user was going to scroll to.
+_PAID_SEARCH_FLOOR = 5
+
+
 async def resolve_barcode_remote(barcode: str) -> tuple[ResolvedFood | None, str]:
     """Try every remote source in parallel; prefer the highest data quality.
 
@@ -402,6 +451,20 @@ async def resolve_barcode_remote(barcode: str) -> tuple[ResolvedFood | None, str
             candidates.append((res, label))
 
     if not candidates:
+        # LAST RESORT, AND ONLY NOW. Two free sources have already missed, so
+        # this is the long tail actually worth spending a metered call on.
+        # Reaching for a paid API first would bill us for the 99% of lookups
+        # Open Food Facts answers for nothing.
+        from . import paid_sources
+
+        if paid_sources.available():
+            try:
+                paid = await paid_sources.lookup_barcode(barcode)
+            except paid_sources.PaidBudgetExhausted as exc:
+                log.info("Skipping paid barcode lookup: %s", exc)
+                paid = None
+            if paid is not None:
+                return paid, "nutritionix"
         return None, "none"
 
     best, label = max(candidates, key=lambda c: c[0].data_quality)
@@ -423,6 +486,19 @@ async def search_remote(
     for res in (off, usda):
         if isinstance(res, list):
             out.extend(res)
+
+    # Only pay when the free sources came back thin. A search that already
+    # returned a page of results does not need a billed call to improve it,
+    # and this is the difference between a fixed monthly cost and a variable
+    # one that scales with traffic.
+    if len(out) < _PAID_SEARCH_FLOOR:
+        from . import paid_sources
+
+        if paid_sources.available():
+            try:
+                out.extend(await paid_sources.search(query, limit=limit))
+            except paid_sources.PaidBudgetExhausted as exc:
+                log.info("Skipping paid search: %s", exc)
 
     # De-duplicate on (name, brand) and keep the highest-quality record.
     seen: dict[tuple[str, str], ResolvedFood] = {}

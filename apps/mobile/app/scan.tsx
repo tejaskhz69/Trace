@@ -21,6 +21,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import * as ImageManipulator from 'expo-image-manipulator';
 
 import { Button } from '../src/components/instrument';
 import { useScan } from '../src/state/useScan';
@@ -51,9 +52,17 @@ export default function ScanScreen() {
       try {
         const res = await api.resolveBarcode(data);
         if (res.found && res.item) {
+          // THE PORTION PICKER IS THE DESTINATION, not the Nutrition tab.
+          // This used to hand `barcodeItemId` to /(tabs)/log, which never
+          // read the param -- so a successful scan navigated away and
+          // silently dropped the product. It looked exactly like the
+          // scanner failing to recognise anything, which is what it was
+          // reported as. Food search already owns select -> portion -> log,
+          // so the barcode result goes there rather than growing a second
+          // logging UI.
           router.replace({
-            pathname: '/(tabs)/log',
-            params: { barcodeItemId: res.item.id },
+            pathname: '/food-search',
+            params: { barcode: data },
           });
           return;
         }
@@ -74,20 +83,38 @@ export default function ScanScreen() {
   async function onCapture() {
     if (busy || scanning) return;
     setBusy(true);
-    setStatus('Reading your plate…');
+    setStatus('Sharpening the photo…');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     try {
       const photo = await cameraRef.current?.takePictureAsync({
         quality: 0.7,
-        // The server downscales to 768px anyway; sending a 12MP original just
-        // costs the user upload time on a slow connection.
         imageType: 'jpg',
         skipProcessing: true,
       });
       if (!photo?.uri) throw new Error('no photo');
 
-      const ok = await scan(photo.uri);
+      // DOWNSCALE BEFORE UPLOADING, not after.
+      //
+      // The comment that used to sit on takePictureAsync said the server
+      // downscales to 768px so sending the original "just costs upload time"
+      // -- and then sent the original anyway. On a modern phone that is a
+      // 12MP JPEG, two to four megabytes, which on mobile data is several
+      // seconds of the user watching a spinner before the model has even
+      // been asked. Resizing here makes the upload roughly a tenth the size
+      // and throws away nothing the server would have kept.
+      //
+      // 1024 rather than the server's 768: it leaves headroom for the
+      // server's own LANCZOS pass to work from, and the difference in upload
+      // size between the two is negligible.
+      const small = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ resize: { width: 1024 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG },
+      );
+
+      setStatus('Reading your plate…');
+      const ok = await scan(small.uri);
       if (ok) router.replace('/scan-review');
     } catch {
       setStatus("Couldn't capture that. Try again.");

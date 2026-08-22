@@ -14,7 +14,7 @@ from ..config import get_settings
 from ..db import get_session
 from ..models import Recognition, RecognitionFeedback, User
 from ..schemas import RecognitionCorrection, RecognitionResponse
-from ..services import vision
+from ..services import label_ocr, vision
 from .auth import current_user
 
 router = APIRouter(prefix="/api/foods", tags=["recognition"])
@@ -144,3 +144,53 @@ async def correct_recognition(
     session.add(feedback)
     await session.commit()
     return {"status": "recorded", "id": feedback.id}
+
+
+@router.post("/read-label")
+async def read_nutrition_label(
+    user: Annotated[User, Depends(current_user)],
+    image: UploadFile = File(...),
+) -> dict:
+    """Photograph the nutrition panel; get the numbers typed for you.
+
+    WHY THIS EXISTS ALONGSIDE THE BARCODE SCANNER
+    A barcode only resolves if somebody already put that product in a
+    database. For a local Indian brand, a small-market own-label, or anything
+    from a country Open Food Facts covers thinly, the scan misses and the user
+    faces eleven numbers on the back of a packet. That is the moment people
+    stop logging. The label is always there, and reading it is a bounded task
+    with a printed right answer.
+
+    NOTE THE INVERTED UNCERTAINTY RULE. `/recognize` estimates a plate and so
+    must return a range (non-negotiable #2). This TRANSCRIBES, so a range
+    would be meaningless -- the number is printed on the box. What it does
+    instead is refuse: an unreadable field comes back null, never a plausible
+    guess, and the client renders the blank for the user to fill.
+    """
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty image upload.")
+
+    try:
+        reading = await label_ocr.read_label(raw)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {
+        "legible": reading.legible,
+        "basis": reading.basis,
+        "per_100g": reading.per_100g,
+        "serving_size_g": reading.serving_size_g,
+        "product_name": reading.product_name,
+        "brand": reading.brand,
+        "confidence": reading.confidence,
+        "quality": reading.quality,
+        "verdict": reading.verdict,
+        "warnings": reading.warnings,
+        "model": reading.model_used,
+        "latency_ms": reading.latency_ms,
+        # A quarantined panel is offered for CORRECTION, never for one-tap
+        # saving. The client must keep the save disabled until the user has
+        # looked at the numbers the validator objected to.
+        "safe_to_save": reading.legible and reading.verdict != "quarantine",
+    }

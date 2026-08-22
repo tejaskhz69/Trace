@@ -42,19 +42,48 @@ import Svg, { Path } from 'react-native-svg';
 
 import { Button, Label, Rule } from '../../src/components/instrument';
 import { useAuth, SocialProvider } from '../../src/state/useAuth';
+import {
+  Google,
+  appleAvailable,
+  configuredProviders,
+  googleAuthConfig,
+  googleConfigured,
+} from '../../src/lib/social-auth';
 import { useSurfaces } from '../../src/state/useTheme';
 import { API_BASE_URL } from '../../src/lib/api';
 import { HAIRLINE, motion, palette, radius, space, type } from '../../src/theme';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { login, socialSignIn, submitting, error, clearError } = useAuth();
+  const { login, socialSignIn, completeSocial, submitting, error, clearError } =
+    useAuth();
   const surfaces = useSurfaces();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [focused, setFocused] = useState<'email' | 'password' | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+
+  /**
+   * Which social buttons to render.
+   *
+   * Asked of the SERVER, not inferred from local env vars. The client IDs and
+   * the server's verification config can drift apart, and the failure that
+   * causes is the worst kind: the browser flow completes, the user is
+   * authorised with Google, and then the exchange 401s with nowhere to go.
+   * The server is the one that knows whether it can finish the job.
+   */
+  const [providers, setProviders] = useState<string[] | null>(null);
+  const [hasApple, setHasApple] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    configuredProviders().then((p) => alive && setProviders(p));
+    appleAvailable().then((a) => alive && setHasApple(a));
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const canSubmit = email.trim().length > 3 && password.length >= 8;
 
@@ -107,8 +136,13 @@ export default function LoginScreen() {
         >
           {/* Apple requires its button on iOS if you offer any other social
               login (App Store guideline 4.8), and it does not exist on
-              Android, so it is iOS-only by design rather than by oversight. */}
-          {Platform.OS === 'ios' && (
+              Android, so it is iOS-only by design rather than by oversight.
+
+              Every button here is gated on the SERVER reporting it can
+              complete the exchange. A button that opens a browser and then
+              cannot finish strands the user outside the app, which is worse
+              than not offering the option at all. */}
+          {providers?.includes('apple') && hasApple && (
             <SocialButton
               provider="apple"
               label="Continue with Apple"
@@ -117,18 +151,28 @@ export default function LoginScreen() {
               primary
             />
           )}
+          {/* Mounted ONLY when Google is genuinely configured. The hook
+              inside it throws with no client id, and a hook cannot be called
+              conditionally -- so the CONDITION HAS TO BE ON THE COMPONENT.
+              Calling it unconditionally is what crashed this screen. */}
+          {providers?.includes('google') && googleConfigured() ? (
+            <GoogleButton disabled={submitting} />
+          ) : null}
+          {/* Always offered, and listed first among the alternatives: it is
+              the path with no password to invent or forget, and the one this
+              market actually expects. */}
           <SocialButton
-            provider="google"
-            label="Continue with Google"
-            onPress={() => onSocial('google')}
+            provider="phone"
+            label="Continue with a phone number"
+            onPress={() => router.push('/(auth)/phone')}
             disabled={submitting}
           />
-          <SocialButton
-            provider="github"
-            label="Continue with GitHub"
-            onPress={() => onSocial('github')}
-            disabled={submitting}
-          />
+          {providers?.length === 0 ? (
+            <Text style={styles.noProviders}>
+              Google and Apple sign-in aren&apos;t configured on this server
+              yet. Use your phone number or your email below.
+            </Text>
+          ) : null}
         </Animated.View>
 
         <Animated.View
@@ -273,7 +317,11 @@ function StatusDot() {
   return <Animated.View style={[styles.statusDot, style]} />;
 }
 
-const PROVIDER_PATHS: Record<SocialProvider, string> = {
+type ButtonProvider = SocialProvider | 'phone';
+
+const PROVIDER_PATHS: Record<ButtonProvider, string> = {
+  phone:
+    'M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm0 2v14h10V4H7zm5 15.2a1 1 0 1 0 0 2 1 1 0 0 0 0-2z',
   apple:
     'M16.4 12.8c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-2.9.9-3.7 2.2-1.6 2.7-.4 6.8 1.1 9 .8 1.1 1.6 2.3 2.8 2.2 1.1 0 1.6-.7 2.9-.7s1.7.7 2.9.7 2-1.1 2.7-2.2c.9-1.2 1.2-2.5 1.2-2.5s-2.4-.9-2.4-3.5zM14.2 5.9c.6-.8 1-1.8.9-2.9-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.7-1 2.7 1 .1 2-.5 2.7-1.2z',
   google:
@@ -282,6 +330,45 @@ const PROVIDER_PATHS: Record<SocialProvider, string> = {
     'M12 2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.4-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.7.4-1.1.6-1.4-2.2-.2-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7 0-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.8-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5A10 10 0 0 0 12 2z',
 };
 
+/**
+ * Google sign-in, isolated behind its own mount.
+ *
+ * WHY THIS IS A SEPARATE COMPONENT AND NOT A FEW LINES IN THE SCREEN
+ * `useIdTokenAuthRequest` throws when no client id is configured, and React
+ * forbids calling a hook conditionally — so the only way to not call it is to
+ * not render the thing that calls it. Inlining the hook in LoginScreen meant
+ * every unconfigured install crashed the moment the login screen mounted,
+ * which is exactly what happened.
+ *
+ * The parent decides whether Google is available; this component assumes it
+ * is and does nothing else.
+ */
+function GoogleButton({ disabled }: { disabled?: boolean }) {
+  const router = useRouter();
+  const completeSocial = useAuth((s) => s.completeSocial);
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest(
+    googleAuthConfig(),
+  );
+
+  useEffect(() => {
+    if (response?.type !== 'success') return;
+    const idToken = response.params?.id_token;
+    if (!idToken) return;
+    completeSocial({ provider: 'google', idToken }).then((ok) => {
+      if (ok) router.replace('/(tabs)');
+    });
+  }, [response, completeSocial, router]);
+
+  return (
+    <SocialButton
+      provider="google"
+      label="Continue with Google"
+      onPress={() => promptAsync()}
+      disabled={disabled || !request}
+    />
+  );
+}
+
 function SocialButton({
   provider,
   label,
@@ -289,7 +376,7 @@ function SocialButton({
   disabled,
   primary,
 }: {
-  provider: SocialProvider;
+  provider: ButtonProvider;
   label: string;
   onPress: () => void;
   disabled?: boolean;
@@ -350,6 +437,12 @@ function Field({
 }
 
 const styles = StyleSheet.create({
+  noProviders: {
+    ...type.caption,
+    color: palette.textFaint,
+    textAlign: 'center',
+    lineHeight: 19,
+  },
   screen: { flex: 1 },
   scroll: {
     flexGrow: 1,

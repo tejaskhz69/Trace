@@ -1,359 +1,554 @@
 /**
- * Workout logging.
+ * Tab 3 · Trainer — ported from the design artifact.
  *
- * The entire competitive point of this screen is LOGGING SPEED. Hevy wins on
- * one behaviour: it auto-fills your previous performance so a set is two taps
- * mid-workout. We do the same, via /workouts/sessions/last-performance.
+ * Two modes behind one segmented control:
  *
- * Performance notes:
- *  - FlashList, not FlatList. Set lists get long and FlashList recycles.
- *  - Rows are memoised on primitives, so logging set 12 doesn't re-render 1-11.
- *  - The rest timer runs on a shared value, not setState — a 1Hz setState
- *    across a long list is a surprisingly effective way to drop frames.
+ *   GYM         search + the exercise catalogue, grouped by muscle, each row
+ *               carrying the user's own working weight and weekly trend
+ *   ACTIVITIES  the full sport catalogue, session logging, and whatever
+ *               Strava and the watch sent -- see components/activities.tsx
+ *
+ * WHY THE SEARCH BAR IS THE FIRST THING
+ * There are 736 exercises. Scrolling to find "Incline Dumbbell Press" every
+ * time you want to log a set is the difference between an app you use mid-
+ * workout and one you don't. Search is the primary control here, not a
+ * convenience.
+ *
+ * WHY ONE REQUEST FEEDS THE WHOLE LIST
+ * `/api/workouts/catalogue` returns groups, counts, working weights and
+ * deltas together. Fetching per-row history would be 737 round trips at
+ * ~130 ms each against a database in another region — a minute and a half of
+ * loading for one screen.
+ *
+ * ILLUSTRATIONS
+ * Each row shows an equipment glyph rather than a drawing of the movement.
+ * That is a deliberate tier-one choice, not a placeholder: 736 hand-drawn
+ * SVGs is not feasible, photographs would wreck the line-art language, and
+ * "cable vs barbell vs machine" is genuinely what a beginner scanning the
+ * list needs in order to find the thing standing in front of them.
  */
 
-import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { FlashList } from '@shopify/flash-list';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
-import * as Haptics from 'expo-haptics';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  InteractionManager,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Animated, { FadeIn } from 'react-native-reanimated';
 
-import { Button, Card, Skeleton } from '../../src/components/ui';
-import { request } from '../../src/lib/api';
-import { palette, radius, space, type } from '../../src/theme';
+import {
+  Button,
+  Delta,
+  GroupHeader,
+  Label,
+  Panel,
+  Plain,
+  SearchField,
+  Segmented,
+  Skeleton,
+} from '../../src/components/instrument';
+import { ActivitiesPanel } from '../../src/components/activities';
+import { MuscleBars, MuscleMap } from '../../src/components/muscle-map';
+import { IconSearch, equipmentIcon } from '../../src/components/icons';
+import { api, type CatalogueGroup, type VolumeReport } from '../../src/lib/api';
+import { useAuth } from '../../src/state/useAuth';
+import { useAccent, useSurfaces } from '../../src/state/useTheme';
+import { motion, palette, radius, space, type } from '../../src/theme';
 
-interface Exercise {
-  id: string;
-  name: string;
-  muscle_group: string;
-  is_compound: boolean;
+const MODES = [
+  { value: 'gym' as const, label: 'Gym' },
+  { value: 'activities' as const, label: 'Activities' },
+];
+
+function initials(name: string | null, email: string): string {
+  const src = (name ?? email).trim();
+  const parts = src.split(/[\s@.]+/).filter(Boolean);
+  return (parts[0]?.[0] ?? '?').concat(parts[1]?.[0] ?? '').toUpperCase();
 }
 
-interface LoggedSet {
-  id: string;
-  exerciseId: string;
-  exerciseName: string;
-  weight_kg: number;
-  reps: number;
-  e1rm: number | null;
-  setIndex: number;
-}
+export default function TrainerScreen() {
+  const insets = useSafeAreaInsets();
+  const surfaces = useSurfaces();
+  const accent = useAccent();
+  const user = useAuth((s) => s.user);
 
-interface LastPerformance {
-  sets: Array<{ weight_kg: number; reps: number; rpe: number | null }>;
-  best_e1rm: number | null;
-}
-
-export default function TrainScreen() {
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [exercises, setExercises] = useState<Exercise[]>([]);
-  const [selected, setSelected] = useState<Exercise | null>(null);
-  const [last, setLast] = useState<LastPerformance | null>(null);
-  const [sets, setSets] = useState<LoggedSet[]>([]);
-  const [weight, setWeight] = useState('');
-  const [reps, setReps] = useState('');
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    request<Exercise[]>('/api/workouts/exercises')
-      .then(setExercises)
-      .catch(() => undefined)
-      .finally(() => setLoading(false));
-  }, []);
-
-  const startSession = useCallback(async () => {
-    const res = await request<{ id: string }>('/api/workouts/sessions', {
-      method: 'POST',
-      body: { routine_name: null },
-    });
-    setSessionId(res.id);
-    return res.id;
-  }, []);
+  const [mode, setMode] = useState<'gym' | 'activities'>('gym');
+  const [query, setQuery] = useState('');
+  const [groups, setGroups] = useState<CatalogueGroup[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const router = useRouter();
 
   /**
-   * The two-tap behaviour: selecting an exercise pre-fills the weight and reps
-   * from last time, so the common case (same weight, same reps) is one tap.
+   * Start a session, or hand back the one already open.
+   *
+   * Resuming rather than always starting fresh is what stops a forgotten
+   * Finish from splitting one workout into four sessions -- which would make
+   * every per-session summary wrong and the volume chart lumpy.
    */
-  const selectExercise = useCallback(async (ex: Exercise) => {
-    setSelected(ex);
-    setLast(null);
-    Haptics.selectionAsync();
+  const startWorkout = useCallback(async () => {
+    if (starting) return;
+    setStarting(true);
     try {
-      const perf = await request<LastPerformance>(
-        `/api/workouts/sessions/last-performance?exercise_id=${ex.id}`,
-      );
-      setLast(perf);
-      const top = perf.sets[0];
-      if (top) {
-        setWeight(String(top.weight_kg));
-        setReps(String(top.reps));
-      } else {
-        setWeight('');
-        setReps('');
-      }
-    } catch {
-      setWeight('');
-      setReps('');
+      const id = activeSessionId ?? (await api.startSession('Workout')).id;
+      setActiveSessionId(id);
+      // No exercise chosen yet: the catalogue below IS the picker, so drop
+      // the user back onto it with the session now live.
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start a workout.');
+    } finally {
+      setStarting(false);
+    }
+  }, [activeSessionId, starting]);
+
+  const load = useCallback(async (q: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.exerciseCatalogue(q.trim() || undefined);
+      setGroups(res.groups);
+      setTotal(res.total);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load exercises.');
+    } finally {
+      setBusy(false);
     }
   }, []);
 
-  const logSet = useCallback(async () => {
-    if (!selected) return;
-    const w = parseFloat(weight);
-    const r = parseInt(reps, 10);
-    if (!Number.isFinite(w) || !Number.isFinite(r) || r < 1) return;
+  useEffect(() => {
+    const task = InteractionManager.runAfterInteractions(() => {
+      load('');
+      // A session left open is the resume banner. Failing quietly is right
+      // here: no banner is a fine degradation, a crashed tab is not.
+      api
+        .workoutHistory(5)
+        .then((r) => setActiveSessionId(r.active_session_id))
+        .catch(() => undefined);
+    });
+    return () => task.cancel();
+  }, [load]);
 
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const id = sessionId ?? (await startSession());
+  // Debounce: typing "incline" would otherwise fire six requests, and the
+  // slowest one could land last and overwrite the right answer.
+  useEffect(() => {
+    const t = setTimeout(() => load(query), 280);
+    return () => clearTimeout(t);
+  }, [query, load]);
 
-    // Optimistic: the row appears instantly, the request follows.
-    const optimistic: LoggedSet = {
-      id: `tmp-${Date.now()}`,
-      exerciseId: selected.id,
-      exerciseName: selected.name,
-      weight_kg: w,
-      reps: r,
-      e1rm: r === 1 ? w : w * (1 + r / 30),
-      setIndex: sets.filter((s) => s.exerciseId === selected.id).length,
-    };
-    setSets((prev) => [optimistic, ...prev]);
-
-    try {
-      const res = await request<{ id: string; set_index: number; e1rm: number }>(
-        `/api/workouts/sessions/${id}/sets`,
-        { method: 'POST', body: { exercise_id: selected.id, weight_kg: w, reps: r } },
-      );
-      setSets((prev) =>
-        prev.map((s) =>
-          s.id === optimistic.id
-            ? { ...s, id: res.id, setIndex: res.set_index, e1rm: res.e1rm }
-            : s,
-        ),
-      );
-    } catch {
-      setSets((prev) => prev.filter((s) => s.id !== optimistic.id));
-    }
-  }, [selected, weight, reps, sessionId, sets, startSession]);
-
-  const bestToday = useMemo(() => {
-    if (!selected) return null;
-    const mine = sets.filter((s) => s.exerciseId === selected.id && s.e1rm);
-    if (!mine.length) return null;
-    return Math.max(...mine.map((s) => s.e1rm!));
-  }, [sets, selected]);
-
-  const isPR = bestToday != null && last?.best_e1rm != null && bestToday > last.best_e1rm;
+  const trained = useMemo(
+    () =>
+      (groups ?? []).reduce(
+        (n, g) => n + g.exercises.filter((e) => e.working_weight_kg !== null).length,
+        0,
+      ),
+    [groups],
+  );
 
   return (
-    <SafeAreaView style={styles.flex} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Train</Text>
-        {sessionId && <Text style={styles.live}>● Session active</Text>}
+    <View style={[styles.screen, { backgroundColor: surfaces.void }]}>
+      <View style={[styles.bar, { paddingTop: insets.top + space.sm }]}>
+        <View style={styles.brand}>
+          <View style={[styles.dot, { backgroundColor: accent.brand }]} />
+          <Text style={styles.brandText}>TRAINER</Text>
+        </View>
+        <View style={styles.barR}>
+          <Text style={styles.stamp}>
+            {mode === 'gym' ? `${total} EXERCISES` : 'THIS WEEK'}
+          </Text>
+          <View style={[styles.avatar, { borderColor: surfaces.hairlineBright }]}>
+            <Text style={styles.avatarText}>
+              {initials(user?.display_name ?? null, user?.email ?? '')}
+            </Text>
+          </View>
+        </View>
       </View>
 
-      {loading ? (
-        <View style={styles.padded}>
-          <Skeleton height={44} />
-          <View style={{ height: space.md }} />
-          <Skeleton height={140} />
-        </View>
-      ) : !selected ? (
-        <FlashList
-          data={exercises}
-          keyExtractor={(e) => e.id}
-          contentContainerStyle={{ padding: space.lg }}
-          renderItem={({ item }) => (
-            <ExerciseRow exercise={item} onPress={selectExercise} />
-          )}
-          ListEmptyComponent={
-            <Card>
-              <Text style={styles.emptyText}>
-                No exercises loaded yet. Seed the exercise library on the
-                backend to get started.
-              </Text>
-            </Card>
-          }
-        />
-      ) : (
-        <View style={styles.padded}>
-          <Animated.View entering={FadeInDown.duration(240)}>
-            <Card style={styles.activeCard}>
-              <Pressable onPress={() => setSelected(null)} hitSlop={8}>
-                <Text style={styles.back}>← All exercises</Text>
-              </Pressable>
+      <View style={styles.modeWrap}>
+        <Segmented options={MODES} value={mode} onChange={setMode} />
+      </View>
 
-              <Text style={styles.exerciseName}>{selected.name}</Text>
+      {mode === 'gym' ? (
+        <>
+          <View style={styles.searchWrap}>
+            <SearchField
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search exercises or a muscle"
+              leading={<IconSearch size={17} color={palette.textFaint} />}
+            />
+          </View>
 
-              {last?.sets.length ? (
-                <Text style={styles.lastTime}>
-                  Last time:{' '}
-                  {last.sets
-                    .map((s) => `${s.weight_kg}×${s.reps}`)
-                    .join('  ·  ')}
-                </Text>
-              ) : (
-                <Text style={styles.lastTime}>First time logging this one.</Text>
-              )}
+          <ScrollView
+            contentContainerStyle={[
+              styles.body,
+              { paddingBottom: insets.bottom + space.xxl },
+            ]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {/* The session controls sit above the catalogue, but only when
+                the user is not searching -- someone typing "incline" is
+                hunting for a row, and pushing it below a body map is exactly
+                the friction the search bar exists to remove. */}
+            {query.trim() === '' ? (
+              <>
+                <SessionBanner
+                  activeId={activeSessionId}
+                  onStart={startWorkout}
+                  starting={starting}
+                />
+                <VolumePanel />
+              </>
+            ) : null}
 
-              <View style={styles.inputRow}>
-                <View style={styles.inputWrap}>
-                  <Text style={styles.inputLabel}>Weight (kg)</Text>
-                  <TextInput
-                    value={weight}
-                    onChangeText={setWeight}
-                    style={styles.input}
-                    keyboardType="decimal-pad"
-                    selectTextOnFocus
-                    accessibilityLabel="Weight in kilograms"
-                  />
-                </View>
-                <View style={styles.inputWrap}>
-                  <Text style={styles.inputLabel}>Reps</Text>
-                  <TextInput
-                    value={reps}
-                    onChangeText={setReps}
-                    style={styles.input}
-                    keyboardType="number-pad"
-                    selectTextOnFocus
-                    accessibilityLabel="Repetitions"
-                  />
-                </View>
+            {groups === null ? (
+              <View style={styles.gap}>
+                <Skeleton height={44} />
+                <Skeleton height={72} />
+                <Skeleton height={72} />
+                <Skeleton height={72} />
               </View>
+            ) : error ? (
+              <Plain tone="danger">{error}</Plain>
+            ) : groups.length === 0 ? (
+              <Plain tone="warn">
+                Nothing matches &ldquo;{query}&rdquo;. Try a muscle name like
+                &ldquo;chest&rdquo;, or the equipment you&apos;re standing at.
+              </Plain>
+            ) : (
+              <>
+                {busy ? (
+                  <View style={styles.busyRow}>
+                    <ActivityIndicator size="small" color={palette.textFaint} />
+                  </View>
+                ) : null}
+                {groups.map((g) => (
+                  <View key={g.muscle_group} style={styles.group}>
+                    <GroupHeader
+                      label={g.muscle_group.toUpperCase()}
+                      count={g.count}
+                    />
+                    <View style={styles.rows}>
+                      {g.exercises.map((e) => (
+                        <ExerciseRow key={e.id} ex={e} sessionId={activeSessionId} />
+                      ))}
+                    </View>
+                  </View>
+                ))}
 
-              <Button label="Log set" onPress={logSet} />
-
-              {isPR && (
-                <Animated.View entering={FadeIn.duration(240)}>
-                  <Text style={styles.pr}>
-                    ★ New estimated 1RM — {bestToday!.toFixed(1)} kg, up from{' '}
-                    {last!.best_e1rm!.toFixed(1)}
-                  </Text>
-                </Animated.View>
-              )}
-            </Card>
-          </Animated.View>
-
-          <FlashList
-            data={sets.filter((s) => s.exerciseId === selected.id)}
-            keyExtractor={(s) => s.id}
-            contentContainerStyle={{ paddingTop: space.lg }}
-            renderItem={({ item }) => <SetRow set={item} />}
-          />
-        </View>
+                {trained === 0 ? (
+                  <Plain style={styles.gapT}>
+                    Nothing logged yet, so no working weights to show. Log a set
+                    and each exercise starts carrying{' '}
+                    <Text style={styles.b}>your</Text> numbers and a weekly
+                    trend.
+                  </Plain>
+                ) : null}
+              </>
+            )}
+          </ScrollView>
+        </>
+      ) : (
+        /* THE ACTIVITIES TAB, which used to be nine chips that set a local
+           variable and did nothing at all. It now owns its own data and its
+           own logging, so it lives in its own component rather than as a
+           second body inside this screen's render. */
+        <ActivitiesPanel bottomInset={insets.bottom} />
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 
-const ExerciseRow = memo(function ExerciseRowBase({
-  exercise,
-  onPress,
+/**
+ * Start, or resume, a workout.
+ *
+ * Resuming is offered because people forget to hit Finish, and a forgotten
+ * session that keeps absorbing sets is worse than no session at all — it
+ * makes every per-session number wrong.
+ */
+function SessionBanner({
+  activeId,
+  onStart,
+  starting,
 }: {
-  exercise: Exercise;
-  onPress: (e: Exercise) => void;
+  activeId: string | null;
+  onStart: () => void;
+  starting: boolean;
 }) {
-  return (
-    <Pressable
-      onPress={() => onPress(exercise)}
-      style={styles.exerciseRow}
-      accessibilityRole="button"
-    >
-      <View style={styles.flex}>
-        <Text style={styles.exerciseRowName}>{exercise.name}</Text>
-        <Text style={styles.exerciseRowMeta}>
-          {exercise.muscle_group}
-          {exercise.is_compound ? ' · compound' : ''}
-        </Text>
-      </View>
-      <Text style={styles.chevron}>›</Text>
-    </Pressable>
-  );
-});
+  const router = useRouter();
+  const accent = useAccent();
+  const surfaces = useSurfaces();
 
-const SetRow = memo(
-  function SetRowBase({ set }: { set: LoggedSet }) {
-    return (
-      <View style={styles.setRow}>
-        <Text style={styles.setIndex}>{set.setIndex + 1}</Text>
-        <Text style={styles.setDetail}>
-          {set.weight_kg} kg × {set.reps}
+  return (
+    <View style={[styles.banner, { borderColor: surfaces.hairlineBright }]}>
+      <View style={styles.bannerL}>
+        <Label>{activeId ? 'In progress' : 'Ready'}</Label>
+        <Text style={styles.bannerTitle}>
+          {activeId ? 'Resume workout' : 'Start a workout'}
         </Text>
-        {set.e1rm != null && (
-          <Text style={styles.setE1rm}>e1RM {set.e1rm.toFixed(1)}</Text>
-        )}
+        <Text style={styles.bannerSub}>
+          {activeId
+            ? 'Pick a lift below to log the next set.'
+            : 'Then pick a lift below. Every set gets a verdict.'}
+        </Text>
       </View>
+      <View style={styles.bannerR}>
+        {activeId ? (
+          <Button
+            label="Finish"
+            variant="outline"
+            compact
+            onPress={() => router.push(`/workout/summary?session=${activeId}`)}
+          />
+        ) : (
+          <Button
+            label={starting ? '…' : 'Start'}
+            compact
+            loading={starting}
+            onPress={onStart}
+          />
+        )}
+        <Pressable onPress={() => router.push('/workout/history')} hitSlop={10}>
+          <Text style={[styles.bannerLink, { color: accent.brand }]}>HISTORY</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Muscles trained, and whether that was enough of them.
+ *
+ * The set count is the easy half. The half that matters is the verdict
+ * underneath: most people under-train their back and over-train their arms
+ * and have no idea, because a tally never made the imbalance visible.
+ */
+function VolumePanel() {
+  const [days, setDays] = useState<'7' | '30'>('7');
+  const [report, setReport] = useState<VolumeReport | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setReport(null);
+    setFailed(false);
+    api
+      .muscleVolume(days === '7' ? 7 : 30)
+      .then((r) => alive && setReport(r))
+      .catch(() => alive && setFailed(true));
+    return () => {
+      alive = false;
+    };
+  }, [days]);
+
+  if (failed) return null;
+
+  return (
+    <Panel
+      label="Muscles trained"
+      right={
+        <View style={styles.volToggle}>
+          <Segmented
+            options={[
+              { value: '7' as const, label: '7 days' },
+              { value: '30' as const, label: '30 days' },
+            ]}
+            value={days}
+            onChange={setDays}
+          />
+        </View>
+      }
+    >
+      {report === null ? (
+        <Skeleton height={180} />
+      ) : (
+        <>
+          <MuscleMap muscles={report.muscles} />
+          <MuscleBars muscles={report.muscles} />
+          {report.weakest ? (
+            <Plain style={styles.gapT}>
+              {report.muscles.find((m) => m.muscle === report.weakest)?.note}
+            </Plain>
+          ) : null}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * One exercise. Name and equipment on the left, the user's own numbers right.
+ *
+ * memo'd on primitives: this list renders several hundred rows and every one
+ * of them re-rendering on a keystroke is exactly the jank the performance
+ * rules exist to prevent.
+ */
+const ExerciseRow = React.memo(
+  function ExerciseRowBase({
+    ex,
+    sessionId,
+  }: {
+    ex: CatalogueGroup['exercises'][number];
+    sessionId: string | null;
+  }) {
+    const Icon = equipmentIcon(ex.equipment);
+    const router = useRouter();
+
+    // WITH a workout open, tapping a lift means "log a set on this" -- the
+    // person is standing at the machine. WITHOUT one, it means "tell me about
+    // this" and the detail screen is the right answer. Same row, and the
+    // correct destination is entirely determined by whether a session is live.
+    const open = () =>
+      sessionId
+        ? router.push({
+            pathname: '/workout/[session]',
+            params: { session: sessionId, exercise: ex.id },
+          })
+        : router.push({
+            pathname: '/exercise/[id]',
+            params: {
+              id: ex.id,
+              name: ex.name,
+              equipment: ex.equipment,
+              muscle: ex.muscle_group,
+              secondary: ex.secondary_muscles.join(','),
+              compound: ex.is_compound ? '1' : '0',
+            },
+          });
+
+    return (
+      <Animated.View entering={FadeIn.duration(motion.fast)}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={ex.name}
+          onPress={open}
+          style={styles.row}
+        >
+          <View style={styles.thumb}>
+            <Icon size={22} color={palette.textDim} />
+          </View>
+
+          <View style={styles.rowMid}>
+            <Text style={styles.rowName} numberOfLines={1}>
+              {ex.name}
+            </Text>
+            <Text style={styles.rowMeta} numberOfLines={1}>
+              {ex.equipment.replace(/_/g, ' ').toUpperCase()} ·{' '}
+              {ex.is_compound ? 'COMPOUND' : 'ISOLATION'}
+            </Text>
+          </View>
+
+          <View style={styles.rowRight}>
+            {ex.working_weight_kg !== null ? (
+              <Text style={styles.rowWeight}>
+                {ex.working_weight_kg}
+                <Text style={styles.rowUnit}> kg</Text>
+              </Text>
+            ) : (
+              <Text style={styles.rowNever}>—</Text>
+            )}
+            <Delta pct={ex.delta_pct} />
+          </View>
+        </Pressable>
+      </Animated.View>
     );
   },
   (a, b) =>
-    a.set.id === b.set.id &&
-    a.set.weight_kg === b.set.weight_kg &&
-    a.set.reps === b.set.reps,
+    a.ex.id === b.ex.id &&
+    a.ex.working_weight_kg === b.ex.working_weight_kg &&
+    a.ex.delta_pct === b.ex.delta_pct &&
+    // Without this the rows keep the route they mounted with, and starting a
+    // workout would leave every row still pointing at the detail screen.
+    a.sessionId === b.sessionId,
 );
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: palette.bg },
-  padded: { flex: 1, padding: space.lg },
-  header: {
+  screen: { flex: 1 },
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: space.lg,
+    gap: space.md,
+  },
+  bannerL: { flex: 1, gap: 3 },
+  bannerTitle: { ...type.heading, color: palette.text },
+  bannerSub: { ...type.labelSm, color: palette.textFaint, textTransform: 'none', letterSpacing: 0 },
+  bannerR: { alignItems: 'flex-end', gap: space.sm },
+  bannerLink: { ...type.labelSm },
+  volToggle: { minWidth: 150 },
+  bar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: space.lg,
-    paddingTop: space.md,
+    paddingBottom: space.sm,
   },
-  title: { ...type.title, color: palette.text },
-  live: { ...type.micro, color: palette.primary },
-
-  exerciseRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: space.md,
-    borderBottomWidth: 1,
-    borderBottomColor: palette.border,
+  brand: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  dot: { width: 7, height: 7, borderRadius: 3.5 },
+  brandText: { ...type.label, fontSize: 11, letterSpacing: 2, color: palette.text },
+  barR: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  stamp: { ...type.labelSm, color: palette.textDim, letterSpacing: 1 },
+  avatar: {
+    width: 30, height: 30, borderRadius: 15,
+    borderWidth: StyleSheet.hairlineWidth,
+    backgroundColor: palette.raised,
+    alignItems: 'center', justifyContent: 'center',
   },
-  exerciseRowName: { ...type.bodyStrong, color: palette.text },
-  exerciseRowMeta: { ...type.micro, color: palette.textFaint, marginTop: 2 },
-  chevron: { ...type.heading, color: palette.textFaint },
+  avatarText: { ...type.labelSm, fontSize: 10.5, color: palette.textDim },
 
-  activeCard: { gap: space.md },
-  back: { ...type.micro, color: palette.textMuted },
-  exerciseName: { ...type.title, color: palette.text },
-  lastTime: { ...type.caption, color: palette.textMuted },
+  modeWrap: { paddingHorizontal: space.lg, paddingBottom: space.md },
+  searchWrap: { paddingHorizontal: space.lg, paddingBottom: space.md },
+  body: { paddingHorizontal: space.lg, gap: space.md },
+  gap: { gap: space.sm },
+  gapT: { marginTop: space.md },
+  busyRow: { paddingVertical: space.sm, alignItems: 'center' },
 
-  inputRow: { flexDirection: 'row', gap: space.md },
-  inputWrap: { flex: 1, gap: space.xs },
-  inputLabel: {
-    ...type.micro,
-    color: palette.textMuted,
-    textTransform: 'uppercase',
-  },
-  input: {
-    height: 52,
-    borderRadius: radius.md,
-    backgroundColor: palette.bg,
-    borderWidth: 1,
-    borderColor: palette.border,
-    paddingHorizontal: space.lg,
-    color: palette.text,
-    ...type.heading,
-  },
-  pr: { ...type.caption, color: palette.primary, textAlign: 'center' },
-
-  setRow: {
+  group: { gap: space.xs },
+  rows: { gap: 1 },
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.md,
-    paddingVertical: space.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: palette.border,
+    backgroundColor: palette.surface,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.md,
   },
-  setIndex: {
-    ...type.micro,
-    color: palette.textFaint,
-    width: 20,
+  thumb: {
+    width: 44, height: 44, borderRadius: radius.sm,
+    backgroundColor: palette.raised,
+    alignItems: 'center', justifyContent: 'center',
   },
-  setDetail: { ...type.body, color: palette.text, flex: 1 },
-  setE1rm: { ...type.micro, color: palette.textMuted },
+  rowMid: { flex: 1, gap: 2 },
+  rowName: { ...type.heading, color: palette.text },
+  rowMeta: { ...type.labelSm, color: palette.textFaint },
+  rowRight: { alignItems: 'flex-end', gap: 3 },
+  rowWeight: { ...type.valueSm, fontSize: 17, color: palette.text },
+  rowUnit: { ...type.labelSm, color: palette.textDim },
+  rowNever: { ...type.valueSm, fontSize: 17, color: palette.textGhost },
 
-  emptyText: { ...type.body, color: palette.textMuted, lineHeight: 22 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  chip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.hairlineBright,
+    borderRadius: radius.pill,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+  },
+  chipText: { ...type.body, fontSize: 13.5, color: palette.textDim },
+
+  b: { fontFamily: type.heading.fontFamily, color: palette.text },
 });

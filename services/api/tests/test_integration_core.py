@@ -262,3 +262,74 @@ async def test_weekly_verdict_is_insufficient_data_for_new_user(client):
     res = await client.get("/api/adjudication/weekly", headers=headers)
     assert res.status_code == 422
     assert "weigh-ins" in res.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Search: the word-similarity regression
+# ---------------------------------------------------------------------------
+
+
+async def test_search_finds_a_dish_by_a_word_in_the_middle_of_its_name(
+    client, db_session
+):
+    """Regression: searching "biryani" returned NOTHING for "Chicken biryani".
+
+    `search_text` is a blob of name + brand + category + tags, and the old
+    query used whole-string `similarity()`. A short query against a long blob
+    scores low by construction -- 'biryani' vs 'chicken biryani indian north
+    rice biriyani' measured 0.216, under the 0.3 threshold -- so richer
+    metadata made a food HARDER to find.
+
+    This test fails against `similarity()` and passes against
+    `word_similarity()`.
+    """
+    from app.models import FoodItem
+
+    auth = await _register(client)
+    headers = _auth_headers(auth["access_token"])
+
+    db_session.add(
+        FoodItem(
+            name="Chicken biryani",
+            calories=165,
+            protein_g=9,
+            # A realistic blob, not a bare name -- the bug only appears when
+            # the indexed text is much longer than the query.
+            search_text="chicken biryani indian north rice biriyani dum hyderabadi",
+            moderation_status="approved",
+        )
+    )
+    await db_session.commit()
+
+    res = await client.get(
+        "/api/foods/search", headers=headers, params={"q": "biryani", "remote": "false"}
+    )
+    assert res.status_code == 200, res.text
+    assert "Chicken biryani" in [r["name"] for r in res.json()["results"]]
+
+
+async def test_search_still_tolerates_typos_after_the_fix(client, db_session):
+    """The word-similarity floor must not be so strict it kills fuzzy match."""
+    from app.models import FoodItem
+
+    auth = await _register(client)
+    headers = _auth_headers(auth["access_token"])
+
+    db_session.add(
+        FoodItem(
+            name="Paneer tikka",
+            calories=250,
+            protein_g=18,
+            search_text="paneer tikka indian north starter grilled",
+            moderation_status="approved",
+        )
+    )
+    await db_session.commit()
+
+    res = await client.get(
+        "/api/foods/search",
+        headers=headers,
+        params={"q": "panner tika", "remote": "false"},
+    )
+    assert res.status_code == 200, res.text
+    assert "Paneer tikka" in [r["name"] for r in res.json()["results"]]

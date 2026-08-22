@@ -224,6 +224,25 @@ DISHES: list[tuple] = [
 ]
 
 
+# Regional Indian coverage lives in its own module -- it is long, it is the
+# project's actual differentiator, and keeping it separate means a change to
+# the global core can't accidentally clobber it. Appended rather than merged so
+# a duplicate name is caught by uq_food_source at write time.
+try:
+    from .data.indian_regional import INDIAN_REGIONAL
+
+    DISHES = DISHES + INDIAN_REGIONAL
+except ImportError:  # pragma: no cover - the file is optional
+    pass
+
+try:
+    from .data.world_regional import WORLD_REGIONAL
+
+    DISHES = DISHES + WORLD_REGIONAL
+except ImportError:  # pragma: no cover - the file is optional
+    pass
+
+
 def _servings(rows: list[Serving]) -> list[dict]:
     return [{"name": n, "grams": g, "is_default": d} for n, g, d in rows]
 
@@ -270,6 +289,21 @@ async def run(cuisine_filter: str | None) -> None:
                 "updated_at": now,
             }
         )
+
+    # Defensive de-duplication. Postgres refuses an ON CONFLICT DO UPDATE that
+    # would touch the same row twice in one statement, so two entries sharing a
+    # name anywhere across the merged lists would abort the whole seed. First
+    # occurrence wins, which keeps the global core authoritative over any
+    # regional file that re-states the same dish.
+    seen: set[str] = set()
+    unique = []
+    for row in payload:
+        if row["source_id"] in seen:
+            log.warning("duplicate dish skipped: %s", row["name"])
+            continue
+        seen.add(row["source_id"])
+        unique.append(row)
+    payload = unique
 
     async with SessionLocal() as session:
         stmt = pg_insert(FoodItem).values(payload)

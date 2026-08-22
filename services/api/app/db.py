@@ -13,7 +13,7 @@ settings = get_settings()
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,
+    echo=settings.SQL_ECHO,
     connect_args={"ssl": "require"} if settings.db_requires_ssl else {},
     # Railway's Postgres plugin has a modest connection cap. pool_pre_ping
     # avoids handing out connections the proxy has already reaped, which

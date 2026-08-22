@@ -19,7 +19,8 @@
       "entitlements": {
         "com.apple.developer.healthkit": true,
         "com.apple.developer.healthkit.access": []
-      }
+      },
+      "usesAppleSignIn": true
     },
     "android": {
       "package": "com.trace.app",
@@ -53,6 +54,13 @@
           "NSHealthShareUsageDescription": "Trace reads your steps, sleep, and workouts to explain changes in your energy expenditure. Your activity is never added to your calorie target.",
           "NSHealthUpdateUsageDescription": "Trace can write your weight and nutrition back to Apple Health so your other apps stay in sync.",
           "background": false
+        }
+      ],
+      "expo-apple-authentication",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Trace uses the microphone so you can log a set by speaking it — \"three sets of bench press at sixty kilos\" — instead of typing four numbers with chalk on your hands."
         }
       ]
     ],

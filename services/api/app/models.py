@@ -20,6 +20,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import Column, DateTime, Index, Text, UniqueConstraint
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -75,12 +76,43 @@ class Verdict(str, enum.Enum):
 
 
 class FoodSource(str, enum.Enum):
+    """Where a food's nutrition data came from.
+
+    NAME vs VALUE, AND WHY IT MATTERS HERE
+    SQLAlchemy's Enum type stores the member NAME in Postgres by default,
+    while Pydantic validates against the member VALUE. For most enums in this
+    file those are identical and nothing goes wrong. For this one they are
+    not: `off` != `openfoodfacts`, `usda` != `usda_fdc`, `ai` != `ai_estimated`.
+
+    That mismatch is invisible until the first non-`curated` row is READ back,
+    at which point every search touching it 500s with a Pydantic enum error --
+    a bug that is silent on write and fatal on read. `FOOD_SOURCE_COLUMN`
+    below pins the column to VALUES so the two agree.
+    """
+
     off = "openfoodfacts"
     usda = "usda_fdc"
     ifct = "ifct"
     curated = "curated"
     user = "user"
     ai = "ai_estimated"
+    # Metered commercial sources. Rows from these are cached into this table
+    # on first fetch so we pay once per product ever, not once per lookup --
+    # see services/paid_sources.py.
+    nutritionix = "nutritionix"
+
+
+def _food_source_column() -> Column:
+    """Store FoodSource by value, not by name. See the note above."""
+    return Column(
+        SAEnum(
+            FoodSource,
+            name="foodsource",
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        server_default=FoodSource.curated.value,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +127,14 @@ class User(SQLModel, table=True):
     email: str = Field(index=True, unique=True)
     password_hash: str
 
+    # E.164, e.g. "+919876543210". Nullable because email accounts predate
+    # phone sign-in and password users may never add one -- but UNIQUE where
+    # present, because a phone number is the identity key for the OTP flow and
+    # two accounts sharing one would make "log in with this number"
+    # ambiguous.
+    phone: Optional[str] = Field(default=None, index=True, unique=True)
+    phone_verified_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+
     display_name: Optional[str] = None
     date_of_birth: Optional[date] = None
     sex: Optional[str] = None  # 'male' | 'female' | 'other'
@@ -106,11 +146,67 @@ class User(SQLModel, table=True):
     activity_multiplier: float = 1.45
     lifting_experience_months: int = 0
 
+    # --- Onboarding answers -------------------------------------------------
+    # Collected once at signup and used only to seed the priors in
+    # services/onboarding.py. The adaptive engine overwrites the numbers they
+    # produce within ~3 weeks; these are kept so the plan can be explained
+    # ("here is why we started you at 2,450") and re-derived if a user edits
+    # an answer they got wrong.
+    #
+    # All nullable: they are additive columns on a table that already has rows,
+    # and there are no migrations in this project -- see scripts/sync_schema.py.
+    #
+    # highest_weight_kg is the "have you ever weighed 200 lbs?" question. It is
+    # NOT vanity data: someone at 70 kg who dieted down from 91 kg burns
+    # measurably less than someone who has always been 70 kg, and starting them
+    # on the textbook number stalls them from day one. None means "not asked",
+    # which is deliberately distinct from "never been heavier".
+    highest_weight_kg: Optional[float] = None
+    daily_steps: Optional[int] = None
+    cardio_sessions_per_week: Optional[int] = None
+    lifting_sessions_per_week: Optional[int] = None
+    onboarded_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+
     is_pro: bool = False
     timezone: str = "UTC"
 
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
     updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class PhoneChallenge(SQLModel, table=True):
+    """A one-time code sent by SMS, and the state that makes it safe.
+
+    THE CODE IS HASHED, NEVER STORED IN PLAIN TEXT.
+    It is a short-lived credential exactly like a password, and a database
+    leak must not hand an attacker a list of live codes for numbers they can
+    then sign in as. Same reasoning as RefreshToken above.
+
+    WHY attempts AND sent_count BOTH EXIST
+    They defend against two completely different attacks:
+
+      attempts    guessing. A 6-digit code is 1-in-a-million per try, which is
+                  strong only if the number of tries is small. Unbounded
+                  attempts reduce it to a few thousand requests.
+      sent_count  SMS pumping / toll fraud. Every send costs real money, so an
+                  unthrottled "resend" is a way to spend our balance for us.
+                  This is the attack people forget, and it arrives as a bill.
+    """
+
+    __tablename__ = "phone_challenges"
+    __table_args__ = (Index("ix_phone_challenge_lookup", "phone", "expires_at"),)
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    phone: str = Field(index=True)
+    code_hash: str
+    expires_at: datetime = Field(sa_type=TZDateTime)
+    attempts: int = 0
+    sent_count: int = 1
+    consumed_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    # For per-IP throttling; a single number is cheap to rotate, an IP is less
+    # so. Nullable because a proxy may not forward one.
+    request_ip: Optional[str] = None
 
 
 class RefreshToken(SQLModel, table=True):
@@ -150,7 +246,9 @@ class FoodItem(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=_uuid, primary_key=True)
-    source: FoodSource = Field(default=FoodSource.curated)
+    source: FoodSource = Field(
+        default=FoodSource.curated, sa_column=_food_source_column()
+    )
     source_id: Optional[str] = None
 
     name: str
@@ -213,6 +311,14 @@ class MealLog(SQLModel, table=True):
     carbs_g: float = 0.0
     fat_g: float = 0.0
     fiber_g: float = 0.0
+    # Snapshotted like the macros above, for the Home screen's "worth watching"
+    # ledger. Nullable rather than 0.0-defaulted because there is a real
+    # difference between "this food contains no sodium" and "we don't know" --
+    # summing unknowns as zero would under-report a day's sodium and quietly
+    # tell a user they are under a limit they have actually blown.
+    sodium_mg: Optional[float] = None
+    potassium_mg: Optional[float] = None
+    sugars_g: Optional[float] = None
 
     meal_type: MealType = Field(default=MealType.snack)
     logged_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
@@ -263,6 +369,190 @@ class RecognitionFeedback(SQLModel, table=True):
         default_factory=dict, sa_column=Column(JSONB)
     )
     correction_type: str = "edit"  # edit | reject | confirm
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+# ---------------------------------------------------------------------------
+# Recipes
+# ---------------------------------------------------------------------------
+
+
+class RecipeVisibility(str, enum.Enum):
+    """Who can see a recipe.
+
+    Two states, not three. There is no "pending" here on purpose: a moderation
+    queue with nobody staffing it means nothing is ever published, which is
+    indistinguishable from the feature not existing. Published recipes go live
+    immediately and carry a low `data_quality`, rank below curated foods, and
+    never feed the AI scan's reference panels.
+    """
+
+    private = "private"
+    published = "published"
+
+
+def _recipe_visibility_column() -> Column:
+    """Store visibility by VALUE, for the same reason FoodSource does.
+
+    SQLAlchemy's Enum stores the member NAME by default while Pydantic
+    validates the VALUE. Here they happen to be identical, so nothing breaks
+    today -- but the moment someone adds `unlisted = "link_only"` the mismatch
+    becomes a read-time 500 on every recipe in the table. Pinning it to values
+    now costs nothing and removes that trap.
+    """
+    return Column(
+        SAEnum(
+            RecipeVisibility,
+            name="recipevisibility",
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        server_default=RecipeVisibility.private.value,
+    )
+
+
+class Recipe(SQLModel, table=True):
+    """A user's own dish, composed from catalogue foods.
+
+    NUTRITION IS CACHED, NOT SNAPSHOTTED -- the opposite of MealLog, and
+    deliberately so. A MealLog must never change after the fact, because it is
+    a record of something that was eaten. A Recipe is a living document its
+    author edits; when they fix an ingredient, the panel should follow. The
+    cached columns below are recomputed from the ingredient rows on every
+    write (see `services/recipes.compose`) and exist only so search and list
+    views do not have to fan out to the ingredients of every row.
+
+    So: editing a recipe changes the recipe, and changes nothing about the
+    meals already logged from it.
+    """
+
+    __tablename__ = "recipes"
+    __table_args__ = (
+        Index("ix_recipe_owner", "user_id", "updated_at"),
+        Index("ix_recipe_public", "visibility", "save_count"),
+        Index(
+            "ix_recipe_search_trgm",
+            "search_text",
+            postgresql_using="gin",
+            postgresql_ops={"search_text": "gin_trgm_ops"},
+        ),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+
+    name: str
+    description: Optional[str] = None
+    cuisine: Optional[str] = None
+    photo_url: Optional[str] = None
+
+    visibility: RecipeVisibility = Field(
+        default=RecipeVisibility.private, sa_column=_recipe_visibility_column()
+    )
+    published_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+
+    #: How many portions the whole recipe makes. The exact logging unit --
+    #: calories do not evaporate, so total/servings survives any cooking loss.
+    servings: float = 1.0
+
+    #: What the FINISHED dish weighed. None means nobody measured it, which is
+    #: the common case and is why `per_100g_*` below are nullable. Deriving a
+    #: per-100 g panel from the raw ingredient sum would understate every dish
+    #: that lost water on the hob -- see services/recipes.py.
+    cooked_weight_g: Optional[float] = None
+
+    prep_minutes: Optional[int] = None
+    cook_minutes: Optional[int] = None
+    #: Free-text method, one string per step.
+    steps: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
+
+    # --- cached composition, recomputed on every ingredient write ----------
+    total_calories: float = 0.0
+    total_protein_g: float = 0.0
+    total_carbs_g: float = 0.0
+    total_fat_g: float = 0.0
+    total_fiber_g: float = 0.0
+    total_sugar_g: float = 0.0
+    total_sodium_mg: float = 0.0
+    total_saturated_fat_g: float = 0.0
+    ingredient_grams: float = 0.0
+    #: NULL when `cooked_weight_g` is NULL. A nullable column rather than a
+    #: zero default, because "we do not know this dish's density" and "this
+    #: dish has no calories" must never render the same way.
+    per_100g_calories: Optional[float] = None
+    #: Share of the calories traceable to a catalogue food rather than a
+    #: hand-typed line. Drives the confidence marker on the panel.
+    sourced_fraction: float = 1.0
+
+    # --- social ------------------------------------------------------------
+    #: Set when this recipe was copied from someone else's published one. The
+    #: copy is fully independent; this is provenance, not a live link.
+    forked_from_id: Optional[str] = Field(default=None, foreign_key="recipes.id")
+    save_count: int = 0
+    log_count: int = 0
+
+    search_text: str = Field(default="", sa_column=Column(Text))
+
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class RecipeIngredient(SQLModel, table=True):
+    """One line of a recipe.
+
+    The per-100 g panel is COPIED from the food item rather than joined at
+    read time. Two reasons: a recipe must still compute after a food row is
+    deleted upstream, and the author's totals should not silently shift
+    because Open Food Facts revised a product last Tuesday. `food_item_id` is
+    kept alongside for provenance and for the "swap this ingredient" flow.
+    """
+
+    __tablename__ = "recipe_ingredients"
+    __table_args__ = (Index("ix_ringredient_recipe", "recipe_id", "sort_order"),)
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    recipe_id: str = Field(foreign_key="recipes.id", index=True)
+    #: None for a hand-entered line the user estimated themselves.
+    food_item_id: Optional[str] = Field(default=None, foreign_key="food_items.id")
+
+    display_name: str
+    grams: float
+    #: What the user actually typed, e.g. "2 medium onions". Kept verbatim so
+    #: the recipe reads like a recipe rather than like a spreadsheet.
+    quantity_label: Optional[str] = None
+    note: Optional[str] = None
+    sort_order: int = 0
+
+    # Per 100 g, copied at add time.
+    calories: float = 0.0
+    protein_g: float = 0.0
+    carbs_g: float = 0.0
+    fat_g: float = 0.0
+    fiber_g: float = 0.0
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
+    saturated_fat_g: float = 0.0
+
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class RecipeSave(SQLModel, table=True):
+    """Someone kept a published recipe in their library WITHOUT copying it.
+
+    Distinct from a fork: a save follows the author's edits, a fork does not.
+    Both exist because both are things people mean by "save" -- keeping a
+    reference to somebody's recipe, versus taking it and making it yours.
+    """
+
+    __tablename__ = "recipe_saves"
+    __table_args__ = (
+        UniqueConstraint("user_id", "recipe_id", name="uq_recipe_save"),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    recipe_id: str = Field(foreign_key="recipes.id", index=True)
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
 
@@ -322,8 +612,14 @@ class SetLog(SQLModel, table=True):
     weight_kg: float
     reps: int
     rpe: Optional[float] = None
+    # Reps left in the tank. THIS is what turns a logged set into a
+    # measurement of strength -- 75 kg x 10 with five left and 75 kg x 10 with
+    # nothing left are different facts about the same lifter. Nullable because
+    # every set logged before this column existed genuinely has no answer, and
+    # defaulting those to 0 would retroactively inflate the whole history.
+    rir: Optional[float] = None
     is_warmup: bool = False
-    e1rm: Optional[float] = None  # computed on write
+    e1rm: Optional[float] = None  # computed on write, RIR-adjusted
     performed_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
 
@@ -502,6 +798,62 @@ class ExternalWorkout(SQLModel, table=True):
 
     source: HealthSource = Field(default=HealthSource.healthkit)
     synced_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class RideTrack(SQLModel, table=True):
+    """Where a ride actually went.
+
+    A SEPARATE TABLE, not columns on ExternalWorkout, for two reasons. The
+    practical one: this repo has no migrations, so `create_all` can add a new
+    table but cannot ALTER an existing one. The design one is better anyway --
+    a track is a fat JSONB blob read only when someone opens a map, while
+    `external_workouts` is scanned for every activity list in the app. Keeping
+    the geometry out of that hot row is the right shape regardless.
+
+    POINTS ARE STORED SIMPLIFIED. A two-hour ride at 1 Hz is ~7,000 fixes and
+    no phone can render more than a few hundred on a 300 px canvas, so
+    `services/routes.simplify` runs before the write. The elevation figures
+    below are computed from the FULL track first -- simplifying and then
+    counting climb would drop exactly the intermediate points the profile is
+    made of.
+    """
+
+    __tablename__ = "ride_tracks"
+    __table_args__ = (
+        UniqueConstraint("workout_id", name="uq_ride_track_workout"),
+        Index("ix_ride_user_time", "user_id", "started_at"),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    #: The session this track belongs to. One track per workout.
+    workout_id: str = Field(foreign_key="external_workouts.id", index=True)
+
+    #: Denormalised from the workout so the map can be drawn without a join.
+    sport: str = "cycling"
+    started_at: datetime = Field(sa_type=TZDateTime)
+
+    #: [[lat, lon, alt|null], ...], already simplified for drawing.
+    points: list[Any] = Field(default_factory=list, sa_column=Column(JSONB))
+    point_count: int = 0
+    #: How many fixes the device actually gave us, before simplification.
+    raw_point_count: int = 0
+
+    #: Summed from the track. The device's own figure stays on
+    #: ExternalWorkout.distance_km and wins wherever both exist -- a wheel
+    #: sensor measures, a sum of GPS fixes approximates.
+    track_distance_km: float = 0.0
+
+    # --- elevation, computed from the full track before simplification ----
+    #: NULL, not 0.0, when the device gave no altitude. "This ride was flat"
+    #: and "we have no altitude for this ride" must never render alike.
+    gain_m: Optional[float] = None
+    loss_m: Optional[float] = None
+    max_alt_m: Optional[float] = None
+    min_alt_m: Optional[float] = None
+    altitude_samples: int = 0
+
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
 
 class HealthSyncState(SQLModel, table=True):

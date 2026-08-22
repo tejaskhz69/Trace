@@ -17,12 +17,13 @@ import time
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import text
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from sqlalchemy import func, select as sa_select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import select
 
+from ..config import get_settings
 from ..db import get_session
 from ..models import FoodItem, FoodSource, User
 from ..schemas import (
@@ -34,9 +35,25 @@ from ..schemas import (
 from ..services.food_sources import ResolvedFood, resolve_barcode_remote, search_remote
 from .auth import current_user
 
+settings = get_settings()
+
 router = APIRouter(prefix="/api/foods", tags=["foods"])
 
 LOCAL_RESULT_FLOOR = 5  # below this many local hits, ask the remote sources
+
+# Minimum word_similarity for a fuzzy hit.
+#
+# THIS WINDOW IS TIGHTER THAN IT LOOKS -- measured, not guessed:
+#
+#   'panner tika' -> 'paneer tikka'        0.471   must MATCH (real typo)
+#   'poha'        -> 'sambar powder mtr'   0.400   must MISS  (trigram noise)
+#
+# 0.45 is the midpoint. Raising it to 0.5 breaks two-word typos; lowering it
+# to 0.4 starts returning unrelated foods. If you change this, re-run
+# test_search_still_tolerates_typos_after_the_fix -- it exists to catch
+# exactly that, and the exact-substring arm below is what carries the
+# ordinary, correctly-spelled case.
+WORD_SIMILARITY_FLOOR = 0.45
 
 
 def build_search_text(
@@ -116,16 +133,53 @@ async def search_foods(
     started = time.perf_counter()
     needle = q.strip().lower()
 
-    # pg_trgm similarity + popularity + data quality. The 0.25 threshold is
-    # loose enough for real typos and tight enough to avoid nonsense.
+    # WORD similarity, not whole-string similarity.
+    #
+    # `search_text` is a blob: name + brand + category + tags. Comparing a
+    # short query against the whole blob scores low by construction, so
+    # `similarity()` made a food HARDER to find the more metadata it had --
+    # exactly backwards. Measured before the fix:
+    #
+    #   'biryani'   vs 'chicken biryani indian north rice biriya...'  0.216
+    #   'dal tadka' vs 'dal tadka indian north dal yellow dal to...'  0.263
+    #
+    # Both fell under the 0.3 default threshold, so searching "biryani"
+    # returned nothing while "Chicken biryani" sat in the table, approved.
+    #
+    # `word_similarity(q, text)` scores the query against the best-matching
+    # word sequence INSIDE the blob instead. Same two queries now score 1.00,
+    # and typo tolerance is unaffected ('panner tika' -> 'Paneer tikka', 0.83).
+    #
+    # The floor is compared explicitly rather than relying on the `<%`
+    # operator, because that reads `pg_trgm.word_similarity_threshold` from
+    # server config -- and search behaviour must not depend on a GUC that
+    # differs between a developer's Postgres and Neon.
+    #
+    # INDEXING: `ix_food_search_trgm` (GIN, gin_trgm_ops) accelerates the
+    # ILIKE arms including the leading-wildcard one, which is what keeps this
+    # fast as the catalogue grows.
     sql = text(
         """
-        SELECT *, similarity(search_text, :q) AS sim
+        SELECT *, word_similarity(:q, search_text) AS sim
         FROM food_items
-        WHERE moderation_status = 'approved'
-          AND (search_text % :q OR search_text ILIKE :prefix)
+        WHERE (
+            moderation_status = 'approved'
+            -- ...OR it is the caller's own. `create_custom_food` files a
+            -- user's food as 'pending' and calls it "private to its author",
+            -- but this clause used to filter on 'approved' alone -- so the
+            -- author could not find their own food either, and a private
+            -- library that nobody can search is not a library. Scoped to the
+            -- caller, so one person's pending row stays invisible to everyone
+            -- else exactly as before.
+            OR created_by_user_id = :uid
+          )
+          AND (
+            search_text ILIKE :contains
+            OR word_similarity(:q, search_text) >= :floor
+          )
         ORDER BY
           (search_text ILIKE :prefix) DESC,
+          (search_text ILIKE :contains) DESC,
           sim DESC,
           log_count DESC,
           data_quality DESC
@@ -134,7 +188,15 @@ async def search_foods(
     )
     rows = (
         await session.execute(
-            sql, {"q": needle, "prefix": f"{needle}%", "limit": limit}
+            sql,
+            {
+                "q": needle,
+                "uid": user.id,
+                "prefix": f"{needle}%",
+                "contains": f"%{needle}%",
+                "floor": WORD_SIMILARITY_FLOOR,
+                "limit": limit,
+            },
         )
     ).mappings().all()
 
@@ -294,3 +356,101 @@ async def recent_foods(
         FoodItemPublic.model_validate(FoodItem(**dict(r)), from_attributes=True)
         for r in rows
     ]
+
+
+@router.post("/parse")
+async def parse_meal_text(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+    text: str = Body(embed=True, max_length=500),
+) -> dict:
+    """Describe a meal in words; get portioned foods back.
+
+        "two rotis and a bowl of dal tadka"
+            -> Roti          x2, 40 g each
+               Dal tadka     1 bowl, 200 g
+
+    WHY THIS IS THE ONE PAID FEATURE WORTH THE MONEY
+    Everything else a metered provider sells, we already have for free and
+    often better: Open Food Facts beats it on non-US barcodes, USDA beats it
+    on raw ingredients. Quantity and unit parsing is the exception -- it is
+    genuinely hard, and there is no free equivalent. It is also the same shift
+    the voice workout logger makes on the training side: describe what you
+    did, don't fill in a form.
+
+    RESULTS ARE CACHED INTO OUR OWN TABLE. Every food that comes back is
+    written to `food_items`, so the second person to log "dal tadka" is served
+    from Postgres and costs nothing. That is what turns a per-call bill into a
+    fixed one.
+
+    NOTHING IS LOGGED HERE. This returns candidates for the user to confirm,
+    exactly like the photo scan and the voice logger -- a parser that silently
+    logged "two rotis" as four would corrupt the intake history, and intake is
+    half of the adaptive TDEE.
+    """
+    from ..services import paid_sources
+
+    if not paid_sources.available():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Describing a meal in words needs a nutrition-parsing provider, "
+                "which isn't configured. Use search or the photo scan instead."
+            ),
+        )
+
+    try:
+        foods = await paid_sources.parse_meal(text)
+    except paid_sources.PaidBudgetExhausted as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+
+    items = []
+    for hit in foods:
+        try:
+            items.append(await persist_resolved(session, hit))
+        except Exception:  # noqa: BLE001 - a write failure must not lose the parse
+            await session.rollback()
+
+    return {
+        "query": text,
+        "count": len(items),
+        "items": [FoodItemPublic.model_validate(i, from_attributes=True) for i in items],
+        "message": None
+        if items
+        else "Couldn't work out what that was. Try naming the foods more plainly.",
+    }
+
+
+@router.get("/sources/status")
+async def sources_status(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+) -> dict:
+    """What data sources are live, and how much of today's paid budget is left.
+
+    Exposed because a metered integration fails in a way that is invisible
+    from the outside: a bad key, an exhausted budget and "this food genuinely
+    does not exist" all look identical at the call site. This is how you tell
+    them apart without reading logs.
+    """
+    from ..services import paid_sources
+
+    return {
+        "free": {
+            "openfoodfacts": True,
+            "usda": bool(settings.USDA_FDC_API_KEY),
+            "local_catalogue": True,
+        },
+        # The client shows this in the search placeholder. It is read live
+        # rather than hardcoded because the number moved from 12,959 to
+        # 273,316 in one ingestion run, and a stale "Search 12,000 foods"
+        # undersells the catalogue to the exact user deciding whether to
+        # bother typing.
+        "catalogue_size": await session.scalar(
+            sa_select(func.count(FoodItem.id))
+        ),
+        "paid": {
+            "nutritionix": paid_sources.available(),
+            "budget": paid_sources.budget_status(),
+        },
+    }

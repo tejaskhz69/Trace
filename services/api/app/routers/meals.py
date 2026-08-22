@@ -13,9 +13,25 @@ from sqlmodel import select
 from ..db import get_session
 from ..models import BodyComposition, FoodItem, MealLog, User
 from ..schemas import DailySummary, MealLogPublic, MealLogRequest
+from ..services import micronutrients
 from .auth import current_user
 
 router = APIRouter(prefix="/api/meals", tags=["meals"])
+
+
+def _scaled_micro(food: FoodItem, key: str, factor: float) -> float | None:
+    """Pull one nutrient out of FoodItem.micronutrients and scale it.
+
+    That column is JSONB populated from several upstream sources, so the value
+    may be missing, a string, or something that isn't a number at all. A bad
+    row in public nutrition data must never turn a meal log into a 500 -- this
+    returns None instead, and the client shows the bar as unknown.
+    """
+    raw = (food.micronutrients or {}).get(key)
+    try:
+        return round(float(raw) * factor, 1) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 @router.post("/log", response_model=MealLogPublic, status_code=201)
@@ -47,6 +63,14 @@ async def log_meal(
             carbs_g=round(food.carbs_g * factor, 2),
             fat_g=round(food.fat_g * factor, 2),
             fiber_g=round(food.fiber_g * factor, 2),
+            # Snapshotted like the macros. `micronutrients` is a free-form
+            # JSONB blob whose keys vary by source, so potassium is read
+            # defensively and left as None when absent rather than defaulted
+            # to zero -- see the DailySummary comment on why that distinction
+            # matters.
+            sodium_mg=round(food.sodium_mg * factor, 1) if food.sodium_mg else None,
+            sugars_g=round(food.sugar_g * factor, 2) if food.sugar_g else None,
+            potassium_mg=_scaled_micro(food, "potassium_mg", factor),
             meal_type=payload.meal_type,
             logged_at=payload.logged_at or datetime.now(timezone.utc),
             recognition_id=payload.recognition_id,
@@ -110,6 +134,18 @@ async def daily_summary(
         .order_by(BodyComposition.week_start.desc())  # type: ignore[union-attr]
     )
 
+    # Sum only the rows that actually carry a value. `None` for every row means
+    # we know nothing about today's sodium, and the client renders that as
+    # unknown -- summing missing values as zero would tell a user they are
+    # comfortably under a limit they may well have blown.
+    def _opt_sum(attr: str) -> float | None:
+        vals = [getattr(r, attr) for r in rows if getattr(r, attr) is not None]
+        return round(sum(vals), 1) if vals else None
+
+    micro = micronutrients.daily_targets(
+        calorie_target=latest_target.calorie_target if latest_target else None
+    )
+
     return DailySummary(
         date=on,
         calories=round(sum(r.calories for r in rows), 1),
@@ -117,6 +153,12 @@ async def daily_summary(
         carbs_g=round(sum(r.carbs_g for r in rows), 1),
         fat_g=round(sum(r.fat_g for r in rows), 1),
         fiber_g=round(sum(r.fiber_g for r in rows), 1),
+        sodium_mg=_opt_sum("sodium_mg"),
+        potassium_mg=_opt_sum("potassium_mg"),
+        sugars_g=_opt_sum("sugars_g"),
+        sodium_limit_mg=micro.sodium_mg,
+        potassium_target_mg=micro.potassium_mg,
+        sugars_limit_g=micro.sugars_g,
         calorie_target=latest_target.calorie_target if latest_target else None,
         protein_target_g=latest_target.protein_target_g if latest_target else None,
         carb_target_g=latest_target.carb_target_g if latest_target else None,

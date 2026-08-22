@@ -16,6 +16,11 @@
 import { create } from 'zustand';
 
 import { ApiError, NetworkError, api, tokens, setUnauthorizedHandler } from '../lib/api';
+import {
+  SocialCancelled,
+  signInWithApple,
+  type SocialAssertion,
+} from '../lib/social-auth';
 
 export type AuthStatus = 'restoring' | 'signedOut' | 'signedIn';
 
@@ -25,33 +30,17 @@ export interface AuthUser {
   display_name: string | null;
   is_pro: boolean;
   goal_type: string;
+  /**
+   * ISO timestamp, or null if the questionnaire hasn't been completed.
+   *
+   * The root layout routes on this. It comes from the server rather than local
+   * storage on purpose: a reinstall, or signing in on a second device, must
+   * not re-ask a user questions they have already answered.
+   */
+  onboarded_at?: string | null;
 }
 
 export type SocialProvider = 'apple' | 'google' | 'github';
-
-/**
- * OAuth client IDs, inlined at BUILD time like every EXPO_PUBLIC_ var.
- *
- * All three are unset today, which is why `socialSignIn` reports the provider
- * as unconfigured instead of opening a broken browser flow. To finish it:
- *
- *   1. Register the app with each provider (Apple Developer, Google Cloud
- *      console, GitHub OAuth Apps) and put the client IDs in .env.
- *   2. Add a backend route that accepts the provider's identity token,
- *      verifies it against that provider's public keys, and returns a Trace
- *      session — mirroring what POST /api/auth/login already returns.
- *   3. Replace the guard below with expo-auth-session (Google/GitHub) and
- *      expo-apple-authentication (Apple).
- *
- * Until step 2 exists there is no way to turn a Google identity into a Trace
- * account, so shipping a button that opens a browser would strand the user
- * mid-flow.
- */
-const OAUTH_CLIENT_IDS: Record<SocialProvider, string | undefined> = {
-  apple: process.env.EXPO_PUBLIC_APPLE_CLIENT_ID,
-  google: process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID,
-  github: process.env.EXPO_PUBLIC_GITHUB_CLIENT_ID,
-};
 
 const PROVIDER_NAMES: Record<SocialProvider, string> = {
   apple: 'Apple',
@@ -68,6 +57,10 @@ interface AuthState {
   restore: () => Promise<void>;
   login: (email: string, password: string) => Promise<boolean>;
   socialSignIn: (provider: SocialProvider) => Promise<boolean>;
+  /** Hand a fetched provider token to the server. Used by the Google flow. */
+  completeSocial: (assertion: SocialAssertion) => Promise<boolean>;
+  /** Exchange a phone number and its one-time code for a session. */
+  completePhone: (phone: string, code: string) => Promise<boolean>;
   register: (payload: {
     email: string;
     password: string;
@@ -141,19 +134,78 @@ export const useAuth = create<AuthState>((set, get) => ({
     }
   },
 
+  /**
+   * Exchange a provider identity token for a Trace session.
+   *
+   * THE CLIENT DOES NOT DECIDE WHO THE USER IS. It fetches a signed assertion
+   * and hands it over; `POST /api/auth/social` verifies the signature and the
+   * audience before it believes a single field. Anything decided here could
+   * be faked by anyone running a modified build.
+   *
+   * The GOOGLE path is not here on purpose: Google's Expo integration is a
+   * React hook, so it must be called from a component. The screen fetches the
+   * token and calls `completeSocial` with it.
+   */
   async socialSignIn(provider) {
-    if (!OAUTH_CLIENT_IDS[provider]) {
-      // Deliberately explicit. A button that silently does nothing reads as a
-      // broken app; this says which piece is missing.
+    if (provider === 'github') {
       set({
-        error: `${PROVIDER_NAMES[provider]} sign-in isn't set up yet. Use your email and password for now.`,
+        error: 'GitHub sign-in is not available. Use Google, Apple, or your email.',
       });
       return false;
     }
+    if (provider === 'apple') {
+      set({ submitting: true, error: null });
+      try {
+        const assertion = await signInWithApple();
+        return await get().completeSocial(assertion);
+      } catch (err) {
+        // A cancelled sheet is not a failure. Showing an error for something
+        // the user did on purpose is how an app feels broken.
+        if (err instanceof SocialCancelled) {
+          set({ submitting: false });
+          return false;
+        }
+        set({ error: messageFor(err), submitting: false });
+        return false;
+      }
+    }
     set({
-      error: `${PROVIDER_NAMES[provider]} sign-in is configured but the server can't exchange its token yet.`,
+      error: 'Start Google sign-in from the sign-in screen.',
     });
     return false;
+  },
+
+  async completeSocial(assertion) {
+    set({ submitting: true, error: null });
+    try {
+      const res = await api.socialSignIn(
+        assertion.provider,
+        assertion.idToken,
+        assertion.displayName,
+      );
+      set({ status: 'signedIn', user: res.user, submitting: false });
+      return true;
+    } catch (err) {
+      set({ error: messageFor(err), submitting: false });
+      return false;
+    }
+  },
+
+  async completePhone(phone, code) {
+    set({ submitting: true, error: null });
+    try {
+      const res = await api.phoneVerify(phone, code);
+      set({ status: 'signedIn', user: res.user, submitting: false });
+      return true;
+    } catch (err) {
+      // The server's message is the useful one here -- it counts down the
+      // remaining attempts, which a generic string cannot.
+      set({
+        error: err instanceof ApiError ? err.message : messageFor(err),
+        submitting: false,
+      });
+      return false;
+    }
   },
 
   async register(payload) {

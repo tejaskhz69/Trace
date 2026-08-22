@@ -70,11 +70,28 @@ async def db_engine():
     await engine.dispose()
 
 
+# Fixtures that mean "this test touches the database". A test that requests
+# none of them cannot leak state, so it does not need a truncate.
+_DB_FIXTURES = frozenset({"db_engine", "db_session", "client"})
+
+
 @pytest.fixture(autouse=True)
-async def _clean_tables(db_engine):
-    """Truncate every table before each test so tests never leak state."""
+async def _clean_tables(request):
+    """Truncate every table before each test so tests never leak state.
+
+    ONLY for tests that actually touch the database. This used to depend on
+    `db_engine` unconditionally, which meant every pure-function test in
+    test_engines/test_strength/test_maintenance paid ~2 s to connect and
+    TRUNCATE a table set it never read -- turning a suite of arithmetic into
+    a multi-minute run, which is how a test suite stops being run at all.
+    """
+    if not (_DB_FIXTURES & set(request.fixturenames)):
+        yield
+        return
+
+    engine = request.getfixturevalue("db_engine")
     names = ", ".join(f'"{t.name}"' for t in SQLModel.metadata.sorted_tables)
-    async with db_engine.begin() as conn:
+    async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE TABLE {names} RESTART IDENTITY CASCADE"))
     yield
 

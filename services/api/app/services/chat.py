@@ -55,12 +55,14 @@ class ChatAnswer:
 
 async def ask(question: str) -> ChatAnswer:
     """Call Gemini for one answer. Mirrors vision.recognize()'s guard."""
-    from google import genai
+    # Reuse vision's cached client: same credential, same connection pool,
+    # and constructing a new one per question paid a TLS handshake every time.
+    from .vision import _client
 
     if not settings.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
 
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    client = _client()
     model = settings.CHAT_MODEL
 
     resp = await client.aio.interactions.create(
