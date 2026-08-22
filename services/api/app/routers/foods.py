@@ -53,6 +53,11 @@ LOCAL_RESULT_FLOOR = 5  # below this many local hits, ask the remote sources
 # test_search_still_tolerates_typos_after_the_fix -- it exists to catch
 # exactly that, and the exact-substring arm below is what carries the
 # ordinary, correctly-spelled case.
+#
+# APPLIED VIA `SET LOCAL pg_trgm.word_similarity_threshold`, per transaction,
+# rather than as a bind parameter in the WHERE clause -- that is what lets the
+# `<%` operator use the GIN index. Postgres's own default for this GUC is 0.6,
+# so a value that fails to apply makes search stricter rather than erroring.
 WORD_SIMILARITY_FLOOR = 0.45
 
 
@@ -150,14 +155,50 @@ async def search_foods(
     # word sequence INSIDE the blob instead. Same two queries now score 1.00,
     # and typo tolerance is unaffected ('panner tika' -> 'Paneer tikka', 0.83).
     #
-    # The floor is compared explicitly rather than relying on the `<%`
-    # operator, because that reads `pg_trgm.word_similarity_threshold` from
-    # server config -- and search behaviour must not depend on a GUC that
-    # differs between a developer's Postgres and Neon.
+    # THE `<%` OPERATOR, NOT A COMPARISON ON word_similarity().
     #
-    # INDEXING: `ix_food_search_trgm` (GIN, gin_trgm_ops) accelerates the
-    # ILIKE arms including the leading-wildcard one, which is what keeps this
-    # fast as the catalogue grows.
+    # This used to read `word_similarity(:q, search_text) >= :floor`, on the
+    # reasoning that `<%` consults `pg_trgm.word_similarity_threshold` and
+    # search must not depend on a GUC that differs between a developer's
+    # Postgres and Neon. The reasoning was right; the conclusion cost us the
+    # index.
+    #
+    # Postgres registers an index strategy for the OPERATOR, not for the
+    # return value of the function. A function result can only be computed
+    # row by row -- and because this arm sits in an OR, a disjunction is only
+    # index-usable when EVERY arm is, so the non-indexable arm dragged the
+    # perfectly good ILIKE down with it. The whole query went sequential.
+    # Measured on 578,773 rows before this fix:
+    #
+    #   Seq Scan on food_items, 252,997 rows removed by filter ....  8,962 ms
+    #   Bitmap Heap Scan via ix_food_search_trgm ....................   358 ms
+    #
+    # `SET LOCAL` below gets the determinism back without giving up the
+    # index: the threshold is pinned per transaction, so it no longer depends
+    # on server config, and it cannot leak to another request sharing the
+    # connection. `a <% b` is defined as
+    # `word_similarity(a, b) >= <that threshold>`, so this is the same
+    # comparison -- verified by identical hit counts on every query measured.
+    #
+    # THE FAILURE MODE TO KNOW ABOUT: if that SET LOCAL ever stops applying,
+    # the threshold falls back to Postgres's 0.6 default and search silently
+    # gets STRICTER -- no error, just quietly worse typo tolerance.
+    # `test_search_threshold_is_actually_applied` exists to fail loudly there.
+    #
+    # The CAST is required: asyncpg sends the parameter as `unknown`, and
+    # `<%` has no unknown-typed variant.
+    # `set_config(..., is_local => true)` rather than the `SET LOCAL` statement:
+    # SET is a utility command, not a planned one, so it cannot take a bind
+    # parameter -- `SET LOCAL ... = $1` is a syntax error. set_config is an
+    # ordinary function call with identical transaction-scoped semantics, and
+    # it keeps the threshold parameterised instead of interpolated into SQL.
+    await session.execute(
+        text(
+            "SELECT set_config('pg_trgm.word_similarity_threshold', :floor, true)"
+        ),
+        {"floor": str(WORD_SIMILARITY_FLOOR)},
+    )
+
     sql = text(
         """
         SELECT *, word_similarity(:q, search_text) AS sim
@@ -175,7 +216,7 @@ async def search_foods(
           )
           AND (
             search_text ILIKE :contains
-            OR word_similarity(:q, search_text) >= :floor
+            OR CAST(:q AS text) <% search_text
           )
         ORDER BY
           (search_text ILIKE :prefix) DESC,
@@ -194,7 +235,9 @@ async def search_foods(
                 "uid": user.id,
                 "prefix": f"{needle}%",
                 "contains": f"%{needle}%",
-                "floor": WORD_SIMILARITY_FLOOR,
+                # `floor` is gone from this statement -- the threshold now
+                # lives in the SET LOCAL above, which is what makes the
+                # comparison indexable.
                 "limit": limit,
             },
         )

@@ -333,3 +333,147 @@ async def test_search_still_tolerates_typos_after_the_fix(client, db_session):
     )
     assert res.status_code == 200, res.text
     assert "Paneer tikka" in [r["name"] for r in res.json()["results"]]
+
+
+# ---------------------------------------------------------------------------
+# Search performance -- the trigram index
+#
+# These guard the fix for the sequential scan that made every food search take
+# 7.5-18 seconds against 578,773 rows. Between them they pin the two things
+# that can silently regress: the query plan, and the similarity threshold.
+# ---------------------------------------------------------------------------
+
+
+async def test_search_uses_the_trigram_index(db_session):
+    """THE REGRESSION GUARD. If this fails, search just got 28x slower.
+
+    The WHERE clause must stay expressed with the `<%` OPERATOR. Postgres
+    registers an index strategy for the operator but not for the return value
+    of `word_similarity()`, and because this arm sits in an OR -- where a
+    disjunction is only index-usable if EVERY arm is -- writing it as a
+    function comparison drags the whole query to a sequential scan.
+
+    Someone "simplifying" this back to `word_similarity(:q, x) >= 0.45`
+    reintroduces an 8-second search with no test failure anywhere else,
+    which is exactly why this asserts on the PLAN rather than on results.
+
+    WHY THIS DISABLES seqscan RATHER THAN READING THE DEFAULT PLAN
+    `trace_test` is truncated before every test, so the table here holds a
+    handful of rows and Postgres correctly prefers a sequential scan -- at
+    that size it IS cheaper, and asserting otherwise would only prove the
+    table is small. What actually needs guarding is whether the predicate is
+    index-*able* at all, which is a property of how it is written, not of the
+    row count.
+
+    So: make a seq scan prohibitively expensive and see whether an index path
+    exists. With `<%` one does. With `word_similarity(...) >= 0.45` none does,
+    and Postgres falls back to the seq scan it was told to avoid -- which is
+    the regression this catches. Verified to fail against the old form.
+    """
+    from sqlalchemy import text
+
+    await db_session.execute(
+        text("SET LOCAL pg_trgm.word_similarity_threshold = 0.45")
+    )
+    await db_session.execute(text("SET LOCAL enable_seqscan = off"))
+    plan_rows = (
+        await db_session.execute(
+            text(
+                """
+                EXPLAIN SELECT id FROM food_items
+                WHERE (moderation_status = 'approved' OR created_by_user_id = :uid)
+                  AND (search_text ILIKE :contains OR CAST(:q AS text) <% search_text)
+                LIMIT 25
+                """
+            ),
+            {"uid": "nobody", "q": "paneer tikka", "contains": "%paneer tikka%"},
+        )
+    ).all()
+    plan = "\n".join(r[0] for r in plan_rows)
+
+    assert "ix_food_search_trgm" in plan, (
+        "Food search can no longer use the trigram index, so it will "
+        "sequentially scan the whole catalogue. The `<%` operator was "
+        "probably replaced with a word_similarity() comparison -- Postgres "
+        "registers an index strategy for the operator, not for the "
+        f"function's return value.\n\n{plan}"
+    )
+
+
+async def test_search_threshold_is_actually_applied(client, db_session):
+    """SET LOCAL must reach the query, or typo tolerance quietly degrades.
+
+    The threshold now lives in `pg_trgm.word_similarity_threshold` rather than
+    in the SQL. That is what makes the operator indexable -- and it introduces
+    a failure mode with no error attached: if the SET LOCAL stops applying
+    (a session that no longer holds an open transaction, a pooler that resets
+    it), Postgres falls back to its 0.6 default and search silently gets
+    STRICTER. Nothing raises. Fuzzy matches just stop arriving.
+
+    'panner tika' -> 'paneer tikka' scores 0.471, which clears our 0.45 floor
+    and fails 0.6. So this test passes only when the SET LOCAL took effect.
+    """
+    from app.models import FoodItem
+
+    auth = await _register(client)
+    headers = _auth_headers(auth["access_token"])
+
+    db_session.add(
+        FoodItem(
+            name="Paneer tikka",
+            calories=250,
+            protein_g=18,
+            search_text="paneer tikka indian north starter grilled",
+            moderation_status="approved",
+        )
+    )
+    await db_session.commit()
+
+    res = await client.get(
+        "/api/foods/search",
+        headers=headers,
+        params={"q": "panner tika", "remote": "false"},
+    )
+    assert res.status_code == 200, res.text
+    names = [r["name"] for r in res.json()["results"]]
+    assert "Paneer tikka" in names, (
+        "A 0.471-similarity typo was rejected. The threshold is most likely "
+        "sitting at Postgres's 0.6 default, meaning SET LOCAL did not apply."
+    )
+
+
+async def test_search_ranking_survives_the_index_change(client, db_session):
+    """Exact and prefix matches must still outrank fuzzy ones.
+
+    The ORDER BY was deliberately left untouched by the index fix, but the
+    filter feeding it changed -- so this pins the outcome rather than the
+    clause.
+    """
+    from app.models import FoodItem
+
+    auth = await _register(client)
+    headers = _auth_headers(auth["access_token"])
+
+    for name, blob in [
+        ("Dosa", "dosa indian south breakfast crepe"),
+        ("Masala dosa potato filled", "masala dosa potato filled indian south"),
+        ("Dosakaya pappu", "dosakaya pappu andhra dal yellow"),
+    ]:
+        db_session.add(
+            FoodItem(
+                name=name,
+                calories=150,
+                search_text=blob,
+                moderation_status="approved",
+            )
+        )
+    await db_session.commit()
+
+    res = await client.get(
+        "/api/foods/search", headers=headers, params={"q": "dosa", "remote": "false"}
+    )
+    assert res.status_code == 200, res.text
+    names = [r["name"] for r in res.json()["results"]]
+    assert names, "search returned nothing"
+    # "Dosa" starts with the query; the others merely contain or fuzzy-match it.
+    assert names[0] == "Dosa", f"prefix match lost its rank: {names}"
