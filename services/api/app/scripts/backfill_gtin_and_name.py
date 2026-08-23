@@ -76,7 +76,13 @@ VERSION = "1.0"
 #: after checking that these two columns still mean what they mean. Do not
 #: loosen the comparison -- the guard exists so the script cannot run against
 #: a schema it does not understand.
-EXPECTED_REVISIONS = frozenset({"e4f7b0d25c63"})
+#:
+#: f6a9c2e47d85 (workout programming tables) was checked and added: it is
+#: purely additive, creating nine new tables and altering nothing. It issues
+#: no ALTER TABLE, no DML, and does not reference food_items at all, so
+#: gtin14 and name_normalized still mean exactly what they meant at
+#: e4f7b0d25c63.
+EXPECTED_REVISIONS = frozenset({"e4f7b0d25c63", "f6a9c2e47d85"})
 
 REQUIRED_COLUMNS = frozenset({"gtin14", "name_normalized"})
 
