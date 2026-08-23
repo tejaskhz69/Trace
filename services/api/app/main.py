@@ -33,6 +33,7 @@ from .routers import (
     meals,
     onboarding,
     preparations,
+    programming,
     recipes,
     recognition,
     weight,
@@ -151,6 +152,9 @@ app.include_router(recipes.router)
 app.include_router(recognition.router)
 app.include_router(weight.router)
 app.include_router(workouts.router)
+# Same /api/workouts prefix, separate module: the recording endpoints in
+# routers/workouts.py are left untouched.
+app.include_router(programming.router)
 app.include_router(adjudication.router)
 
 

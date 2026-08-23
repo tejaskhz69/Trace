@@ -644,3 +644,170 @@ class RecipeLogRequest(BaseModel):
     grams: Optional[float] = Field(default=None, gt=0, le=20_000)
     meal_type: MealType = MealType.snack
     logged_at: Optional[datetime] = None
+
+
+# ---------------------------------------------------------------------------
+# Workout programming
+#
+# Bounds here mirror the CHECK constraints in models.py rather than replacing
+# them. Validating in both places is deliberate: Pydantic gives the caller a
+# legible 422 naming the field, and the database makes a bug in this layer a
+# failed insert instead of bad advice on someone's screen.
+# ---------------------------------------------------------------------------
+
+
+class TrainingProfileRequest(BaseModel):
+    """Create the caller's training profile. One per user."""
+
+    days_per_week: int = Field(default=3, ge=1, le=7)
+    available_days: list[str] = Field(default_factory=list)
+    preferred_minutes: int = Field(default=60, ge=15, le=180)
+    equipment: list[str] = Field(default_factory=list)
+    disliked_exercise_ids: list[str] = Field(default_factory=list)
+    #: Free text. HEALTH-SENSITIVE -- never logged, never echoed into an
+    #: error message. See WORKOUT_SCHEMA_DESIGN.md 10.8.
+    limitations: Optional[str] = Field(default=None, max_length=2000)
+    #: Opt-in for AI-generated programming. Separate from users.program_type,
+    #: and the stricter of the two: false disables AI generation whatever
+    #: program_type says. Unused in the deterministic MVP.
+    ai_enabled: bool = True
+
+
+class TrainingProfilePatch(BaseModel):
+    """Partial update. Only fields actually sent are applied.
+
+    Every field is optional and there is no sentinel default, so
+    `model_dump(exclude_unset=True)` distinguishes "not sent" from "sent as
+    null" -- which matters for `limitations`, where clearing the field is a
+    real thing a user may want to do.
+    """
+
+    days_per_week: Optional[int] = Field(default=None, ge=1, le=7)
+    available_days: Optional[list[str]] = None
+    preferred_minutes: Optional[int] = Field(default=None, ge=15, le=180)
+    equipment: Optional[list[str]] = None
+    disliked_exercise_ids: Optional[list[str]] = None
+    limitations: Optional[str] = Field(default=None, max_length=2000)
+    ai_enabled: Optional[bool] = None
+
+
+class TrainingProfilePublic(BaseModel):
+    id: str
+    days_per_week: int
+    available_days: list[str]
+    preferred_minutes: int
+    equipment: list[str]
+    disliked_exercise_ids: list[str]
+    limitations: Optional[str]
+    ai_enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProgrammeRequest(BaseModel):
+    """Generate a programme. Omitted fields fall back to the profile."""
+
+    days_per_week: Optional[int] = Field(default=None, ge=1, le=7)
+
+
+class ProgrammeDayPublic(BaseModel):
+    id: str
+    day_index: int
+    label: str
+    focus: list[str]
+    target_minutes: Optional[int]
+
+
+class ProgrammePublic(BaseModel):
+    id: str
+    name: str
+    split_type: str
+    days_per_week: int
+    status: str
+    generated_by: str
+    started_at: datetime
+    archived_at: Optional[datetime]
+    days: list[ProgrammeDayPublic]
+
+
+class PlannedSessionRequest(BaseModel):
+    """Materialise one dated session from a programme day.
+
+    `programme_day_id` omitted means "whichever day comes next in the
+    rotation", which is what the client actually wants on the home screen.
+    """
+
+    scheduled_for: Optional[date] = None
+    programme_day_id: Optional[str] = None
+
+
+class ExerciseEducationPublic(BaseModel):
+    """Why this exercise is here and how to perform it.
+
+    COACHING LANGUAGE ONLY. Nothing in `form_cue` diagnoses, mentions injury,
+    or implies medical advice, and it must stay that way.
+    """
+
+    primary_muscle: str
+    secondary_muscles: list[str]
+    movement_pattern: str
+    form_cue: str
+
+
+class PrescribedExercisePublic(BaseModel):
+    id: str
+    exercise_id: str
+    exercise_name: str
+    equipment: str
+    order_index: int
+    sets: int
+    rep_min: int
+    rep_max: int
+    target_rir: int
+    rest_seconds: int
+    #: NULL until there is logged history to base it on. The client renders
+    #: that as an em dash -- never as a number, and never as a guess.
+    suggested_weight_kg: Optional[float]
+    progression_rule: str
+    status: str
+    replaced_with_exercise_id: Optional[str]
+    substitution_ids: list[str]
+    education: Optional[ExerciseEducationPublic] = None
+
+
+class PrescribedExercisePatch(BaseModel):
+    """Skip a prescribed exercise, or swap it for another.
+
+    `status` is the only required field, and the two legal transitions are
+    deliberately narrow: a client may decline an exercise or substitute one,
+    and may not invent an arbitrary state.
+    """
+
+    status: str = Field(pattern="^(skipped|replaced|prescribed)$")
+    replaced_with_exercise_id: Optional[str] = None
+
+
+class PlannedSessionPublic(BaseModel):
+    id: str
+    programme_day_id: Optional[str]
+    programme_day_label: Optional[str]
+    session_id: Optional[str]
+    scheduled_for: date
+    status: str
+    estimated_minutes: Optional[int]
+    generated_by: str
+    notes: list[str]
+    exercises: list[PrescribedExercisePublic]
+
+
+class PlannedSessionStartPublic(BaseModel):
+    """The handoff to the existing set-logging flow.
+
+    `session_id` is a real WorkoutSession the untouched
+    `POST /api/workouts/sessions/{id}/sets` endpoint already accepts, which is
+    the whole point: programming hands over and stops.
+    """
+
+    planned_session_id: str
+    session_id: str
+    created: bool
