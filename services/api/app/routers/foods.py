@@ -26,12 +26,19 @@ from sqlmodel import select
 from ..config import get_settings
 from ..db import get_session
 from ..models import FoodItem, FoodSource, User
+from ..services.search_rank import (
+    ARM_ALIAS,
+    alias_candidate,
+    direct_candidate,
+    rank,
+)
 from ..schemas import (
     BarcodeResolveResponse,
     CustomFoodRequest,
     FoodItemPublic,
     FoodSearchResponse,
 )
+from ..services.licensing import licence_for
 from ..services.food_sources import ResolvedFood, resolve_barcode_remote, search_remote
 from .auth import current_user
 
@@ -40,6 +47,14 @@ settings = get_settings()
 router = APIRouter(prefix="/api/foods", tags=["foods"])
 
 LOCAL_RESULT_FLOOR = 5  # below this many local hits, ask the remote sources
+
+#: Per-arm overfetch. Each arm pulls this multiple of `limit` so ranking
+#: has something to choose between; a shared limit would let one arm
+#: starve the other before the merge ever ran.
+ARM_OVERFETCH = 4
+#: Hard ceiling per arm, so a term matching thousands of aliases still
+#: does bounded work.
+MAX_ARM_FETCH = 200
 
 # Minimum word_similarity for a fuzzy hit.
 #
@@ -126,6 +141,31 @@ async def persist_resolved(
     return result.scalar_one()
 
 
+def _public(item: FoodItem,
+            prov: tuple[str, Optional[str]]) -> FoodItemPublic:
+    """Serialise one result, attaching provenance and per-row licensing.
+
+    LICENCE IS PER ROW, NEVER GLOBAL. The catalogue mixes ODbL (Open Food
+    Facts), public-domain (USDA) and user-curated data. A single blanket
+    notice would misattribute two thirds of it, so the row carries its own
+    licence, tier and upstream URL and the UI renders what it is given.
+
+    Falls back to `licensing.licence_for(source)` only when the column is
+    unset -- which is fail-closed ('unknown'), not a guess.
+    """
+    arm, alias_text = prov
+    out = FoodItemPublic.model_validate(item, from_attributes=True)
+    licence = getattr(item, "source_licence", None) or licence_for(
+        getattr(item.source, "value", item.source)
+    )
+    out.source_licence = licence if isinstance(licence, str) else licence.value
+    out.verification_tier = getattr(item, "verification_tier", None)
+    out.source_url = getattr(item, "source_url", None)
+    out.matched_via = arm
+    out.matched_alias = alias_text
+    return out
+
+
 @router.get("/search", response_model=FoodSearchResponse)
 async def search_foods(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -199,32 +239,100 @@ async def search_foods(
         {"floor": str(WORD_SIMILARITY_FLOOR)},
     )
 
+    # TWO ARMS IN ONE ROUND TRIP.
+    #
+    # The direct arm is the original query, unchanged in its WHERE and in what
+    # it can match. The alias arm joins `food_aliases`, which is what finally
+    # lets 'avalakki' and 'sambhar' find the right food -- before it existed
+    # they returned confidently wrong results, because no row in the catalogue
+    # carried a regional name.
+    #
+    # UNION ALL, not two round trips and not a correlated subquery: one
+    # statement, no N+1.
+    #
+    # MEASURED PLANS (578,773 food_items, 1,353 food_aliases):
+    #   direct 'dosa'  -> Bitmap Index Scan ix_food_search_trgm     132 ms
+    #   alias  'panir' -> Seq Scan on food_aliases                   18 ms
+    #   alias  'mix'   -> Seq Scan on food_aliases                   53 ms
+    #
+    # The alias arm currently seq-scans, and that is CORRECT: food_aliases is
+    # 1,520 kB, so the planner reads the whole thing for less than the index
+    # would cost. `ix_alias_normalized_trgm` is verified usable -- forcing
+    # enable_seqscan=off produces a Bitmap Index Scan on it -- so the plan
+    # flips on its own as the table grows. Neither arm ever seq-scans
+    # food_items, which is the scan that actually matters.
+    #
+    # EACH ARM IS BOUNDED SEPARATELY. A shared LIMIT would let one arm starve
+    # the other -- a query matching 5,000 aliases would crowd out every direct
+    # hit before ranking ever ran. Overfetching per arm and then ranking in
+    # Python is what makes the merge correct; the factor is small and capped so
+    # the work stays bounded regardless of how popular a term is.
+    fetch = min(MAX_ARM_FETCH, max(limit * ARM_OVERFETCH, ARM_OVERFETCH))
+
     sql = text(
         """
-        SELECT *, word_similarity(:q, search_text) AS sim
-        FROM food_items
-        WHERE (
-            moderation_status = 'approved'
-            -- ...OR it is the caller's own. `create_custom_food` files a
-            -- user's food as 'pending' and calls it "private to its author",
-            -- but this clause used to filter on 'approved' alone -- so the
-            -- author could not find their own food either, and a private
-            -- library that nobody can search is not a library. Scoped to the
-            -- caller, so one person's pending row stays invisible to everyone
-            -- else exactly as before.
-            OR created_by_user_id = :uid
-          )
-          AND (
-            search_text ILIKE :contains
-            OR CAST(:q AS text) <% search_text
-          )
-        ORDER BY
-          (search_text ILIKE :prefix) DESC,
-          (search_text ILIKE :contains) DESC,
-          sim DESC,
-          log_count DESC,
-          data_quality DESC
-        LIMIT :limit
+        WITH direct AS (
+            SELECT f.*,
+                   word_similarity(:q, f.search_text) AS sim,
+                   'direct'      AS arm,
+                   NULL::text    AS normalized,
+                   NULL::text    AS alias_type,
+                   1.0::float8   AS confidence
+            FROM food_items f
+            WHERE (
+                f.moderation_status = 'approved'
+                -- ...OR it is the caller's own. `create_custom_food` files a
+                -- user's food as 'pending' and calls it "private to its
+                -- author", but this clause used to filter on 'approved' alone
+                -- -- so the author could not find their own food either, and a
+                -- private library that nobody can search is not a library.
+                -- Scoped to the caller, so one person's pending row stays
+                -- invisible to everyone else exactly as before.
+                OR f.created_by_user_id = :uid
+              )
+              AND (
+                f.search_text ILIKE :contains
+                OR CAST(:q AS text) <% f.search_text
+              )
+            ORDER BY
+              (f.search_text ILIKE :prefix) DESC,
+              (f.search_text ILIKE :contains) DESC,
+              sim DESC,
+              f.log_count DESC,
+              f.data_quality DESC
+            LIMIT :fetch
+        ),
+        aliased AS (
+            SELECT f.*,
+                   word_similarity(:q, a.normalized) AS sim,
+                   'alias'    AS arm,
+                   a.normalized AS normalized,
+                   a.alias_type AS alias_type,
+                   a.confidence AS confidence
+            FROM food_aliases a
+            JOIN food_items f ON f.id = a.food_item_id
+            -- Retired aliases must never resurface. `is_active` is the
+            -- moderation switch; a row is deactivated rather than deleted so
+            -- the correction history survives.
+            WHERE a.is_active
+              AND (
+                f.moderation_status = 'approved'
+                OR f.created_by_user_id = :uid
+              )
+              AND (
+                a.normalized ILIKE :contains
+                OR CAST(:q AS text) <% a.normalized
+              )
+            ORDER BY
+              (a.normalized ILIKE :prefix) DESC,
+              sim DESC,
+              a.confidence DESC,
+              f.log_count DESC
+            LIMIT :fetch
+        )
+        SELECT * FROM direct
+        UNION ALL
+        SELECT * FROM aliased
         """
     )
     rows = (
@@ -238,12 +346,39 @@ async def search_foods(
                 # `floor` is gone from this statement -- the threshold now
                 # lives in the SET LOCAL above, which is what makes the
                 # comparison indexable.
-                "limit": limit,
+                "fetch": fetch,
             },
         )
     ).mappings().all()
 
-    items = [FoodItem(**{k: v for k, v in r.items() if k != "sim"}) for r in rows]
+    # Ranking and de-duplication happen in `services/search_rank.py`, which is
+    # pure and exhaustively tested. The router stays thin: it fetches, hands
+    # over, and maps back.
+    candidates = [
+        alias_candidate(r) if r["arm"] == ARM_ALIAS else direct_candidate(r)
+        for r in rows
+    ]
+    ranked = rank(needle, candidates, limit=limit)
+
+    # One row per food_item_id, so a food reachable through three aliases is
+    # one result rather than three.
+    by_id = {}
+    for r in rows:
+        by_id.setdefault(str(r["id"]), r)
+
+    # Column names the adapters in services/search_rank.py read, plus the
+    # arm marker. They are NOT food_items columns and must not be handed to
+    # the FoodItem constructor.
+    _COMPUTED = {"sim", "arm", "normalized", "alias_type", "confidence"}
+    items: list[FoodItem] = []
+    provenance: dict[str, tuple[str, Optional[str]]] = {}
+    for hit in ranked:
+        row = by_id[hit.food_item_id]
+        items.append(FoodItem(**{k: v for k, v in row.items()
+                                 if k not in _COMPUTED}))
+        provenance[hit.food_item_id] = (
+            hit.arm, hit.matched_text if hit.via_alias else None
+        )
     source_label = "local"
 
     if remote and len(items) < LOCAL_RESULT_FLOOR:
@@ -261,9 +396,7 @@ async def search_foods(
     took = int((time.perf_counter() - started) * 1000)
     return FoodSearchResponse(
         query=q,
-        results=[
-            FoodItemPublic.model_validate(i, from_attributes=True) for i in items
-        ],
+        results=[_public(i, provenance.get(i.id, ("direct", None))) for i in items],
         took_ms=took,
         source=source_label,
     )

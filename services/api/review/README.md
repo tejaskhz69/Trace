@@ -93,9 +93,10 @@ findings, including 20 rows named "Milo", 13 "Nesquik", 11 "Cerelac". No
 This is a pre-existing Open Food Facts import issue that alias generation
 surfaced; fixing it is separate work.
 
-### 4. Nothing is inserted
+### 4. Import gated behind explicit approval
 
-There is no import script. `food_aliases` has 0 rows.
+At the time these decisions were taken `food_aliases` had 0 rows and no import
+script existed. Both have since changed — see **Import status** below.
 
 ## accepted vs import-ready
 
@@ -126,7 +127,41 @@ uq_alias_food_norm_lang DO NOTHING`.
 
 ## What is NOT done
 
-`food_items` was not modified and no migration was applied. **Nothing reads the
-aliases yet** — the search router still runs its original single-arm query, so
-user-visible behaviour is unchanged. Two-arm ranking that consumes these rows
-is a separate piece of work and is not part of this commit.
+`food_items` was not modified and no migration was applied.
+
+Two-arm search ranking **is now wired** into `routers/foods.py`: the direct arm
+is the original query unchanged, and a second arm joins `food_aliases` on
+`normalized` (active rows only). Both arms are bounded separately, merged and
+de-duplicated by `services/search_rank.py`, and collapsed before the limit is
+applied. Results carry `matched_via` and `matched_alias` so the UI can say why
+a row appeared.
+
+Coverage is only as good as the source data: 1,353 aliases across 1,077 foods,
+out of 578,773 rows. `avalakki`, for instance, was never imported — the curated
+Poha row lists `kanda poha` and nothing else.
+
+## Attribution and licensing — NEEDS HUMAN/LEGAL REVIEW
+
+The app credits each food's data source per row: Open Food Facts (ODbL), USDA
+FoodData Central (public domain), or Trace's own curated dishes. Curated and
+user-created rows are never labelled as Open Food Facts, and an unrecognised
+source renders "SOURCE UNKNOWN" rather than a guess.
+
+**Nothing in this repository asserts legal compliance, and this note is not
+legal advice.** The implementation credits sources; it does not claim that
+crediting them discharges any obligation. Open questions for a lawyer:
+
+1. **ODbL is share-alike.** Whether display-only attribution inside a mobile
+   app is sufficient, and what the notice must say and where it must appear.
+2. **Display versus redistribution.** Trace currently displays Open Food Facts
+   data. Exporting it, syncing it to a third party, or exposing it through a
+   public API would likely be redistribution, which carries heavier
+   obligations. `services/licensing.py` already has `is_exportable` and
+   `export_filter_summary` for exactly this, and `source_licence='unknown'`
+   is fail-closed.
+3. **Derived values.** Recipe-composed dishes built partly from ODbL rows may
+   themselves be derivative works. Not analysed.
+
+Wording in `apps/mobile/src/lib/attribution.ts` and the profile screen is
+deliberately conservative and factual: it states what the database records and
+stops there. Change it only with legal input.

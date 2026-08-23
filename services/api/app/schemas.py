@@ -99,6 +99,22 @@ class FoodItemPublic(BaseModel):
     data_quality: float
     is_verified: bool
 
+    # --- additive, all optional: existing clients keep working -------------
+    #: Licence of THIS row's nutrition data. Per-row, never global: the
+    #: catalogue mixes ODbL (Open Food Facts), public-domain (USDA) and
+    #: user-curated data, and labelling them alike would be wrong.
+    source_licence: Optional[str] = None
+    #: 1..7, lower is better evidence. See services/licensing.py.
+    verification_tier: Optional[int] = None
+    #: Deterministic upstream URL where one exists, else None. Never invented.
+    source_url: Optional[str] = None
+    #: How this row was reached: 'direct' or 'alias'. Provenance for the
+    #: result, not a ranking input.
+    matched_via: Optional[str] = None
+    #: The alias text that matched, when matched_via == 'alias'. Without this
+    #: the UI cannot say WHY a search for 'avalakki' returned Poha.
+    matched_alias: Optional[str] = None
+
 
 class FoodSearchResponse(BaseModel):
     query: str
