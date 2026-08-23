@@ -9,3 +9,8 @@ dist/
 .pytest_cache/
 .expo/
 *.tsbuildinfo
+
+# Phase 3a alias review artifacts: regenerated on demand from the
+# catalogue, ~1.4 MB, and superseded by every run. review/README.md is
+# tracked; the generated JSON is not.
+services/api/review/*.json
