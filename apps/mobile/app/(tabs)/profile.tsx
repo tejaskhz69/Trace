@@ -38,6 +38,30 @@ const SURFACE_OPTIONS = [
   { value: 'black' as const, label: 'Black' },
 ];
 
+/**
+ * Factual source notices. Each states only what the database records.
+ *
+ * NEEDS HUMAN/LEGAL REVIEW before any public release: ODbL is a share-alike
+ * licence, and whether attribution here is sufficient -- and what obligations
+ * attach if Trace ever redistributes the data rather than merely displaying
+ * it -- is a question for a lawyer, not for this file. Nothing below asserts
+ * compliance; it credits sources. See services/api/review/README.md.
+ */
+const DATA_SOURCES: ReadonlyArray<{ name: string; note: string }> = [
+  {
+    name: 'Open Food Facts',
+    note: 'Packaged and branded foods, provided under the Open Database License (ODbL).',
+  },
+  {
+    name: 'USDA FoodData Central',
+    note: 'Reference values for whole ingredients, in the public domain.',
+  },
+  {
+    name: 'Trace',
+    note: 'Curated dishes composed from published food composition tables and standard recipes.',
+  },
+];
+
 function initials(name: string | null, email: string): string {
   const src = (name ?? email).trim();
   const parts = src.split(/[\s@.]+/).filter(Boolean);
@@ -188,7 +212,29 @@ export default function ProfileScreen() {
           </Panel>
         </Animated.View>
 
+        {/* DATA SOURCES.
+            Listed separately rather than as one blanket notice: the catalogue
+            mixes Open Food Facts (ODbL), USDA (public domain) and our own
+            curated dishes, and a single line would credit the wrong party for
+            most of it. Text only -- the app has no external-link affordance
+            anywhere else, and a compliance string is a poor place to
+            introduce one. */}
         <Animated.View entering={FadeInDown.duration(motion.base).delay(120)}>
+          <Panel label="Data sources">
+            {DATA_SOURCES.map((s, i) => (
+              <View key={s.name} style={{ marginTop: i === 0 ? 0 : space.md }}>
+                <Label>{s.name}</Label>
+                <Plain style={{ marginTop: space.xs }}>{s.note}</Plain>
+              </View>
+            ))}
+            <Plain style={{ marginTop: space.md }}>
+              Each food shows its own source. Nutrition figures for prepared
+              dishes are recipe estimates, not measured values.
+            </Plain>
+          </Panel>
+        </Animated.View>
+
+        <Animated.View entering={FadeInDown.duration(motion.base).delay(140)}>
           <Panel label="Account" padded={false}>
             <SetRow label="Sign out" value="" last onPress={logout} chevron />
           </Panel>

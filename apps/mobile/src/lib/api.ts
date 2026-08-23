@@ -1309,6 +1309,19 @@ export interface FoodItem {
   serving_sizes: Array<{ name: string; grams: number; is_default: boolean }>;
   data_quality: number;
   is_verified: boolean;
+  /** Where this row's nutrition data came from: 'openfoodfacts', 'usda_fdc',
+   *  'curated', 'user'. Per row -- the catalogue is not single-source. */
+  source?: string | null;
+  /** Licence of THIS row, e.g. 'odbl', 'public-domain'. Never global. */
+  source_licence?: string | null;
+  /** 1..7, lower is better evidence. */
+  verification_tier?: number | null;
+  /** Deterministic upstream URL where one exists. */
+  source_url?: string | null;
+  /** How search reached this row: 'direct' or 'alias'. */
+  matched_via?: string | null;
+  /** The alias text that matched, when matched_via === 'alias'. */
+  matched_alias?: string | null;
 }
 
 export interface RecognitionResponse {

@@ -60,6 +60,7 @@ import {
   IconCamera,
   IconSearch,
 } from '../src/components/icons';
+import { attributionFor } from '../src/lib/attribution';
 import { FoodItem, api, request } from '../src/lib/api';
 import { useToday } from '../src/state/useToday';
 import { useAccent, useSurfaces } from '../src/state/useTheme';
@@ -615,6 +616,14 @@ const FoodRow = React.memo(
               {def?.name ?? '100 g'} · {protein} g protein
               {item.barcode ? ' · BARCODE' : ''}
             </Text>
+            {/* Why this row matched, when it was not the name the user typed.
+                Without it, searching 'dosai' and getting 'Plain dosa' looks
+                like a mistake rather than a working synonym. */}
+            {item.matched_via === 'alias' && item.matched_alias ? (
+              <Text style={styles.rowMeta} numberOfLines={1}>
+                matched “{item.matched_alias}”
+              </Text>
+            ) : null}
           </View>
           <View style={styles.rowRight}>
             <Text style={styles.rowKcal}>
@@ -627,6 +636,21 @@ const FoodRow = React.memo(
                 VERIFIED
               </Text>
             ) : null}
+            {/* Per-row attribution. Curated and user rows return required
+                === false and render nothing, so our own dishes are never
+                labelled as somebody else's data. */}
+            {(() => {
+              const attr = attributionFor(item);
+              return attr.required && attr.tag ? (
+                <Text
+                  style={styles.rowTag}
+                  numberOfLines={1}
+                  accessibilityLabel={attr.accessibilityLabel ?? undefined}
+                >
+                  {attr.tag}
+                </Text>
+              ) : null;
+            })()}
           </View>
         </Pressable>
       </>
