@@ -55,6 +55,17 @@ When AI generation is added later it becomes *one more producer* writing into
 `planned_sessions` and `prescribed_exercises` — the schema does not change,
 only `generated_by` flips from `template` to `ai`.
 
+The MVP is also **beginner-safe** and **educational**, and both are binding
+rather than aspirational (§10.7). A new user with no training history gets
+bodyweight or standard-dumbbell programming, never a barbell load inferred
+from a history that does not exist; `suggested_weight_kg` stays NULL until
+there is a basis for it. A prescription shows its rep range, target RIR and
+progression rule rather than just a number to hit.
+
+**Manual logging is never gated behind any of this.** A user can log a workout
+with no profile, no programme and no planned session, exactly as they can
+today. Generated programming is offered, never required.
+
 ### Explicitly deferred
 
 Deferred means **the schema anticipates it but the first release does not
@@ -65,7 +76,7 @@ build it**. Each is called out again at the table that would carry it.
 | AI generation | Needs a provider decision, prompt design, and output validation | `planned_sessions.generated_by`, `generation_id`; `ai_generations` table shipped empty |
 | Readiness adjustment | Needs the readiness questionnaire UX and a clinical-language review | `readiness_checkins` table + `planned_sessions.readiness_status`, both MVP-created, unused by generation |
 | Cardio-aware volume | Depends on `ActivityDay` / HealthKit coverage that varies by user | none |
-| Deloading | Needs the fatigue model, and an unresolved authority question (§10) | none — `deload_events` is deferred entirely |
+| Deloading | Needs the fatigue model. Authority is settled: the system recommends, the user confirms (§10.2) | none — `deload_events` is deferred entirely |
 | Learned preferences | Requires a signal history that does not exist yet | `training_profiles.disliked_exercise_ids` covers the explicit case only |
 
 `readiness_checkins` is created in the MVP migration despite readiness
@@ -166,8 +177,9 @@ free-logging path must not regress.
 `cardio_sessions_per_week`, `lifting_sessions_per_week`, `timezone`.
 
 Roughly half the plan's "user information for programming" list already exists
-here. The rest goes to `training_profiles` — and the overlap between
-`program_type` and the new profile is an unresolved decision (§10.4).
+here. The rest goes to `training_profiles`. `program_type` stays the broad
+training reference and `training_profiles.ai_enabled` is a separate, narrower
+opt-in for AI generation; the narrower one wins (§10.4).
 
 ---
 
@@ -286,7 +298,7 @@ keeps this design's promise that no existing table is altered.
 | `equipment` | JSONB | no | `'[]'` | values drawn from `exercises.equipment` |
 | `disliked_exercise_ids` | JSONB | no | `'[]'` | explicit user exclusions |
 | `limitations` | Text | yes | null | free text — **health-sensitive**, see §11 |
-| `ai_enabled` | Boolean | no | `true` | user's own kill switch |
+| `ai_enabled` | Boolean | no | `true` | opt-in for AI generation; false disables it whatever `program_type` says (§10.4) |
 | `created_at` / `updated_at` | TZDateTime | no | now | |
 
 - **FK:** `user_id → users.id ON DELETE CASCADE`.
@@ -508,11 +520,12 @@ one; **not read by anything in release one.**
   state and must be distinguishable from a low score. Defaulting an unanswered
   soreness question to any number would fabricate a reading.
 - **Ownership:** owner-only.
-- **Deletion:** hard-deletable by the owner, independently of account deletion.
-  See §10.5 — retention is unresolved.
+- **Deletion:** hard-deletable by the owner, independently of account
+  deletion — check-ins are optional and user-controlled (§10.5). The retention
+  duration and export treatment are still open (§10.8).
 - **Privacy:** **health-sensitive.** Pain, sleep and stress are health data in
-  a way a bench-press number is not. This classification drives §11 and blocks
-  on §10.5 and §10.7 before any readiness feature ships.
+  a way a bench-press number is not. This classification drives §11, and the
+  retention and consent items in §10.8 block any readiness feature shipping.
 
 ---
 
@@ -530,7 +543,7 @@ unauditable.
 | `kind` | Text | no | — | programme / session |
 | `model` | Text | no | — | e.g. `claude-opus-5` |
 | `prompt_digest` | Text | no | — | SHA-256 of the prompt, **not the prompt** |
-| `raw_response` | JSONB | yes | null | see §10.6 — may stay null |
+| `raw_response` | JSONB | yes | null | rejected payloads only, bounded window (§10.6); NULL for accepted |
 | `validation_status` | Text | no | — | accepted / rejected |
 | `rejection_reason` | Text | yes | null | non-null iff rejected |
 | `latency_ms` | Integer | yes | null | |
@@ -547,7 +560,8 @@ unauditable.
   the same prompt?" — the only question this table needs to answer — without
   creating a second store of health data.
 - **Ownership:** owner-only read. Written only by the server.
-- **Deletion:** cascades with the user. Should carry a retention policy (§10.6).
+- **Deletion:** cascades with the user. Retention policy is §10.6; the
+  duration it is bounded by is still open (§10.8).
 - **Privacy:** sensitive if `raw_response` is populated; low if not.
 
 Shipped in the MVP migration and left empty, so that when AI generation lands
@@ -749,7 +763,7 @@ days per week → preferred minutes → equipment (multi-select) → limitations
 per step (`type.readout` on the day count).
 
 The limitations step carries a plain, non-clinical note that this is used to
-avoid exercises and is not medical advice — wording blocked on §10.7.
+avoid exercises and is not medical advice — wording blocked on §10.8.
 
 ### 7.2 Programme overview — `app/(training)/programme.tsx`
 
@@ -956,84 +970,146 @@ move.
 
 ---
 
-## 10. UNRESOLVED DECISIONS — approval required
+## 10. Decisions
 
-> **These block implementation of the features they govern. Items 10.1–10.4
-> block the MVP. Items 10.5–10.7 block anything that reads or writes
-> `readiness_checkins` or `ai_generations`, both of which ship empty.**
+Items 10.1–10.7 are **approved and binding**. They were open when this
+document was first written; they are recorded here as settled so that the
+implementation has one place to check rather than a conversation to remember.
+§10.8 holds what genuinely remains open — all of it privacy and legal
+implementation detail, none of it schema-affecting.
 
-### 10.1 Are generated workouts persisted or regenerated on demand?
+### 10.1 Generated workouts are persisted — APPROVED
 
-This design **assumes persisted** — `planned_sessions` and
-`prescribed_exercises` exist and are written at generation time.
+A generated programme is written to `training_programmes` / `programme_days`,
+and a generated session to `planned_sessions` / `prescribed_exercises`. It is
+not recomputed on read.
 
-Trade-off: persisting gives a stable plan a user can rely on mid-week, makes
-"what did the app tell me to do?" answerable, and makes AI output auditable.
-Regenerating is cheaper, always reflects the newest data, and stores nothing.
-They are not compatible — regeneration makes `prescribed_exercises` pointless,
-and the whole schema below `planned_sessions` collapses.
+This is what makes a plan something a user can rely on mid-week, makes "what
+did the app tell me to do?" answerable after the fact, and makes AI output
+auditable at all. The alternative — regenerating on demand — was rejected:
+it would make `prescribed_exercises` pointless and collapse the whole schema
+below `planned_sessions`.
 
-**The plan does not say.** Needs an explicit call.
+### 10.2 A deload is recommended, never applied — APPROVED
 
-### 10.2 Who controls deload decisions?
+The system may **recommend** a deload. It may not change the programme until
+the user confirms. A recommendation the user ignores leaves the programme
+exactly as it was.
 
-The plan says deloading is "configurable" without saying by whom. Three
-options: system-triggered (app decides, user informed), user-triggered (app
-suggests, user accepts), or scheduled (every Nth week). This changes whether
-`deload_events` needs an `initiated_by` column and whether a deload can be
-declined. Deferred feature, but the answer shapes the table.
+`deload_events` remains deferred, but this decision fixes its shape when it
+lands: it needs to record who initiated the recommendation *and* the user's
+confirmation, because "we suggested it" and "they accepted it" are different
+facts and only the second may alter a programme.
 
-### 10.3 What happens when the AI invents an `exercise_id`?
+### 10.3 An invalid AI `exercise_id` rejects the entire response — APPROVED
 
-The plan requires validating AI output against the real catalogue but is silent
-on the failure. Two defensible policies:
+If any `exercise_id` in an AI response is malformed, missing, absent from the
+catalogue, or references an exercise the requesting user is not entitled to,
+**the whole response is rejected.** The system falls back to deterministic
+template generation.
 
-- **Reject the whole response** and fall back to template generation. Safer: a
-  model that hallucinated one id may have reasoned badly about the rest.
-- **Drop the invalid exercise** and keep the remainder. Friendlier, but silently
-  ships a session the model did not design — a 5-exercise plan minus its main
-  lift is not the plan.
+The invalid response **must not be silently repaired, dropped, or
+substituted.** Not the offending exercise, not the session around it. A model
+that hallucinated one identifier may have reasoned badly about the rest, and a
+five-exercise plan minus its main lift is not the plan the model designed — it
+is a new plan nobody reviewed. Refusing to answer beats answering wrong, which
+is project non-negotiable #3.
 
-This design **leans reject-whole**, consistent with non-negotiable #3, but it
-is a product call. Note the id is user-supplied-adjacent data reaching a
-database query — see §11.
+The rejection is recorded in `ai_generations` with `validation_status =
+'rejected'` and a `rejection_reason`, so that a silent fallback is still an
+auditable event rather than an invisible one.
 
-### 10.4 How do `User.program_type` and `training_profiles` interact?
+### 10.4 `program_type` and `ai_enabled` are separate switches — APPROVED
 
-`users.program_type` already exists (`collaborative` / `coached` / `manual`) and
-is already used. `training_profiles.ai_enabled` overlaps it. Options: derive
-`ai_enabled` from `program_type` and drop the column; keep both with a defined
-precedence; or migrate `program_type`'s meaning into the profile. Leaving both
-independent is the one option that is definitely wrong — two switches for one
-behaviour.
+They are **not** consolidated. Each answers a different question:
 
-### 10.5 Retention, export and deletion of readiness data
+| Field | Question it answers | Scope |
+|---|---|---|
+| `users.program_type` | How does this user train with us overall? | Broad training reference — collaborative / coached / manual |
+| `training_profiles.ai_enabled` | May we generate programming with a model? | A specific opt-in for AI generation |
 
-`readiness_checkins` holds pain, sleep and stress. Needs answers on: retention
-period; whether it is included in account export; whether it is deleted
-separately from the account; and whether deletion is hard or soft. The current
-design assumes cascade-on-account-delete and owner-initiated hard delete, which
-is a placeholder, not a decision.
+**`ai_enabled = false` disables AI generation regardless of `program_type`.**
+The opt-in is the narrower and stricter of the two, and the narrower one wins.
+No value of `program_type` re-enables AI generation for a user who declined
+it.
 
-### 10.6 May raw AI responses be stored at all?
+**Deterministic template programming remains fully available when AI is
+disabled.** Turning AI off costs a user the model, not the feature — they
+still get programmes, split generation, progression and the whole mobile flow.
+This is what makes the opt-in a real choice rather than a threat.
 
-`ai_generations.raw_response` is nullable precisely so this can be answered
-later. A raw response embeds whatever the prompt contained — limitations, pain
-notes, training history. Storing it makes debugging possible and creates a
-second health-data store with its own retention obligation. Options: never
-store; store only on rejection (highest debugging value, lowest volume); store
-all with a short TTL. **This design's recommendation is store-only-on-rejection
-with a bounded TTL**, but it needs sign-off.
+### 10.5 Readiness check-ins are optional and user-controlled — APPROVED
 
-### 10.7 Do readiness pain/sleep/stress fields need additional consent?
+Check-ins are **optional**: the user is never blocked from training by an
+unanswered questionnaire, and every score is nullable so a partial answer
+stays distinguishable from a low one. They are **user-controlled**: the user
+may view and delete their own readiness history.
 
-Distinct from 10.5 — that is about lifecycle, this is about collection. A
-pain-and-stress questionnaire may fall under a stricter category than
-food-and-workout logging in some jurisdictions, and it sits next to a feature
-that gives training advice. The plan already requires *"Do not present
-AI-generated training advice as medical advice."* Whether a separate consent,
-a distinct privacy-policy clause, or in-context disclosure is required is a
-question for a lawyer. **Nothing in this document asserts compliance.**
+They are **privacy-sensitive** — pain, sleep and stress are health data in a
+way a bench-press number is not — and treated as such throughout §11.
+
+They are **deferred from the deterministic MVP.** The table ships and the
+questionnaire may collect, but nothing in the first release reads it to alter
+a programme.
+
+Retention duration and consent wording remain open — see §10.8.
+
+### 10.6 Raw AI responses are not stored indefinitely — APPROVED
+
+| Outcome | What is stored |
+|---|---|
+| **Accepted** | The validated, structured output and its provenance — the normalised `prescribed_exercises` rows plus `ai_generations.model`, `prompt_digest`, `latency_ms`, `validation_status`. **Not** permanent raw output. |
+| **Rejected** | The raw response **may** be retained temporarily, under a bounded retention window, because a rejection nobody can inspect is a bug report with the evidence deleted. |
+
+`ai_generations.raw_response` therefore holds rejected payloads within their
+retention window and is otherwise NULL. `prompt_digest` — never the prompt —
+answers the only question this table needs to answer, without creating a
+second permanent store of health data.
+
+The exact retention duration is open — see §10.8.
+
+### 10.7 The MVP is deterministic, beginner-safe, and educational — APPROVED
+
+Three properties, each binding on the first release:
+
+- **Deterministic.** Rules in, programme out. No model, no network dependency,
+  no prompt. The same profile produces the same programme, which is what makes
+  it testable in CI and reviewable by a human.
+- **Beginner-safe.** A new user with no training history receives **bodyweight
+  or standard-dumbbell programming** — never a barbell prescription derived
+  from a strength history that does not exist. `suggested_weight_kg` stays
+  NULL until there is a basis for it, and the UI renders that as an em dash
+  rather than a number.
+- **Educational.** A prescription explains itself — the rep range, the target
+  RIR and the progression rule are shown, not just a number to hit.
+
+**Manual logging is always available and never gated.** A user can log a
+workout with no programme, no planned session and no profile, exactly as they
+can today. Generated programming is something the app offers, never something
+it requires; `POST /sessions/{id}/sets` keeps working untouched.
+
+### 10.8 STILL UNRESOLVED — privacy and legal
+
+These block features that read or write `readiness_checkins` and
+`ai_generations`. Neither is schema-affecting, and both tables ship empty.
+
+1. **Exact retention duration for rejected raw AI responses.** §10.6 fixes
+   that the window is bounded; it does not fix the number. Needs a privacy
+   decision, and the deletion job that enforces it.
+2. **Retention and export treatment of readiness data.** How long check-ins
+   are kept, whether they are included in an account export, and whether
+   deletion is hard or soft. The current implementation assumes
+   cascade-on-account-delete plus owner-initiated hard delete — a placeholder
+   until this is answered.
+3. **Consent wording for the readiness health fields.** A pain-and-stress
+   questionnaire sitting next to a feature that gives training advice may fall
+   under a stricter category than food-and-workout logging in some
+   jurisdictions. Whether that needs separate consent, a distinct
+   privacy-policy clause, or in-context disclosure — and what it must say — is
+   a question for a lawyer. The plan already requires *"Do not present
+   AI-generated training advice as medical advice."*
+
+**Nothing in this document asserts compliance.**
 
 ---
 
@@ -1066,16 +1142,23 @@ advice.
 Three fields are health-sensitive: `training_profiles.limitations`,
 `readiness_checkins.pain_note`, and the four readiness scores. They are:
 never logged; never included in error messages or tracebacks; never sent to an
-AI provider until §10.6 and §10.7 are resolved; and excluded from any analytics
+AI provider until the consent item in §10.8 is resolved; and excluded from any analytics
 event.
 
 ### Raw-response storage risk
 
 `ai_generations.raw_response` is the highest-risk column in this design, which
-is why it is nullable and unused at launch. If populated it becomes a second
-copy of health data with its own retention clock, its own export obligation and
-its own presence in every backup. `prompt_digest` exists so the common
-debugging question — "same prompt?" — is answerable without it.
+is why it is nullable and unused at launch. Whenever it is populated it becomes
+a second copy of health data with its own retention clock, its own export
+obligation and its own presence in every backup.
+
+Per §10.6 it is bounded on both sides: an **accepted** response never lands
+here at all — the validated structured output and its provenance are what
+persist — and a **rejected** response may be held only inside a bounded
+retention window. `prompt_digest` exists so the common debugging question —
+"same prompt?" — is answerable without storing the prompt. The retention
+number itself is still open (§10.8), and the deletion job that enforces it
+must land with the feature, not after it.
 
 ### Logging restrictions
 
@@ -1091,7 +1174,7 @@ These tables land in `pg_dump` output alongside everything else. The existing
 rule stands: **backups contain user data and stay outside the repository.**
 Once readiness data exists, a backup is a health-data store, and any "delete my
 readiness history" guarantee is bounded by backup retention — which needs
-stating honestly in whatever policy §10.5 produces rather than being promised
+stating honestly in whatever policy §10.8 produces rather than being promised
 absolutely.
 
 ---
@@ -1108,7 +1191,7 @@ Seven commits, each independently reviewable and independently revertible.
 | 4 | **Backend tests** | `test_workout_migration.py`, `test_programming.py`, `test_programming_api.py`. | All existing tests still pass |
 | 5 | **Mobile UI** | Four screens + train-tab card. | `npx tsc --noEmit` = 0; `design-reviewer` on changed files |
 | 6 | **Mobile tests** | Jest for the profile flow, session rendering, empty/error states. | Green |
-| 7 | **AI programming** *(later)* | Provider integration, prompt, validation, `ai_generations` writes. | §10.5–10.7 resolved first |
+| 7 | **AI programming** *(later)* | Provider integration, prompt, validation, `ai_generations` writes. | §10.8 resolved first |
 
 Commits 2 and 3 are deliberately separate: a migration reviewed on its own is a
 migration actually read. Commit 4 follows 3 rather than preceding it because

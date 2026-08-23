@@ -23,6 +23,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -30,6 +31,7 @@ from sqlalchemy import (
     SmallInteger,
     Text,
     UniqueConstraint,
+    text as sa_text,
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
@@ -1046,4 +1048,710 @@ class CoachBriefingRecord(SQLModel, table=True):
 
     user_dismissed: Optional[bool] = None
     user_acted: Optional[bool] = None
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+# ---------------------------------------------------------------------------
+# Workout programming layer
+#
+# The recording layer above (Exercise, WorkoutSession, SetLog,
+# StrengthSnapshot) answers "what did I lift?". Everything below answers
+# "what should I lift today?" -- a different question, with a different
+# failure mode. A lost set is lost data; a bad prescription is bad advice.
+#
+# THE TWO ARE DELIBERATELY NOT MERGED. No "planned" columns were added to
+# SetLog, because a planned set that was never performed and a performed set
+# are different kinds of fact, and services/strength.py and services/volume.py
+# both read set_logs as ground truth about what a body actually did.
+#
+# Nothing here references a nutrition table. That is a rule, not an accident:
+# the plan requires that cardio calories never inflate a calorie target, and
+# the coupling that does exist already runs through ActivityDay and
+# services/adjudication.py.
+#
+# See WORKOUT_SCHEMA_DESIGN.md for the full rationale, the ER diagram, and the
+# decisions still open.
+# ---------------------------------------------------------------------------
+
+
+class ExerciseAttributes(SQLModel, table=True):
+    """Programming metadata the 874-row `exercises` catalogue lacks.
+
+    WHY A SIDE TABLE AND NOT COLUMNS ON `exercises`
+    Three reasons, in order of weight. First, the migration then creates
+    tables and alters nothing -- the strongest safety property available to a
+    schema change landing next to 578,773 nutrition rows. Second, these are
+    admin-curated classifications on a table that also holds user-visible
+    names: different change cadence, different review. Third, a missing row
+    here is a legible state ("not yet classified") rather than a column full
+    of nulls that generation would have to second-guess.
+
+    AN UNATTRIBUTED EXERCISE IS INELIGIBLE FOR PRESCRIPTION. Generation joins
+    this table inner, never outer. Refusing to programme an exercise we have
+    not classified beats inventing a rep range for it.
+    """
+
+    __tablename__ = "exercise_attributes"
+    __table_args__ = (
+        # Text + CHECK rather than PG enums, for the reason FoodAlias already
+        # records: extending the vocabulary later is DROP/ADD CONSTRAINT in an
+        # ordinary transaction, not the ALTER TYPE dance that cannot run in
+        # one.
+        CheckConstraint(
+            "movement_pattern IN ('squat','hinge','push_horizontal',"
+            "'push_vertical','pull_horizontal','pull_vertical','carry',"
+            "'isolation')",
+            name="ck_exattr_movement_pattern",
+        ),
+        CheckConstraint(
+            "exercise_class IN ('compound','machine','isolation')",
+            name="ck_exattr_exercise_class",
+        ),
+        CheckConstraint("default_rep_min >= 1", name="ck_exattr_rep_min"),
+        CheckConstraint(
+            "default_rep_min <= default_rep_max", name="ck_exattr_rep_order"
+        ),
+        CheckConstraint("default_rep_max <= 50", name="ck_exattr_rep_max"),
+        CheckConstraint(
+            "default_rest_seconds BETWEEN 15 AND 600", name="ck_exattr_rest"
+        ),
+        CheckConstraint("fatigue_cost BETWEEN 1 AND 5", name="ck_exattr_fatigue"),
+        Index("ix_exattr_pattern", "movement_pattern"),
+        Index("ix_exattr_class", "exercise_class"),
+    )
+
+    #: PK and FK at once -- one attribute row per exercise, enforced by the
+    #: primary key itself rather than a separate unique constraint.
+    exercise_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("exercises.id", ondelete="CASCADE", name="fk_exattr_exercise"),
+            primary_key=True,
+            nullable=False,
+        )
+    )
+    movement_pattern: str = Field(sa_column=Column(Text, nullable=False))
+    exercise_class: str = Field(sa_column=Column(Text, nullable=False))
+    is_unilateral: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
+    )
+    default_rep_min: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    default_rep_max: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    default_rest_seconds: int = Field(
+        default=120,
+        sa_column=Column(SmallInteger, nullable=False, server_default="120"),
+    )
+    #: 1..5. Feeds deload accounting once that lands; unused today.
+    fatigue_cost: int = Field(
+        default=3, sa_column=Column(SmallInteger, nullable=False, server_default="3")
+    )
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class ExerciseSubstitution(SQLModel, table=True):
+    """A directed, ranked "you could do this instead" edge.
+
+    DIRECTION IS NOT ASSUMED SYMMETRIC. Barbell bench -> dumbbell bench is a
+    reasonable substitution under a missing rack; the reverse is a different
+    judgement. If both hold, both rows exist.
+
+    This is shared reference data, not preference. A user's dislikes live on
+    `training_profiles.disliked_exercise_ids` -- "these two are
+    interchangeable" is a fact about training, "I hate lunges" is a fact about
+    a person, and mixing them would leak one user's taste into everyone's
+    catalogue.
+    """
+
+    __tablename__ = "exercise_substitutions"
+    __table_args__ = (
+        UniqueConstraint(
+            "from_exercise_id", "to_exercise_id", name="uq_exsub_pair"
+        ),
+        CheckConstraint(
+            "from_exercise_id <> to_exercise_id", name="ck_exsub_not_self"
+        ),
+        CheckConstraint("rank BETWEEN 1 AND 10", name="ck_exsub_rank"),
+        CheckConstraint(
+            "reason IN ('equipment','branded','limitation','preference')",
+            name="ck_exsub_reason",
+        ),
+        Index("ix_exsub_from", "from_exercise_id", "rank"),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    from_exercise_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("exercises.id", ondelete="CASCADE", name="fk_exsub_from"),
+            nullable=False,
+        )
+    )
+    to_exercise_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("exercises.id", ondelete="CASCADE", name="fk_exsub_to"),
+            nullable=False,
+        )
+    )
+    reason: str = Field(sa_column=Column(Text, nullable=False))
+    #: 1 = the best substitute. Lower sorts first.
+    rank: int = Field(
+        default=1, sa_column=Column(SmallInteger, nullable=False, server_default="1")
+    )
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class TrainingProfile(SQLModel, table=True):
+    """The programming inputs that are not identity.
+
+    WHY NOT ON `users`
+    `users` is identity and account state, read on every authenticated
+    request. Training preferences change often, are edited as a unit by one
+    screen, and have nothing to do with authentication. Keeping them here also
+    keeps the migration additive -- `users` is never altered.
+
+    ONE PROFILE PER USER IS A DATABASE CONSTRAINT, not an application check.
+    """
+
+    __tablename__ = "training_profiles"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_training_profile_user"),
+        CheckConstraint("days_per_week BETWEEN 1 AND 7", name="ck_profile_days"),
+        CheckConstraint(
+            "preferred_minutes BETWEEN 15 AND 180", name="ck_profile_minutes"
+        ),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("users.id", ondelete="CASCADE", name="fk_training_profile_user"),
+            nullable=False,
+        )
+    )
+    days_per_week: int = Field(
+        default=3, sa_column=Column(SmallInteger, nullable=False, server_default="3")
+    )
+    #: e.g. ["mon","wed","fri"]. Empty means "no preference", which is
+    #: deliberately distinct from "no days available".
+    available_days: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=sa_text("'[]'::jsonb")),
+    )
+    preferred_minutes: int = Field(
+        default=60, sa_column=Column(SmallInteger, nullable=False, server_default="60")
+    )
+    #: Values drawn from `exercises.equipment`.
+    equipment: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=sa_text("'[]'::jsonb")),
+    )
+    #: JSONB rather than a join table for the reason `serving_sizes` already
+    #: records: always read whole, never queried across rows, and small.
+    disliked_exercise_ids: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=sa_text("'[]'::jsonb")),
+    )
+    #: HEALTH-SENSITIVE FREE TEXT. A user may put injury or medical detail
+    #: here. Never logged, never in an error message, never sent to an AI
+    #: provider until the consent wording question in
+    #: WORKOUT_SCHEMA_DESIGN.md 10.8 is answered.
+    limitations: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    #: The user's own opt-in for AI programming, deliberately SEPARATE from
+    #: `users.program_type` (design doc 10.4). program_type is the broad
+    #: training reference; this is the narrower consent, and the narrower one
+    #: wins: ai_enabled=False disables AI generation whatever program_type
+    #: says. Turning it off costs the user the model, not the feature --
+    #: deterministic template programming stays fully available.
+    ai_enabled: bool = Field(
+        default=True, sa_column=Column(Boolean, nullable=False, server_default="true")
+    )
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class TrainingProgramme(SQLModel, table=True):
+    """One multi-week structure: split type, day count, lifecycle.
+
+    ARCHIVED, NEVER DELETED. A programme is the explanation for every planned
+    session beneath it; deleting one would orphan the reason a user did what
+    they did. No DELETE is exposed by the API.
+
+    THE PARTIAL UNIQUE INDEX IS THE POINT. "One active programme per user" is
+    the invariant most likely to be broken by a retry or a double-tap, and an
+    application-level check loses that race every time. Postgres does not.
+    """
+
+    __tablename__ = "training_programmes"
+    __table_args__ = (
+        CheckConstraint("days_per_week BETWEEN 1 AND 7", name="ck_programme_days"),
+        CheckConstraint(
+            "status IN ('active','paused','archived')", name="ck_programme_status"
+        ),
+        CheckConstraint(
+            "generated_by IN ('template','ai','user')",
+            name="ck_programme_generated_by",
+        ),
+        # archived_at is set if and only if the row is archived. Both columns
+        # are otherwise free to drift apart, and a status that disagrees with
+        # its timestamp is the kind of thing nobody notices for a year.
+        CheckConstraint(
+            "(status = 'archived') = (archived_at IS NOT NULL)",
+            name="ck_programme_archived_at",
+        ),
+        Index("ix_programme_user_status", "user_id", "status"),
+        Index(
+            "uq_active_programme_per_user",
+            "user_id",
+            unique=True,
+            postgresql_where=sa_text("status = 'active'"),
+        ),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("users.id", ondelete="CASCADE", name="fk_programme_user"),
+            nullable=False,
+        )
+    )
+    name: str = Field(sa_column=Column(Text, nullable=False))
+    #: full_body / upper_lower / ppl / ... -- the plan's split vocabulary.
+    #: Unconstrained by CHECK on purpose: the split list is expected to grow
+    #: with the generator, and a constraint here would make every new split a
+    #: migration.
+    split_type: str = Field(sa_column=Column(Text, nullable=False))
+    days_per_week: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    status: str = Field(
+        default="active",
+        sa_column=Column(Text, nullable=False, server_default="active"),
+    )
+    generated_by: str = Field(
+        default="template",
+        sa_column=Column(Text, nullable=False, server_default="template"),
+    )
+    started_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    archived_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class ProgrammeDay(SQLModel, table=True):
+    """A template row of a programme -- "Day 1: Upper (push emphasis)".
+
+    A repeating weekly structure, not a calendar date. The dated instance is
+    `planned_sessions`.
+
+    Ownership is INDIRECT. Every query joins to `training_programmes` and
+    filters on `user_id`; a client-supplied `programme_id` is a claim to be
+    verified, never a filter to be trusted.
+    """
+
+    __tablename__ = "programme_days"
+    __table_args__ = (
+        UniqueConstraint("programme_id", "day_index", name="uq_programme_day"),
+        CheckConstraint("day_index BETWEEN 0 AND 6", name="ck_programme_day_index"),
+        CheckConstraint(
+            "target_minutes IS NULL OR target_minutes BETWEEN 15 AND 180",
+            name="ck_programme_day_minutes",
+        ),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    programme_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("training_programmes.id", ondelete="CASCADE", name="fk_programme_day_programme"),
+            nullable=False,
+        )
+    )
+    #: 0-based position within the week. Deterministic ordering comes from
+    #: this column plus the unique constraint above -- never from insertion
+    #: order, which Postgres does not promise.
+    day_index: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    label: str = Field(sa_column=Column(Text, nullable=False))
+    #: Muscle groups, ordered.
+    focus: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=sa_text("'[]'::jsonb")),
+    )
+    #: NULL means "inherit the profile", which is distinct from any number.
+    target_minutes: Optional[int] = Field(
+        default=None, sa_column=Column(SmallInteger, nullable=True)
+    )
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class PlannedSession(SQLModel, table=True):
+    """One dated instance of a programme day -- the join between intention
+    and reality.
+
+    THE ARROW RUNS PLAN -> PERFORMANCE, and it is nullable. That direction is
+    what lets a spontaneous workout need no plan at all (the existing flow,
+    and the common case), lets a plan that was never performed be a
+    first-class state rather than a null-filled session row, and lets a
+    deleted workout session leave the plan standing as a record of intent.
+
+    `user_id` IS DENORMALISED from programme_day -> programme -> user. A
+    considered exception: it is the ownership filter on the hottest query in
+    the feature, a one-off session has no programme to derive it from, and the
+    join would otherwise be three tables deep on every read. Written once,
+    never updated.
+    """
+
+    __tablename__ = "planned_sessions"
+    __table_args__ = (
+        # CAVEAT, AND IT MATTERS: Postgres treats NULLs as DISTINCT, so this
+        # constrains nothing for one-off sessions (programme_day_id IS NULL) --
+        # the same trap c2d5f8b03a41 documented for food_aliases.lang. That is
+        # intended here (a user may legitimately plan two ad-hoc sessions in a
+        # day), and it is spelled out so nobody later mistakes this for
+        # protection it does not give.
+        UniqueConstraint(
+            "user_id", "scheduled_for", "programme_day_id", name="uq_planned_day"
+        ),
+        CheckConstraint(
+            "status IN ('planned','active','completed','skipped')",
+            name="ck_planned_status",
+        ),
+        CheckConstraint(
+            "generated_by IN ('template','ai','user')",
+            name="ck_planned_generated_by",
+        ),
+        CheckConstraint(
+            "estimated_minutes IS NULL OR estimated_minutes BETWEEN 5 AND 300",
+            name="ck_planned_minutes",
+        ),
+        # A non-AI session may not cite an AI generation. Cheap to enforce,
+        # and it keeps the audit trail honest.
+        CheckConstraint(
+            "generated_by = 'ai' OR generation_id IS NULL",
+            name="ck_planned_generation_ref",
+        ),
+        Index("ix_planned_user_date", "user_id", sa_text("scheduled_for DESC")),
+        Index("ix_planned_session", "session_id"),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("users.id", ondelete="CASCADE", name="fk_planned_user"),
+            nullable=False,
+        )
+    )
+    #: SET NULL, not CASCADE. If a programme structure is rebuilt, the record
+    #: that a user trained on a given day must survive -- it becomes a
+    #: one-off, not a deletion.
+    programme_day_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(
+            AutoString,
+            ForeignKey("programme_days.id", ondelete="SET NULL", name="fk_planned_programme_day"),
+            nullable=True,
+        ),
+    )
+    #: NULL until the session is started. Non-null links this plan to exactly
+    #: one performed WorkoutSession.
+    session_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(
+            AutoString,
+            ForeignKey("workout_sessions.id", ondelete="SET NULL", name="fk_planned_session_ref"),
+            nullable=True,
+        ),
+    )
+    #: The user's local calendar day. A scheduled day has no timezone.
+    scheduled_for: date = Field(sa_column=Column(Date, nullable=False))
+    status: str = Field(
+        default="planned",
+        sa_column=Column(Text, nullable=False, server_default="planned"),
+    )
+    #: Deferred -- readiness adjustment does not ship in the MVP, so this is
+    #: always NULL for now. The column exists so the questionnaire can start
+    #: collecting before anything acts on it.
+    readiness_status: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    estimated_minutes: Optional[int] = Field(
+        default=None, sa_column=Column(SmallInteger, nullable=True)
+    )
+    generated_by: str = Field(
+        default="template",
+        sa_column=Column(Text, nullable=False, server_default="template"),
+    )
+    generation_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(
+            AutoString,
+            ForeignKey("ai_generations.id", ondelete="SET NULL", name="fk_planned_generation"),
+            nullable=True,
+        ),
+    )
+    #: The plan's notes[] array.
+    notes: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=sa_text("'[]'::jsonb")),
+    )
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class PrescribedExercise(SQLModel, table=True):
+    """One prescribed exercise in a planned session -- the plan's response
+    JSON, normalised.
+
+    `exercise_id` IS `ON DELETE RESTRICT`, AND IT IS THE ONLY FK HERE THAT IS.
+    Cascading would let a catalogue cleanup silently erase parts of a user's
+    training history; SET NULL would leave a prescription that prescribes
+    nothing. RESTRICT makes the deletion fail loudly and forces a human
+    decision -- the same instinct as the alias importer refusing to guess a
+    target.
+
+    THE CHECK CONSTRAINTS ARE THE BACKSTOP ON AI OUTPUT. Validation happens in
+    the service so the error is legible, but it is enforced here so that a
+    validation bug is a failed insert rather than bad advice on a user's
+    screen.
+    """
+
+    __tablename__ = "prescribed_exercises"
+    __table_args__ = (
+        UniqueConstraint(
+            "planned_session_id", "order_index", name="uq_prescribed_order"
+        ),
+        CheckConstraint("sets BETWEEN 1 AND 12", name="ck_prescribed_sets"),
+        CheckConstraint("rep_min >= 1", name="ck_prescribed_rep_min"),
+        CheckConstraint("rep_min <= rep_max", name="ck_prescribed_rep_order"),
+        CheckConstraint("rep_max <= 50", name="ck_prescribed_rep_max"),
+        CheckConstraint("target_rir BETWEEN 0 AND 6", name="ck_prescribed_rir"),
+        CheckConstraint(
+            "rest_seconds BETWEEN 15 AND 600", name="ck_prescribed_rest"
+        ),
+        CheckConstraint("order_index >= 0", name="ck_prescribed_order_index"),
+        CheckConstraint(
+            "suggested_weight_kg IS NULL OR "
+            "(suggested_weight_kg > 0 AND suggested_weight_kg <= 1000)",
+            name="ck_prescribed_weight",
+        ),
+        CheckConstraint(
+            "status IN ('prescribed','replaced','skipped','done')",
+            name="ck_prescribed_status",
+        ),
+        CheckConstraint(
+            "(status = 'replaced') = (replaced_with_exercise_id IS NOT NULL)",
+            name="ck_prescribed_replacement",
+        ),
+        Index("ix_prescribed_session", "planned_session_id", "order_index"),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    planned_session_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("planned_sessions.id", ondelete="CASCADE", name="fk_prescribed_planned_session"),
+            nullable=False,
+        )
+    )
+    exercise_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("exercises.id", ondelete="RESTRICT", name="fk_prescribed_exercise"),
+            nullable=False,
+        )
+    )
+    #: Deterministic ordering. Reads always ORDER BY this column; nothing
+    #: relies on insertion order.
+    order_index: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    sets: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    rep_min: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    rep_max: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    #: SmallInteger while SetLog.rir is Float, on purpose: a prescription is a
+    #: whole-number instruction ("leave 2 in the tank"); a measurement can be
+    #: 1.5.
+    target_rir: int = Field(
+        default=2, sa_column=Column(SmallInteger, nullable=False, server_default="2")
+    )
+    rest_seconds: int = Field(
+        default=120,
+        sa_column=Column(SmallInteger, nullable=False, server_default="120"),
+    )
+    #: NULL means "no basis in history yet". The UI renders that as an em
+    #: dash, never as a number -- the same discipline the nutrition side
+    #: applies to estimates.
+    suggested_weight_kg: Optional[float] = Field(
+        default=None, sa_column=Column(Float, nullable=True)
+    )
+    progression_rule: str = Field(
+        default="double_progression",
+        sa_column=Column(Text, nullable=False, server_default="double_progression"),
+    )
+    #: Offered alternatives, ordered. Denormalised from
+    #: exercise_substitutions at generation time so a session renders in one
+    #: query.
+    substitution_ids: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=sa_text("'[]'::jsonb")),
+    )
+    status: str = Field(
+        default="prescribed",
+        sa_column=Column(Text, nullable=False, server_default="prescribed"),
+    )
+    replaced_with_exercise_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(
+            AutoString,
+            ForeignKey("exercises.id", ondelete="RESTRICT", name="fk_prescribed_replacement"),
+            nullable=True,
+        ),
+    )
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class ReadinessCheckin(SQLModel, table=True):
+    """The daily readiness questionnaire.
+
+    CAPTURED FROM RELEASE ONE, READ BY NOTHING IN RELEASE ONE. A fatigue model
+    needs history, and history only accumulates if collection starts early.
+
+    EVERY SCORE IS NULLABLE. A partially answered questionnaire is a real
+    state and must stay distinguishable from a low score -- defaulting an
+    unanswered soreness question to any number would fabricate a reading.
+
+    OPTIONAL AND USER-CONTROLLED (design doc 10.5). A user is never blocked
+    from training by an unanswered questionnaire, and may view and delete
+    their own readiness history.
+
+    HEALTH-SENSITIVE. Pain, sleep and stress are health data in a way a
+    bench-press number is not. Never logged, never in an error message, never
+    in an analytics event. Retention duration, export treatment and consent
+    wording are still open -- see WORKOUT_SCHEMA_DESIGN.md 10.8.
+    """
+
+    __tablename__ = "readiness_checkins"
+    __table_args__ = (
+        UniqueConstraint("user_id", "for_date", name="uq_readiness_user_date"),
+        CheckConstraint(
+            "energy IS NULL OR energy BETWEEN 1 AND 5", name="ck_readiness_energy"
+        ),
+        CheckConstraint(
+            "sleep_quality IS NULL OR sleep_quality BETWEEN 1 AND 5",
+            name="ck_readiness_sleep",
+        ),
+        CheckConstraint(
+            "soreness IS NULL OR soreness BETWEEN 1 AND 5",
+            name="ck_readiness_soreness",
+        ),
+        CheckConstraint(
+            "stress IS NULL OR stress BETWEEN 1 AND 5", name="ck_readiness_stress"
+        ),
+        CheckConstraint(
+            "available_minutes IS NULL OR available_minutes BETWEEN 5 AND 300",
+            name="ck_readiness_minutes",
+        ),
+        Index("ix_readiness_user_date", "user_id", sa_text("for_date DESC")),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("users.id", ondelete="CASCADE", name="fk_readiness_user"),
+            nullable=False,
+        )
+    )
+    for_date: date = Field(sa_column=Column(Date, nullable=False))
+    available_minutes: Optional[int] = Field(
+        default=None, sa_column=Column(SmallInteger, nullable=True)
+    )
+    energy: Optional[int] = Field(
+        default=None, sa_column=Column(SmallInteger, nullable=True)
+    )
+    sleep_quality: Optional[int] = Field(
+        default=None, sa_column=Column(SmallInteger, nullable=True)
+    )
+    soreness: Optional[int] = Field(
+        default=None, sa_column=Column(SmallInteger, nullable=True)
+    )
+    stress: Optional[int] = Field(
+        default=None, sa_column=Column(SmallInteger, nullable=True)
+    )
+    pain_flag: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
+    )
+    #: HEALTH-SENSITIVE FREE TEXT. See the class docstring.
+    pain_note: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class AIGeneration(SQLModel, table=True):
+    """Audit trail for AI-produced programming.
+
+    STRUCTURE ONLY -- NOTHING WRITES TO THIS TABLE YET. It ships empty and
+    early on purpose: when AI generation lands it then cannot ship *without*
+    its audit trail, because the table is already there and the insert is the
+    obvious thing to write.
+
+    `prompt_digest`, NOT THE PROMPT. A prompt would carry the user's
+    limitations, pain notes and full training history. A digest answers the
+    only question this table needs to answer -- "was this the same prompt?" --
+    without creating a second store of health data.
+
+    RAW RESPONSES ARE NOT STORED INDEFINITELY (design doc 10.6). An ACCEPTED
+    response never lands in `raw_response` at all -- what persists is the
+    validated structured output (the normalised `prescribed_exercises` rows)
+    plus the provenance columns here. A REJECTED response may be held in
+    `raw_response` only within a bounded retention window, because a rejection
+    nobody can inspect is a bug report with the evidence deleted.
+
+    The retention number itself is still open (10.8), and the deletion job
+    that enforces it must land with the feature rather than after it.
+    """
+
+    __tablename__ = "ai_generations"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('programme','session')", name="ck_aigen_kind"
+        ),
+        CheckConstraint(
+            "validation_status IN ('accepted','rejected')",
+            name="ck_aigen_validation_status",
+        ),
+        CheckConstraint(
+            "(validation_status = 'rejected') = (rejection_reason IS NOT NULL)",
+            name="ck_aigen_rejection_reason",
+        ),
+        Index("ix_aigen_user_time", "user_id", sa_text("created_at DESC")),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(
+        sa_column=Column(
+            AutoString,
+            ForeignKey("users.id", ondelete="CASCADE", name="fk_aigen_user"),
+            nullable=False,
+        )
+    )
+    kind: str = Field(sa_column=Column(Text, nullable=False))
+    model: str = Field(sa_column=Column(Text, nullable=False))
+    #: SHA-256 of the prompt. See the class docstring.
+    prompt_digest: str = Field(sa_column=Column(Text, nullable=False))
+    raw_response: Optional[dict[str, Any]] = Field(
+        default=None, sa_column=Column(JSONB, nullable=True)
+    )
+    validation_status: str = Field(sa_column=Column(Text, nullable=False))
+    rejection_reason: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    latency_ms: Optional[int] = Field(default=None)
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)

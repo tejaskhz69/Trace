@@ -459,11 +459,20 @@ class TestPhase3aSchema:
         assert expected <= found["cols"].get("food_aliases", set())
 
     async def test_the_original_tables_survive(self, migrated_db):
-        """Phase 3a adds one table and removes none: 23 -> 24."""
+        """Phase 3a adds one table and removes none.
+
+        The assertion was `== 24` while Phase 3a was the last revision. It is
+        a lower bound now: `migrated_db` runs to HEAD, so every later phase
+        that legitimately adds a table would otherwise have to come and edit
+        this number -- which makes the test a chore rather than a guard, and
+        trains people to bump it without reading it. What actually matters is
+        that nothing was REMOVED, which the explicit list below checks.
+        """
         found = await _inspect(migrated_db)
-        assert len(found["tables"] - {ALEMBIC_TABLE}) == 24
+        assert len(found["tables"] - {ALEMBIC_TABLE}) >= 24
         for original in ("food_items", "users", "meal_logs", "recipes", "set_logs"):
             assert original in found["tables"]
+        assert "food_aliases" in found["tables"]
 
     async def test_all_three_alias_indexes_exist(self, migrated_db):
         found = await _inspect(migrated_db)
