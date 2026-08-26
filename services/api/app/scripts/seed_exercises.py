@@ -47,8 +47,11 @@ import urllib.request
 
 from sqlmodel import select
 
-from ..db import SessionLocal, init_db
+from ..db import SessionLocal
 from ..models import Exercise
+from ..services.catalogue import CatalogueEntry, plan_seed
+from ._catalogue_report import report_collisions
+from ._schema_guard import require_tables
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("seed.exercises")
@@ -191,7 +194,10 @@ def _to_row(raw: dict) -> tuple[str, str, str, bool, list[str], list[str]] | Non
 
 
 async def run(group: str | None = None, refresh: bool = False) -> None:
-    await init_db()
+    # Seeds insert data; migrations own schema. This line used to
+    # call create_all, which changed the schema behind Alembic's
+    # back and broke the next upgrade.
+    await require_tables("exercises")
 
     rows = [r for r in (_to_row(x) for x in _download(refresh)) if r is not None]
     # The dataset has a handful of exact-duplicate names; keep the first.
@@ -211,13 +217,34 @@ async def run(group: str | None = None, refresh: bool = False) -> None:
 
     async with SessionLocal() as session:
         # `exercises` has no unique constraint on name, so ON CONFLICT isn't
-        # available. Read existing names and insert only what's missing --
-        # which also makes re-running this safe and non-destructive.
-        existing = set((await session.execute(select(Exercise.name))).scalars().all())
+        # available. Read the existing catalogue and insert only what is
+        # genuinely missing.
+        #
+        # "Missing" means missing from the NAME AND ALIAS space, not just the
+        # name list. Comparing names alone is what put "Seal Row" in the
+        # catalogue next to "Chest-Supported Row", whose alias list already
+        # contained `seal row` -- 42 rows of it, each one a movement whose
+        # strength trend was split in half and could never reach the 8
+        # exposures adjudication needs. See app/services/catalogue.py.
+        current = (
+            await session.execute(select(Exercise.name, Exercise.aliases))
+        ).all()
+        existing_entries = [
+            CatalogueEntry(name=n, aliases=tuple(a or [])) for n, a in current
+        ]
+        incoming = [
+            CatalogueEntry(name=r[0], aliases=tuple(r[5])) for r in deduped
+        ]
 
+        # This is a bulk public dataset; it must never overwrite curation
+        # that `seed_movements.py` applied on top of a row it created.
+        plan = plan_seed(existing_entries, incoming, refresh_existing=False)
+        report_collisions(plan, logger=log)
+
+        insertable = set(plan.insert)
         added = 0
         for name, muscle, equipment, compound, secondary, aliases in deduped:
-            if name in existing:
+            if name not in insertable:
                 continue
             session.add(
                 Exercise(

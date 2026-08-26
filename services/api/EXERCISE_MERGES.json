@@ -1,0 +1,454 @@
+[
+ {
+  "survivor": "Machine Crunch",
+  "name": "Ab Crunch Machine",
+  "id": "6750ee88-5855-4fcb-905a-5c099e808732",
+  "aliases_folded": [],
+  "references_repointed": "none",
+  "why": "same machine, word order"
+ },
+ {
+  "survivor": "Barbell Back Squat",
+  "name": "Barbell Squat",
+  "id": "f0e01909-8102-4177-92a8-02191d4dd886",
+  "aliases_folded": [],
+  "references_repointed": "none",
+  "why": "bar position is the qualifier, not a movement"
+ },
+ {
+  "survivor": "Conventional Deadlift",
+  "name": "Barbell Deadlift",
+  "id": "55941702-ae1a-49c3-adc7-086e13598601",
+  "aliases_folded": [
+   "barbell deadlift",
+   "conventional deadlift"
+  ],
+  "references_repointed": "none",
+  "why": "Sumo Deadlift is the separate row; this is its sibling"
+ },
+ {
+  "survivor": "Hip Thrust",
+  "name": "Barbell Hip Thrust",
+  "id": "c314dfac-e2e8-452f-9981-91641d6e72b6",
+  "aliases_folded": [
+   "hip thrust"
+  ],
+  "references_repointed": "none",
+  "why": "implement is not a movement axis here"
+ },
+ {
+  "survivor": "Barbell Row",
+  "name": "Bent Over Barbell Row",
+  "id": "ba6ea9c0-12a1-43d6-8c1a-279d34b458f3",
+  "aliases_folded": [
+   "bent over barbell row",
+   "barbell row"
+  ],
+  "references_repointed": "set_logs.exercise_id\u00d73",
+  "why": "same lift, longer name"
+ },
+ {
+  "survivor": "Bayesian Curl",
+  "name": "Bayesian Cable Curl",
+  "id": "6ded6e10-6edf-41e1-9732-c839b3efc61d",
+  "aliases_folded": [
+   "cable curl behind"
+  ],
+  "references_repointed": "none",
+  "why": "three names for one cable curl behind the body"
+ },
+ {
+  "survivor": "Bayesian Curl",
+  "name": "Face-Away Bayesian Cable Curl",
+  "id": "f4dff052-4eb1-495d-934d-d7a1cdb63d7e",
+  "aliases_folded": [
+   "face-away bayesian cable curl",
+   "bayesian curl",
+   "face away curl"
+  ],
+  "references_repointed": "none",
+  "why": "three names for one cable curl behind the body"
+ },
+ {
+  "survivor": "Pec Deck",
+  "name": "Butterfly",
+  "id": "92989406-bad0-4ad9-895a-1cdbd3b964e8",
+  "aliases_folded": [
+   "butterfly"
+  ],
+  "references_repointed": "none",
+  "why": "one machine, three names"
+ },
+ {
+  "survivor": "Pec Deck",
+  "name": "Pec Deck Fly",
+  "id": "cd4a64db-d327-4e35-b718-7842e48c13af",
+  "aliases_folded": [
+   "pec deck fly",
+   "pec deck",
+   "machine fly"
+  ],
+  "references_repointed": "none",
+  "why": "one machine, three names"
+ },
+ {
+  "survivor": "Cable Chest Fly",
+  "name": "Cable Crossover",
+  "id": "3d878e1c-2c17-424b-8099-a16c7360d9a9",
+  "aliases_folded": [],
+  "references_repointed": "none",
+  "why": "one movement, three names"
+ },
+ {
+  "survivor": "Cable Chest Fly",
+  "name": "Standing Cable Fly",
+  "id": "54d4d84c-729f-454c-8d66-7e976967035e",
+  "aliases_folded": [
+   "standing cable fly",
+   "standing fly"
+  ],
+  "references_repointed": "none",
+  "why": "one movement, three names"
+ },
+ {
+  "survivor": "Cable Crunch",
+  "name": "Rope Crunch",
+  "id": "0963c895-3348-4c3b-b985-2a390c40c210",
+  "aliases_folded": [],
+  "references_repointed": "none",
+  "why": "attachment is not a movement axis"
+ },
+ {
+  "survivor": "Reverse Cable Crossover",
+  "name": "Cable Rear Delt Fly",
+  "id": "b0e548bc-a897-4caf-8f52-97d01abaa673",
+  "aliases_folded": [
+   "rear delt cable fly",
+   "cable reverse fly"
+  ],
+  "references_repointed": "none",
+  "why": "same movement"
+ },
+ {
+  "survivor": "Leg Press Calf Raise",
+  "name": "Calf Press",
+  "id": "c5365896-59d8-4dcd-8904-62b6daa58386",
+  "aliases_folded": [],
+  "references_repointed": "none",
+  "why": "same movement on the same machine"
+ },
+ {
+  "survivor": "Chest Press Machine",
+  "name": "Machine Chest Press",
+  "id": "f23a48dc-3bee-4c3e-a1f8-f22ef83ac6ab",
+  "aliases_folded": [
+   "chest press machine",
+   "machine press"
+  ],
+  "references_repointed": "none",
+  "why": "word order"
+ },
+ {
+  "survivor": "Chest-Supported Row",
+  "name": "Seal Row",
+  "id": "6adcab1b-cede-4530-b547-383958a1b761",
+  "aliases_folded": [
+   "seal rows",
+   "bench row",
+   "prone row"
+  ],
+  "references_repointed": "none",
+  "why": "bench angle is a station property, not a movement"
+ },
+ {
+  "survivor": "Machine Triceps Dip",
+  "name": "Dip Machine",
+  "id": "e980a564-8e19-478e-812a-549e0a161fad",
+  "aliases_folded": [],
+  "references_repointed": "none",
+  "why": "word order"
+ },
+ {
+  "survivor": "Dumbbell Curl",
+  "name": "Dumbbell Bicep Curl",
+  "id": "75ebd75a-7130-481d-9e72-0704e985d76d",
+  "aliases_folded": [
+   "dumbbell bicep curl",
+   "dumbbell curl"
+  ],
+  "references_repointed": "none",
+  "why": "same lift, longer name"
+ },
+ {
+  "survivor": "Preacher Curl",
+  "name": "EZ-Bar Preacher Curl",
+  "id": "11cd6f0c-265e-4568-80fa-9d542128f0e3",
+  "aliases_folded": [
+   "ez-bar preacher curl",
+   "ez preacher curl",
+   "preacher curl"
+  ],
+  "references_repointed": "none",
+  "why": "bar type is not a movement axis"
+ },
+ {
+  "survivor": "Face Pull",
+  "name": "Rope Face Pull",
+  "id": "b3de461c-ecf0-4c77-9db5-adee8a4cdaf9",
+  "aliases_folded": [
+   "face pull",
+   "rope facepull"
+  ],
+  "references_repointed": "none",
+  "why": "the rope is the only way it is done"
+ },
+ {
+  "survivor": "Guillotine Press",
+  "name": "Neck Press",
+  "id": "adbd203e-12cb-4da0-98d3-33a154860867",
+  "aliases_folded": [],
+  "references_repointed": "none",
+  "why": "Gironda neck press -- one lift, two names"
+ },
+ {
+  "survivor": "Hammer Curl",
+  "name": "Hammer Curls",
+  "id": "20e8ad41-ca1f-4726-9342-a02e89acfb29",
+  "aliases_folded": [
+   "hammer curl"
+  ],
+  "references_repointed": "none",
+  "why": "plural"
+ },
+ {
+  "survivor": "Hip Abduction",
+  "name": "Machine Hip Abduction",
+  "id": "3c6861a4-8605-4f55-a278-f60a8ac6eaf9",
+  "aliases_folded": [
+   "machine hip abduction",
+   "hip abduction",
+   "glute medius machine"
+  ],
+  "references_repointed": "none",
+  "why": "word order"
+ },
+ {
+  "survivor": "Hip Adduction",
+  "name": "Machine Hip Adduction",
+  "id": "5babb4ca-d19d-44b9-ba05-fa16f05ec173",
+  "aliases_folded": [
+   "machine hip adduction",
+   "hip adduction"
+  ],
+  "references_repointed": "none",
+  "why": "word order"
+ },
+ {
+  "survivor": "Leg Press",
+  "name": "Horizontal Leg Press",
+  "id": "41b9f0d6-e149-4314-a43c-73b888dac576",
+  "aliases_folded": [
+   "seated leg press"
+  ],
+  "references_repointed": "none",
+  "why": "sled angle is a station property, not a movement"
+ },
+ {
+  "survivor": "Leg Extension",
+  "name": "Leg Extensions",
+  "id": "98c672c3-7804-4216-b402-7ea3653928b4",
+  "aliases_folded": [],
+  "references_repointed": "none",
+  "why": "plural"
+ },
+ {
+  "survivor": "Shoulder Press Machine",
+  "name": "Machine Shoulder Press",
+  "id": "8ed5a788-beb1-433f-8dd3-96d0da94e25f",
+  "aliases_folded": [
+   "shoulder press machine",
+   "machine ohp"
+  ],
+  "references_repointed": "none",
+  "why": "word order"
+ },
+ {
+  "survivor": "Triceps Extension Machine",
+  "name": "Machine Triceps Extension",
+  "id": "5c024838-c137-4aa9-827e-c492b548e2ad",
+  "aliases_folded": [],
+  "references_repointed": "none",
+  "why": "word order"
+ },
+ {
+  "survivor": "Nordic Curl",
+  "name": "Nordic Hamstring Curl",
+  "id": "9d5db5ad-5acf-449b-8b4c-76590d564c74",
+  "aliases_folded": [
+   "nordic curl",
+   "nordics"
+  ],
+  "references_repointed": "none",
+  "why": "same lift, longer name"
+ },
+ {
+  "survivor": "Overhead Press",
+  "name": "Standing Military Press",
+  "id": "ac83c101-c3f6-4076-a527-664d35cc314a",
+  "aliases_folded": [
+   "standing military press",
+   "overhead press"
+  ],
+  "references_repointed": "none",
+  "why": "same lift, two names"
+ },
+ {
+  "survivor": "Barbell Bench Press",
+  "name": "Barbell Bench Press - Medium Grip",
+  "id": "d0e23de3-593a-4b59-ac84-3d82d0becb32",
+  "aliases_folded": [
+   "barbell bench press - medium grip",
+   "barbell bench press medium grip"
+  ],
+  "references_repointed": "set_logs.exercise_idx1",
+  "why": "medium grip IS the bench press; the qualifier is a dataset artifact",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Barbell Front Squat",
+  "name": "Front Barbell Squat",
+  "id": "e53bcc21-44fb-4d31-b7a2-ddd53e71e4a6",
+  "aliases_folded": [
+   "front barbell squat"
+  ],
+  "references_repointed": "none",
+  "why": "word order",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Triceps Pushdown",
+  "name": "Cable Triceps Pressdown, Rope",
+  "id": "3d059d3b-e538-4d0b-b354-ccd304495eac",
+  "aliases_folded": [
+   "cable triceps pressdown, rope",
+   "rope pressdown"
+  ],
+  "references_repointed": "none",
+  "why": "same movement; the rope is the usual attachment",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Chest-Supported Row",
+  "name": "Chest-Supported Machine Row",
+  "id": "97ec2696-c703-47d8-a5e3-de21b7ab0af5",
+  "aliases_folded": [
+   "chest-supported machine row",
+   "chest supported row machine"
+  ],
+  "references_repointed": "none",
+  "why": "same movement; 'machine' is not a qualifier here",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Close-Grip Bench Press",
+  "name": "Close-Grip Barbell Bench Press",
+  "id": "f66c4261-a062-4b7a-a5cb-d152409205a1",
+  "aliases_folded": [
+   "close-grip barbell bench press",
+   "close grip barbell bench press"
+  ],
+  "references_repointed": "none",
+  "why": "same lift, longer name",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Dumbbell Pullover",
+  "name": "Dumbbell Lat Pullover",
+  "id": "0e56cf63-6d59-44fc-8935-540b9199e1af",
+  "aliases_folded": [
+   "dumbbell lat pullover"
+  ],
+  "references_repointed": "none",
+  "why": "lat vs chest emphasis is a cue, not a movement",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Dumbbell Lateral Raise",
+  "name": "Side Lateral Raise",
+  "id": "aade718d-7a53-4463-a33b-60bbb833cd82",
+  "aliases_folded": [
+   "side lateral raise"
+  ],
+  "references_repointed": "none",
+  "why": "one movement, two names",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Skull Crusher",
+  "name": "EZ-Bar Skullcrusher",
+  "id": "4189ced2-c6b0-46b6-ac4d-8df76b882d88",
+  "aliases_folded": [
+   "ez-bar skullcrusher"
+  ],
+  "references_repointed": "none",
+  "why": "bar type is not a movement axis -- as with Preacher Curl",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Neutral-Grip Lat Pulldown",
+  "name": "Hammer-Grip Lat Pulldown",
+  "id": "5afebd9d-1d3f-402c-b6a9-94980be7506d",
+  "aliases_folded": [
+   "hammer-grip lat pulldown",
+   "wide hammer pulldown"
+  ],
+  "references_repointed": "none",
+  "why": "hammer grip IS neutral grip: synonyms, not two grip variants",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Katana Cable Extension",
+  "name": "Katana Cable Triceps Extension",
+  "id": "1189eb29-c469-41d4-b2b8-26fd86e541e9",
+  "aliases_folded": [
+   "katana cable triceps extension"
+  ],
+  "references_repointed": "none",
+  "why": "same lift, longer name",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Pec Deck",
+  "name": "Machine Chest Fly",
+  "id": "0cb83476-5b8b-49b8-9943-dcab092ea4c5",
+  "aliases_folded": [
+   "machine chest fly",
+   "seated machine fly"
+  ],
+  "references_repointed": "none",
+  "why": "one machine, two names",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Machine Pullover",
+  "name": "Machine Lat Pullover",
+  "id": "7702d8b1-ce56-4c59-a4ca-214fbb6dd004",
+  "aliases_folded": [
+   "machine lat pullover"
+  ],
+  "references_repointed": "none",
+  "why": "lat vs chest emphasis is a cue, not a movement",
+  "applied": "2026-08-26 13:58 UTC"
+ },
+ {
+  "survivor": "Seated Cable Row (single arm)",
+  "name": "Single-Arm Cable Row",
+  "id": "4e910300-4262-46ac-8a9f-2a35d7dfbdb6",
+  "aliases_folded": [
+   "single-arm cable row"
+  ],
+  "references_repointed": "none",
+  "why": "same movement, two names",
+  "applied": "2026-08-26 13:58 UTC"
+ }
+]
