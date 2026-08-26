@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -272,6 +272,11 @@ class SetLogRequest(BaseModel):
     exercise_id: str
     weight_kg: float = Field(ge=0, le=700)
     reps: int = Field(ge=1, le=100)
+    # WHICH MACHINE. Both optional and both staying optional -- a barbell
+    # squat has no station, and a lifter who cannot say what they used must
+    # still be able to log the set.
+    station_id: Optional[str] = None
+    station_profile: Optional[str] = Field(default=None, max_length=32)
     # Ask for RIR, not RPE. "How many more could you have done" is a question
     # a beginner can answer honestly; "rate this 1-10" is jargon. RPE is
     # derived for display. Either may be sent; RIR wins if both are.
@@ -357,6 +362,113 @@ class StrengthPoint(BaseModel):
     best_e1rm: float
     e1rm_ewma: float
     volume_load: float
+
+
+class StrengthSeries(BaseModel):
+    """One continuous trend: this movement, on this machine, at this setting.
+
+    Progress is only comparable WITHIN a series. Two series on the same
+    exercise are two different pieces of equipment, and the difference between
+    their loads says nothing about the lifter -- see the note on Station.
+    """
+
+    station_id: Optional[str] = None
+    station_profile: Optional[str] = None
+    #: "Not recorded" when the sets carry no station. Named, not blank, so the
+    #: chart legend never has an anonymous line on it.
+    station_name: str
+    points: list[StrengthPoint]
+
+
+class PlateauPerformance(BaseModel):
+    """One end of the comparison window."""
+
+    performed_on: date
+    top_set_weight_kg: float
+    top_set_reps: int
+    top_set_e1rm: Optional[float] = None
+    top_set_rir: Optional[float] = None
+    volume_load: float
+
+
+class PlateauAssessmentPublic(BaseModel):
+    """A read-only opinion about one lift on one piece of equipment.
+
+    Carries its own evidence. `evidence_sessions` is every session that was
+    counted, so the screen can show which ones -- an assessment the user
+    cannot audit is one they have to take on faith, and this one is an
+    inference from a handful of sessions.
+
+    `requires_confirmation` is true whenever acting on the recommendation
+    would change training. Nothing here is ever applied automatically.
+    """
+
+    status: str
+    exercise_id: str
+    exercise_name: str
+    station_id: Optional[str] = None
+    station_profile: Optional[str] = None
+    station_name: str = "Not recorded"
+    reason: str
+    recommendation: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_sessions: list[date] = Field(default_factory=list)
+    baseline: Optional[PlateauPerformance] = None
+    current: Optional[PlateauPerformance] = None
+    stalled_metric: Optional[str] = None
+    improving_metrics: list[str] = Field(default_factory=list)
+    requires_confirmation: bool = False
+
+
+class StackRange(BaseModel):
+    """One uniform run of a weight stack. Stacks are lists of these."""
+
+    start: float = Field(ge=0, le=1000)
+    end: float = Field(ge=0, le=1000)
+    step: float = Field(gt=0, le=100)
+
+
+class StationCreate(BaseModel):
+    """Name is the only thing we insist on.
+
+    Everything else is optional because the alternative is a configuration
+    screen standing between somebody and their first set. A station named
+    "the blue row machine" and nothing else is a completely valid record.
+    """
+
+    exercise_id: str
+    name: str = Field(min_length=1, max_length=120)
+    gym_id: Optional[str] = None
+    brand: Optional[str] = Field(default=None, max_length=80)
+    model: Optional[str] = Field(default=None, max_length=80)
+    loading: Optional[Literal["plate", "pin", "dial", "cable", "bodyweight", "free_weight"]] = None
+    has_adjustable_profile: bool = False
+    profile_settings: list[str] = Field(default_factory=list, max_length=12)
+    stack_ranges: list[StackRange] = Field(default_factory=list, max_length=12)
+    unit: Literal["kg", "lb"] = "kg"
+    micro_adjust_kg: Optional[float] = Field(default=None, ge=0, le=50)
+    carriage_weight_kg: Optional[float] = Field(default=None, ge=0, le=200)
+    is_public: bool = True
+
+
+class StationPublic(BaseModel):
+    id: str
+    exercise_id: str
+    name: str
+    gym_id: Optional[str]
+    brand: Optional[str]
+    model: Optional[str]
+    loading: Optional[str]
+    has_adjustable_profile: bool
+    profile_settings: list[str]
+    stack_ranges: list[dict]
+    unit: str
+    micro_adjust_kg: Optional[float]
+    carriage_weight_kg: Optional[float]
+    is_public: bool
+    verified: bool
+    log_count: int
+    is_mine: bool
 
 
 class AdjudicationPublic(BaseModel):

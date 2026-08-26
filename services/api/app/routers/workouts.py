@@ -12,20 +12,32 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from sqlalchemy import func
+from sqlalchemy import case, func, or_, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from ..db import get_session
-from ..models import Exercise, SetLog, User, WorkoutSession
+from ..models import Exercise, Gym, SetLog, Station, User, WorkoutSession
 from ..schemas import (
     SetLogRequest,
+    StationCreate,
+    StationPublic,
     StrengthPoint,
+    PlateauAssessmentPublic,
+    PlateauPerformance,
+    StrengthSeries,
     VoiceCommitRequest,
     WorkoutSessionRequest,
 )
 from ..services import strength
-from ..services.adjudication import ewma
+from ..services.adjudication import MIN_SESSIONS
+from ..services.plateau import (
+    Exposure as PlateauExposure,
+    Series as PlateauSeries,
+    SeriesKey as PlateauSeriesKey,
+    assess_plateau,
+)
+from ..services.strength import ewma
 from ..services.volume import build_report as build_volume_report
 from ..services.workout_voice import transcribe_workout
 from .auth import current_user
@@ -38,15 +50,60 @@ REFERENCE_WINDOW_DAYS = 42
 router = APIRouter(prefix="/api/workouts", tags=["workouts"])
 
 
+def _alias_match(needle: str):
+    """`EXISTS (SELECT 1 FROM jsonb_array_elements_text(aliases) WHERE ... ILIKE)`.
+
+    Written as a correlated EXISTS rather than the shorter
+    `aliases.cast(Text).ilike(...)`, because casting the whole array to text
+    matches ACROSS element boundaries -- a search would hit the `", "` between
+    two unrelated aliases and return a movement nobody asked for. Matching
+    each element separately is the honest test, and it is what makes brand
+    search trustworthy enough to be the primary way people find a machine.
+    """
+    return sa_text(
+        "EXISTS (SELECT 1 FROM jsonb_array_elements_text(exercises.aliases) AS alias"
+        " WHERE alias ILIKE :alias_needle)"
+    ).bindparams(alias_needle=needle)
+
+
 @router.get("/exercises", response_model=list[dict])
 async def list_exercises(
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(current_user)],
     q: str | None = Query(default=None),
 ) -> list[dict]:
+    """Search a movement by name OR by alias.
+
+    THE ALIAS HALF IS LOAD-BEARING, NOT A CONVENIENCE.
+    It is the entire mechanism by which "prime row" and "hammer strength row"
+    reach Chest-Supported Row. Without it the only way to find your machine is
+    to give it its own catalogue row, which splits one trend into five and
+    makes `adjudication.MIN_SESSIONS = 8` unreachable for anybody who trains a
+    lift once a week. Search finds the machine; the trend stays continuous.
+    """
     stmt = select(Exercise)
     if q:
-        stmt = stmt.where(Exercise.name.ilike(f"%{q.strip()}%"))  # type: ignore[union-attr]
+        needle = q.strip()
+        like = f"%{needle}%"
+        stmt = stmt.where(
+            or_(
+                Exercise.name.ilike(like),  # type: ignore[union-attr]
+                _alias_match(like),
+            )
+        ).order_by(
+            # Best match first: the exact movement, then a name that starts
+            # with what was typed, then a name containing it, then an alias.
+            case(
+                (func.lower(Exercise.name) == needle.lower(), 0),
+                (Exercise.name.ilike(f"{needle}%"), 1),  # type: ignore[union-attr]
+                (Exercise.name.ilike(like), 2),  # type: ignore[union-attr]
+                else_=3,
+            ),
+            Exercise.name,
+        )
+    else:
+        stmt = stmt.order_by(Exercise.name)
+
     rows = (await session.execute(stmt.limit(100))).scalars().all()
     return [
         {
@@ -227,6 +284,12 @@ async def log_set(
     )
     ex = await session.get(Exercise, payload.exercise_id)
 
+    # A station id we cannot honour is a 422, never a silent NULL. Dropping it
+    # quietly would move the set into the "not recorded" series without
+    # telling anybody, which is exactly the kind of invisible trend split this
+    # whole model exists to prevent.
+    station = await _resolve_station(session, user.id, payload)
+
     entry = SetLog(
         session_id=session_id,
         user_id=user.id,
@@ -237,6 +300,8 @@ async def log_set(
         rpe=rpe,
         rir=rir,
         is_warmup=payload.is_warmup,
+        station_id=station.id if station else None,
+        station_profile=payload.station_profile,
         # RIR-adjusted, not plain Epley. A set stopped three reps short is
         # evidence of a heavier set, and ignoring that under-rates almost
         # every set a sensible lifter performs.
@@ -555,6 +620,149 @@ async def last_performance(
     }
 
 
+# ---------------------------------------------------------------------------
+# Stations -- which machine, not which movement
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_station(
+    session: AsyncSession, user_id: str, payload: SetLogRequest
+) -> Station | None:
+    """Validate an optional station reference and bump its use count.
+
+    Returns None when no station was supplied, which is the common case and a
+    perfectly good answer: barbell lifts have no station, and nobody is ever
+    blocked from logging because they cannot name the machine.
+    """
+    if payload.station_id is None:
+        return None
+
+    station = await session.get(Station, payload.station_id)
+    if station is None or station.exercise_id != payload.exercise_id:
+        raise HTTPException(status_code=422, detail="Unknown station for this exercise.")
+    if not station.is_public and station.created_by_user_id != user_id:
+        # Indistinguishable from "does not exist", on purpose.
+        raise HTTPException(status_code=422, detail="Unknown station for this exercise.")
+
+    if payload.station_profile and station.profile_settings:
+        if payload.station_profile not in station.profile_settings:
+            raise HTTPException(
+                status_code=422,
+                detail="That setting is not one this machine has.",
+            )
+
+    # Ordering key for the picker: the machine people actually use floats up.
+    station.log_count += 1
+    session.add(station)
+    return station
+
+
+def _station_public(station: Station, user_id: str) -> StationPublic:
+    return StationPublic(
+        id=station.id,
+        exercise_id=station.exercise_id,
+        name=station.name,
+        gym_id=station.gym_id,
+        brand=station.brand,
+        model=station.model,
+        loading=station.loading,
+        has_adjustable_profile=station.has_adjustable_profile,
+        profile_settings=station.profile_settings or [],
+        stack_ranges=station.stack_ranges or [],
+        unit=station.unit,
+        micro_adjust_kg=station.micro_adjust_kg,
+        carriage_weight_kg=station.carriage_weight_kg,
+        is_public=station.is_public,
+        verified=station.verified,
+        log_count=station.log_count,
+        is_mine=station.created_by_user_id == user_id,
+    )
+
+
+@router.get("/stations", response_model=list[StationPublic])
+async def list_stations(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+    exercise_id: str = Query(...),
+    gym_id: str | None = Query(default=None),
+) -> list[StationPublic]:
+    """Which machines exist for this movement, here.
+
+    PUBLIC STATIONS FROM OTHER MEMBERS ARE INCLUDED, and that is the point.
+    Once one person at a gym names the PRIME Extreme Row, everybody who joins
+    later finds it already there. We are never going to maintain a worldwide
+    hardware database; the members of each gym know their own equipment and we
+    do not.
+    """
+    visible = or_(Station.is_public == True, Station.created_by_user_id == user.id)  # noqa: E712
+    stmt = select(Station).where(Station.exercise_id == exercise_id, visible)
+    if gym_id is not None:
+        # A lifter with no gym still sees the stations they named themselves.
+        stmt = stmt.where(
+            or_(
+                Station.gym_id == gym_id,
+                (Station.gym_id.is_(None)) & (Station.created_by_user_id == user.id),
+            )
+        )
+    stmt = stmt.order_by(Station.log_count.desc(), Station.name).limit(100)  # type: ignore[union-attr]
+
+    rows = (await session.execute(stmt)).scalars().all()
+    return [_station_public(r, user.id) for r in rows]
+
+
+@router.post("/stations", response_model=StationPublic, status_code=201)
+async def create_station(
+    payload: StationCreate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+) -> StationPublic:
+    """Name a machine. Free text, one required field.
+
+    Stations are created lazily, from logging -- the first time you log a
+    movement the app asks "which machine?" and this is what answers it. There
+    is no gym setup step, and there never will be: an inventory screen before
+    somebody's first set is how you lose them before the first set.
+
+    Free text rather than a brand list because most machines in Indian gyms
+    are unbranded or locally fabricated, and a dropdown of premium US brands
+    would exclude them completely.
+    """
+    exercise = await session.get(Exercise, payload.exercise_id)
+    if exercise is None:
+        raise HTTPException(status_code=404, detail="Exercise not found.")
+
+    if payload.gym_id is not None and await session.get(Gym, payload.gym_id) is None:
+        raise HTTPException(status_code=404, detail="Gym not found.")
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="A station needs a name.")
+
+    station = Station(
+        exercise_id=payload.exercise_id,
+        name=name,
+        gym_id=payload.gym_id,
+        created_by_user_id=user.id,
+        brand=payload.brand,
+        model=payload.model,
+        loading=payload.loading,
+        has_adjustable_profile=payload.has_adjustable_profile,
+        profile_settings=list(payload.profile_settings),
+        stack_ranges=[r.model_dump() for r in payload.stack_ranges],
+        unit=payload.unit,
+        micro_adjust_kg=payload.micro_adjust_kg,
+        carriage_weight_kg=payload.carriage_weight_kg,
+        is_public=payload.is_public,
+        search_text=" ".join(
+            p.lower() for p in (name, payload.brand, payload.model) if p
+        ),
+    )
+    session.add(station)
+    await session.commit()
+    await session.refresh(station)
+    return _station_public(station, user.id)
+
+
 @router.get("/strength/overview")
 async def strength_overview(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -626,14 +834,34 @@ async def strength_overview(
     return {"weeks": weeks, "series": series, "headline": headline}
 
 
-@router.get("/strength/progress", response_model=list[StrengthPoint])
+@router.get("/strength/progress", response_model=list[StrengthSeries])
 async def strength_progress(
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(current_user)],
     exercise_id: str = Query(...),
     days: int = Query(default=180, ge=14, le=1095),
-) -> list[StrengthPoint]:
-    """Weekly best e1RM, smoothed. The chart behind the strength verdict."""
+) -> list[StrengthSeries]:
+    """Weekly best e1RM, smoothed -- ONE SERIES PER (station, profile).
+
+    WHY THIS IS NOT ONE LINE PER EXERCISE
+    Moving from the Hammer row to the PRIME row can change the number on the
+    plates by twenty kilos without the lifter getting one gram stronger or
+    weaker. Leverage differs, and by an amount nobody publishes. Pooled into a
+    single trend that reads as a jump or a collapse, and the strength verdict
+    -- the thing this app exists to get right -- is then wrong.
+
+    So a change of machine starts a new series instead of corrupting the old
+    one. Cam setting does the same: same machine, same load, setting 1 versus
+    setting 3 is genuinely a different exercise.
+
+    Sets with no station form their own series, named rather than blank. That
+    is not a fallback bucket to be tidied away later -- "I did not record the
+    machine" is a real and permanent answer, and it is what every set logged
+    before stations existed will always say.
+
+    There is deliberately NO conversion between series. Compare within one;
+    never across.
+    """
     since = datetime.now(timezone.utc) - timedelta(days=days)
     rows = (
         await session.execute(
@@ -648,29 +876,228 @@ async def strength_progress(
         )
     ).scalars().all()
 
-    weekly: dict[date, list[SetLog]] = {}
+    # (station_id, station_profile) -> week -> sets
+    grouped: dict[tuple[str | None, str | None], dict[date, list[SetLog]]] = {}
     for r in rows:
+        key = (r.station_id, r.station_profile)
         d = r.performed_at.date()
         week = d - timedelta(days=d.weekday())
-        weekly.setdefault(week, []).append(r)
+        grouped.setdefault(key, {}).setdefault(week, []).append(r)
 
-    out: list[StrengthPoint] = []
-    running: list[float] = []
-    for week in sorted(weekly):
-        sets = weekly[week]
-        best = max((s.e1rm for s in sets if s.e1rm), default=None)
-        if best is None:
+    names = await _station_names(session, {k[0] for k in grouped if k[0]})
+
+    series: list[StrengthSeries] = []
+    for (station_id, profile), weekly in grouped.items():
+        points: list[StrengthPoint] = []
+        running: list[float] = []
+        for week in sorted(weekly):
+            sets = weekly[week]
+            best = max((s.e1rm for s in sets if s.e1rm), default=None)
+            if best is None:
+                continue
+            running.append(best)
+            points.append(
+                StrengthPoint(
+                    week_start=week,
+                    best_e1rm=round(best, 1),
+                    e1rm_ewma=round(ewma(running) or best, 1),
+                    volume_load=round(sum(s.weight_kg * s.reps for s in sets), 1),
+                )
+            )
+        if not points:
             continue
-        running.append(best)
-        out.append(
-            StrengthPoint(
-                week_start=week,
-                best_e1rm=round(best, 1),
-                e1rm_ewma=round(ewma(running) or best, 1),
-                volume_load=round(sum(s.weight_kg * s.reps for s in sets), 1),
+        label = names.get(station_id, "Not recorded") if station_id else "Not recorded"
+        if profile:
+            label = f"{label} · setting {profile}"
+        series.append(
+            StrengthSeries(
+                station_id=station_id,
+                station_profile=profile,
+                station_name=label,
+                points=points,
             )
         )
-    return out
+
+    # Longest history first: the series someone has actually been training is
+    # the one they came to look at.
+    series.sort(key=lambda s: (-len(s.points), s.station_name))
+    return series
+
+
+@router.get("/plateau", response_model=PlateauAssessmentPublic)
+async def exercise_plateau(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(current_user)],
+    exercise_id: str = Query(...),
+    days: int = Query(default=180, ge=14, le=1095),
+) -> PlateauAssessmentPublic:
+    """Has this lift stopped moving, and if not, what is actually going on?
+
+    READ-ONLY, AND THAT IS THE FEATURE. This endpoint writes nothing, changes
+    no programme, and creates no plateau record. Every recommendation it
+    returns is phrased as options and carries `requires_confirmation`; the
+    spec is explicit that adjustments are recommended and never applied.
+
+    THE SEGMENTATION IS THE SAME ONE `/strength/progress` USES. Sets are
+    grouped by `(station_id, station_profile)` exactly as they are there, so
+    "you moved from the Hammer row to the PRIME row" is a lookup rather than
+    a question put to the user. There is no conversion between series, here
+    or anywhere.
+
+    SUPPRESSED WHILE ADJUDICATION CANNOT SPEAK. One screen saying "not
+    enough data to tell you anything" while another names a plateau is a
+    product that contradicts itself, so the detector stays quiet until the
+    strength engine could reach a verdict.
+
+    What is passed below is a PROXY for that, not the verdict itself:
+    `MIN_SESSIONS` distinct sessions on this exercise, which is the
+    adjudication precondition this endpoint can evaluate cheaply. The real
+    verdict also needs weigh-ins and logging-day coverage, and it is
+    strictly harder to satisfy -- so this errs toward silence, which is the
+    safe direction. Swap in the true verdict when the adjudication read is
+    available on this path.
+
+    WHAT IS NOT WIRED YET, AND WHY THE STATUS LIST LOOKS SHORTER THAN IT IS
+    `incomplete_execution`, `deload_period`, `confounded` and `safety_stop`
+    are implemented and tested in `services/plateau.py`, but nothing in the
+    database feeds them today: a performed `WorkoutSession` carries no link
+    to the `PlannedSession` that prescribed it, no deload flag, and no pain
+    flag, and `readiness_checkins` is captured but deliberately unread in
+    release one. They light up when steps 3-6 land. Passing zeroes or
+    `False` here would be a lie dressed as data, so the exposures below say
+    "unknown" and the detector treats unknown as unknown.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(SetLog)
+            .where(
+                SetLog.user_id == user.id,
+                SetLog.exercise_id == exercise_id,
+                SetLog.performed_at >= since,
+                SetLog.is_warmup == False,  # noqa: E712
+            )
+            .order_by(SetLog.performed_at)  # type: ignore[arg-type]
+        )
+    ).scalars().all()
+
+    exercise = await session.get(Exercise, exercise_id)
+    if exercise is None:
+        raise HTTPException(status_code=404, detail="Unknown exercise")
+
+    names = await _station_names(
+        session, {r.station_id for r in rows if r.station_id}
+    )
+
+    # (station, profile) -> session -> the sets of this exercise in it. One
+    # exposure per training session, not per week: three sessions in a week
+    # are three chances to progress, and rolling them into one point would
+    # hide exactly the pattern this is looking for.
+    grouped: dict[
+        tuple[str | None, str | None], dict[str, list[SetLog]]
+    ] = {}
+    for r in rows:
+        grouped.setdefault((r.station_id, r.station_profile), {}).setdefault(
+            r.session_id, []
+        ).append(r)
+
+    series: list[PlateauSeries] = []
+    for (station_id, profile), sessions in grouped.items():
+        label = names.get(station_id, "Not recorded") if station_id else "Not recorded"
+        exposures: list[PlateauExposure] = []
+        for sets in sessions.values():
+            top = max(
+                sets,
+                key=lambda s: (
+                    s.e1rm if s.e1rm is not None else s.weight_kg * s.reps,
+                    s.weight_kg,
+                ),
+            )
+            exposures.append(
+                PlateauExposure(
+                    performed_on=top.performed_at.date(),
+                    top_set_weight_kg=top.weight_kg,
+                    top_set_reps=top.reps,
+                    top_set_e1rm=top.e1rm,
+                    top_set_rir=top.rir,
+                    volume_load=round(
+                        sum(s.weight_kg * s.reps for s in sets), 1
+                    ),
+                    # See the docstring: these have no source yet, and
+                    # "unknown" is the honest value.
+                    sets_prescribed=0,
+                    sets_completed=len(sets),
+                    readiness=None,
+                )
+            )
+        if exposures:
+            series.append(
+                PlateauSeries(
+                    key=PlateauSeriesKey(
+                        exercise_id=exercise_id,
+                        exercise_name=exercise.name,
+                        station_id=station_id,
+                        station_profile=profile,
+                        station_name=label,
+                    ),
+                    exposures=tuple(exposures),
+                )
+            )
+
+    # See the docstring: a conservative stand-in for the adjudication
+    # verdict, deliberately erring toward saying nothing.
+    # TODO: replace with `adjudication.adjudicate(...).verdict is
+    # Verdict.insufficient_data` once the weight-trend and weigh-in inputs it
+    # needs are available on this path (they arrive with step 3's readiness
+    # and programme context). Until then this proxy is strictly easier to
+    # satisfy than the real verdict, so it can only make us quieter.
+    distinct_sessions = len({r.session_id for r in rows})
+    assessment = assess_plateau(
+        series,
+        today=datetime.now(timezone.utc).date(),
+        adjudication_insufficient=distinct_sessions < MIN_SESSIONS,
+        window_days=days,
+    )
+
+    return PlateauAssessmentPublic(
+        status=assessment.status.value,
+        exercise_id=exercise_id,
+        exercise_name=exercise.name,
+        station_id=assessment.series.station_id,
+        station_profile=assessment.series.station_profile,
+        station_name=assessment.series.station_name,
+        reason=assessment.reason,
+        recommendation=assessment.recommendation,
+        confidence=assessment.confidence,
+        evidence_sessions=list(assessment.evidence),
+        baseline=_plateau_perf(assessment.baseline),
+        current=_plateau_perf(assessment.current),
+        stalled_metric=assessment.stalled_metric,
+        improving_metrics=list(assessment.improving_metrics),
+        requires_confirmation=assessment.requires_confirmation,
+    )
+
+
+def _plateau_perf(snap) -> PlateauPerformance | None:
+    if snap is None:
+        return None
+    return PlateauPerformance(
+        performed_on=snap.performed_on,
+        top_set_weight_kg=snap.top_set_weight_kg,
+        top_set_reps=snap.top_set_reps,
+        top_set_e1rm=snap.top_set_e1rm,
+        top_set_rir=snap.top_set_rir,
+        volume_load=snap.volume_load,
+    )
+
+
+async def _station_names(session: AsyncSession, ids: set[str]) -> dict[str, str]:
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(select(Station).where(Station.id.in_(ids)))  # type: ignore[union-attr]
+    ).scalars().all()
+    return {r.id: r.name for r in rows}
 
 
 # ---------------------------------------------------------------------------
