@@ -18,8 +18,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 
-E1RM_REP_CAP = 12          # Epley is noise beyond ~12 reps
-E1RM_EWMA_ALPHA = 0.4
+from .strength import EWMA_ALPHA, TREND_REP_CAP, ewma, trend_e1rm
+
 MIN_SESSIONS = 8
 MIN_WEIGH_INS = 14
 MIN_LOGGING_DAYS_PER_WEEK = 5
@@ -39,26 +39,20 @@ class Verdict(str, Enum):
 
 # ---------------------------------------------------------------------------
 # Estimated 1RM
+#
+# The formula moved to `services/strength.py`, which is now the single place
+# any e1RM in the product is computed. Nothing here changed behaviour: these
+# are the same functions under the same names, re-exported because they are
+# this module's published vocabulary and its tests pin them.
+#
+# `trend_e1rm` is deliberately NOT the same function as `strength.e1rm` --
+# see the block comment above `_epley` in that file for why merging them
+# would silently move this engine's numbers.
 # ---------------------------------------------------------------------------
 
-
-def epley_e1rm(weight_kg: float, reps: int) -> float | None:
-    """Epley: 1RM = w * (1 + reps/30). Returns None outside the valid range."""
-    if reps < 1 or reps > E1RM_REP_CAP or weight_kg <= 0:
-        return None
-    if reps == 1:
-        return weight_kg
-    return weight_kg * (1 + reps / 30.0)
-
-
-def ewma(values: list[float], alpha: float = E1RM_EWMA_ALPHA) -> float | None:
-    """Exponentially weighted mean, most recent last."""
-    if not values:
-        return None
-    acc = values[0]
-    for v in values[1:]:
-        acc = acc + alpha * (v - acc)
-    return acc
+E1RM_REP_CAP = TREND_REP_CAP
+E1RM_EWMA_ALPHA = EWMA_ALPHA
+epley_e1rm = trend_e1rm
 
 
 # ---------------------------------------------------------------------------

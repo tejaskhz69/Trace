@@ -99,7 +99,93 @@ class ExerciseTrend(str, Enum):
 
 # ---------------------------------------------------------------------------
 # The estimate
+#
+# TWO e1RM FUNCTIONS LIVE HERE. DO NOT MERGE THEM.
+#
+# `e1rm` and `trend_e1rm` share one Epley core (`_epley`) and differ in three
+# ways on purpose. They were once separate implementations in separate files,
+# which was a real drift risk -- so the FORMULA is now defined once. What is
+# not shared is the contract around it, because the two callers are asking
+# different questions and 20 of 56 sampled inputs legitimately disagree.
+#
+#                     e1rm                      trend_e1rm
+#   caller            a single logged set       the weekly strength trend
+#   RIR               adjusted (reps + RIR)     not accepted
+#   1 rep             100 kg x1 -> 103.3        100 kg x1 -> 100
+#   rounding          1 dp                      none
+#   rep cap           15 effective reps         12 reps
+#
+# WHY THE 1-REP CASE DIFFERS. If a lifter actually performed one rep at
+# 100 kg, their one-rep max IS at least 100 kg -- that is a measurement, not
+# an estimate, and Epley returning 103.3 there is a formula artifact. The
+# trend must not inherit that artifact, because it feeds the adjudication
+# engine's muscle-vs-fat verdict and a phantom 3.3% step on every single at
+# the start of a series would read as strength gain that did not happen.
+#
+# WHY THE RIR ADJUSTMENT DIFFERS. A logged set knows how many reps were left
+# in the tank, and a set stopped 3 short of failure is evidence of a
+# 3-reps-heavier set. The weekly trend is built from already-reduced weekly
+# bests where that information is gone.
+#
+# WHY THE CAPS DIFFER. `e1rm` counts effective reps (reps + RIR), so its
+# ceiling has to sit higher than a raw rep cap to represent the same set.
+#
+# IF YOU TIDY THESE INTO ONE FUNCTION, one of those two contracts breaks
+# silently. Collapsing onto `e1rm`'s semantics shifts the strength index for
+# every 1-rep set ever logged; collapsing onto `trend_e1rm`'s throws away the
+# RIR adjustment on every set. `tests/test_engines.py` pins the trend
+# contract and `tests/test_strength.py` pins the per-set one; if a change
+# makes you edit either, the behaviour moved and that is the bug.
 # ---------------------------------------------------------------------------
+
+#: Epley is noise beyond roughly 12 raw reps.
+TREND_REP_CAP = 12
+
+#: Smoothing factor for the weekly e1RM series. 0.4 keeps roughly the last
+#: three weeks dominant without letting one good session set the trend.
+EWMA_ALPHA = 0.4
+
+
+def _epley(weight_kg: float, effective_reps: float) -> float:
+    """1RM = w x (1 + reps/30). The formula, with no policy attached.
+
+    Every e1RM in the product resolves to this line. Both public wrappers
+    below decide separately what counts as a valid input and what to do with
+    the result; neither re-derives the arithmetic.
+    """
+    return weight_kg * (1 + effective_reps / EPLEY_DIVISOR)
+
+
+def trend_e1rm(weight_kg: float, reps: int) -> float | None:
+    """e1RM for the weekly strength trend. See the block comment above.
+
+    Unrounded, capped at TREND_REP_CAP raw reps, and exact at one rep --
+    a single at 100 kg proves a max of at least 100 kg, so the formula does
+    not get to add 3.3% to it.
+
+    This is the function the adjudication engine reads, and it is exported
+    from `adjudication` as `epley_e1rm` for backwards compatibility.
+    """
+    if reps < 1 or reps > TREND_REP_CAP or weight_kg <= 0:
+        return None
+    if reps == 1:
+        return weight_kg
+    return _epley(weight_kg, reps)
+
+
+def ewma(values: list[float], alpha: float = EWMA_ALPHA) -> float | None:
+    """Exponentially weighted mean, most recent last.
+
+    Moved here unchanged from `adjudication`, so that the strength maths sits
+    in one module. `None` for an empty series is a real answer, not a
+    failure: there is nothing to smooth.
+    """
+    if not values:
+        return None
+    acc = values[0]
+    for v in values[1:]:
+        acc = acc + alpha * (v - acc)
+    return acc
 
 
 def e1rm(weight_kg: float, reps: int, rir: float | None = None) -> float | None:
@@ -119,7 +205,7 @@ def e1rm(weight_kg: float, reps: int, rir: float | None = None) -> float | None:
     effective = reps + (rir if rir is not None and rir > 0 else 0.0)
     if effective > REP_CEILING:
         return None
-    return round(weight_kg * (1 + effective / EPLEY_DIVISOR), 1)
+    return round(_epley(weight_kg, effective), 1)
 
 
 def load_pct(weight_kg: float, reference_e1rm: float | None) -> float | None:

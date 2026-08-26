@@ -369,3 +369,99 @@ def test_a_brand_new_lift_asks_rather_than_inventing_a_weight():
     )
     assert p.weight_kg is None
     assert "pick a weight" in p.note.lower()
+
+
+# ---------------------------------------------------------------------------
+# The two e1RM contracts
+#
+# `e1rm` and `trend_e1rm` share one Epley core and differ deliberately. These
+# tests exist so that a future "tidy these two similar functions into one"
+# fails loudly instead of silently shifting the strength index. See the block
+# comment above `_epley` in app/services/strength.py.
+# ---------------------------------------------------------------------------
+
+
+class TestTheTwoE1rmContractsMustNotBeMerged:
+    def test_one_rep_is_exact_for_the_trend_and_estimated_per_set(self):
+        """A single at 100 kg proves a max of at least 100 kg. The trend must
+        record 100, not Epley's 103.3, or every series that opens with a
+        single reads as a 3.3% gain that never happened."""
+        from app.services.strength import trend_e1rm
+
+        assert trend_e1rm(100, 1) == 100
+        assert e1rm(100, 1) == 103.3
+
+    def test_they_disagree_on_real_inputs(self):
+        """Not a rounding difference. If this ever reaches zero disagreements
+        the two contracts have quietly become one."""
+        from app.services.strength import trend_e1rm
+
+        disagreements = [
+            (w, r)
+            for w in (60, 80, 100, 120)
+            for r in range(1, 13)
+            if trend_e1rm(w, r) != e1rm(w, r)
+        ]
+        assert len(disagreements) > 0
+
+    def test_only_the_per_set_estimate_accepts_rir(self):
+        """A set stopped 3 short of failure is evidence of a heavier set. The
+        weekly trend is built from bests where that information is gone."""
+        from app.services.strength import trend_e1rm
+
+        assert e1rm(100, 5, rir=3) > e1rm(100, 5, rir=0)
+        with pytest.raises(TypeError):
+            trend_e1rm(100, 5, 3)  # type: ignore[call-arg]
+
+    def test_the_caps_differ_and_both_are_enforced(self):
+        from app.services.strength import TREND_REP_CAP, trend_e1rm
+
+        assert TREND_REP_CAP < REP_CEILING
+        assert trend_e1rm(100, TREND_REP_CAP + 1) is None
+        # The per-set ceiling counts effective reps, so it sits higher.
+        assert e1rm(100, TREND_REP_CAP + 1) is not None
+        assert e1rm(100, REP_CEILING + 1) is None
+
+    def test_the_formula_itself_is_defined_once(self):
+        """Both wrappers resolve to `_epley`. The contracts may differ; the
+        arithmetic may not."""
+        import app.services.strength as strength
+
+        calls: list[tuple[float, float]] = []
+        original = strength._epley
+
+        def spy(w, r):
+            calls.append((w, r))
+            return original(w, r)
+
+        strength._epley = spy
+        try:
+            strength.e1rm(100, 5, rir=2)
+            strength.trend_e1rm(100, 5)
+        finally:
+            strength._epley = original
+
+        assert len(calls) == 2, "a caller is re-deriving Epley locally"
+        assert calls[0] == (100, 7.0)  # reps + RIR
+        assert calls[1] == (100, 5)    # raw reps
+
+
+class TestAdjudicationReadsTheSameImplementation:
+    def test_adjudication_does_not_define_its_own(self):
+        """Step 1 of the upgrade plan: one shared implementation, imported --
+        not a second copy that can drift."""
+        from app.services import adjudication
+        from app.services.strength import ewma, trend_e1rm
+
+        assert adjudication.epley_e1rm is trend_e1rm
+        assert adjudication.ewma is ewma
+
+    def test_the_published_names_still_work(self):
+        """These are adjudication's vocabulary and other modules import them.
+        The move must not have renamed anything out from under a caller."""
+        from app.services import adjudication
+
+        assert adjudication.E1RM_REP_CAP == 12
+        assert adjudication.E1RM_EWMA_ALPHA == 0.4
+        assert adjudication.epley_e1rm(100, 1) == 100
+        assert adjudication.ewma([100, 100, 100]) == 100
