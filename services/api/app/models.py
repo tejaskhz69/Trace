@@ -741,6 +741,153 @@ class Exercise(SQLModel, table=True):
     aliases: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
 
 
+class Gym(SQLModel, table=True):
+    """A place. Deliberately thin.
+
+    This is a grouping key for stations, not a venue directory. We are never
+    going to maintain a worldwide gym database, and every field beyond what is
+    needed to say "this machine is at that place" is a field somebody has to
+    keep true.
+    """
+
+    __tablename__ = "gyms"
+    __table_args__ = (Index("ix_gym_city", "city"),)
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    name: str = Field(index=True)
+    city: Optional[str] = None
+    country: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    created_by_user_id: str = Field(
+        sa_column=Column(
+            AutoString(),
+            ForeignKey("users.id", ondelete="RESTRICT", name="fk_gym_creator"),
+            nullable=False,
+            index=True,
+        )
+    )
+    #: Denormalised. Cheap to keep roughly right, expensive to compute on read.
+    member_count: int = 0
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+class Station(SQLModel, table=True):
+    """A machine. One movement can be performed on many of them.
+
+    THE SPLIT THIS TABLE EXISTS FOR
+    An exercise is a movement; a station is a piece of equipment. Keeping them
+    apart is what lets someone find "PRIME Extreme Row" while their
+    Chest-Supported Row trend stays one continuous series. Fold machines into
+    the exercise catalogue instead and `adjudication.MIN_SESSIONS = 8` turns a
+    weekly lift into a forty-week wait for a verdict.
+
+    NAME IS FREE TEXT, ON PURPOSE
+    Not an enum, not a brand table, not a controlled vocabulary. Most machines
+    in Indian gyms are unbranded or locally fabricated, and a dropdown of
+    premium US brands would exclude them completely. "the blue row machine" is
+    a legitimate station name.
+
+    WHAT IS NOT HERE
+    There is no `effective_load_ratio`, no normalisation factor, and no helper
+    anywhere that converts a load from one station to another. Plate-loaded
+    leverage runs roughly 2:1 to 5:1, is never published, and changes through
+    the range of motion; a 45-degree leg press delivers about sin(45) of the
+    loaded weight before friction, on a sled that weighs 30-80 kg unlabelled.
+    No public dataset exists. A conversion would be invented precision wearing
+    the costume of a measurement. Compare within a station; never across.
+    """
+
+    __tablename__ = "stations"
+    __table_args__ = (
+        Index("ix_station_gym_exercise", "gym_id", "exercise_id"),
+        Index("ix_station_owner", "created_by_user_id"),
+        CheckConstraint(
+            "loading IN ('plate','pin','dial','cable','bodyweight','free_weight')",
+            name="ck_station_loading",
+        ),
+        CheckConstraint("unit IN ('kg','lb')", name="ck_station_unit"),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+
+    #: What the lifter calls it. Free text. See the class docstring.
+    name: str = Field(index=True)
+
+    exercise_id: str = Field(
+        sa_column=Column(
+            AutoString(),
+            ForeignKey("exercises.id", ondelete="CASCADE", name="fk_station_exercise"),
+            nullable=False,
+            index=True,
+        )
+    )
+    #: NULLABLE. A home-gym lifter has no gym, and "no gym setup, ever" means
+    #: we cannot demand one before somebody's first set.
+    gym_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(
+            AutoString(),
+            ForeignKey("gyms.id", ondelete="SET NULL", name="fk_station_gym"),
+            nullable=True,
+            index=True,
+        ),
+    )
+    #: Who named it. `is_public` is meaningless without an owner: it is what
+    #: separates "the gym can see this" from "this is mine".
+    created_by_user_id: str = Field(
+        sa_column=Column(
+            AutoString(),
+            ForeignKey("users.id", ondelete="RESTRICT", name="fk_station_creator"),
+            nullable=False,
+        )
+    )
+
+    brand: Optional[str] = None
+    model: Optional[str] = None
+
+    #: plate | pin | dial | cable | bodyweight | free_weight
+    loading: Optional[str] = None
+
+    #: PRIME-style cam adjustment. Setting 1 peaks mid-range, 2 at the
+    #: contraction, 3 at the stretch -- same machine, same load, genuinely
+    #: different exercise. That is why it segments the trend.
+    has_adjustable_profile: bool = False
+    #: e.g. ["1", "2", "3"] or ["A", "B"]. Whatever is printed on the machine.
+    profile_settings: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
+
+    #: An ORDERED LIST of {start, end, step}, never a single increment.
+    #: Real stacks are non-uniform -- 5 kg steps from 15-25, 10 from 25-55,
+    #: 15 from 55-190, all on one machine. A lone `increment` column is simply
+    #: wrong for a large share of equipment, and wrong in a way that makes the
+    #: app tell people to load weights that do not exist.
+    stack_ranges: list[dict[str, float]] = Field(
+        default_factory=list, sa_column=Column(JSONB)
+    )
+
+    unit: str = "kg"
+    #: Add-on magnets and micro-plates, where the gym has them.
+    micro_adjust_kg: Optional[float] = None
+    #: Leg-press sleds and similar, where known. Recorded, never used to
+    #: convert anything.
+    carriage_weight_kg: Optional[float] = None
+
+    #: Visible to everyone at this gym. This one flag is what makes the model
+    #: scale globally: once one member names the PRIME Extreme Row, every
+    #: later member of that gym finds it already there.
+    is_public: bool = True
+    #: Reserved for a human or heuristic pass. Never set by user input.
+    verified: bool = False
+
+    #: Denormalised ordering key -- the machine people actually use floats up.
+    log_count: int = 0
+    #: name + brand + model, lowercased, for cheap matching.
+    search_text: Optional[str] = Field(default=None, sa_column=Column(Text))
+
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
 class WorkoutSession(SQLModel, table=True):
     __tablename__ = "workout_sessions"
     __table_args__ = (Index("ix_session_user_time", "user_id", "started_at"),)
@@ -755,7 +902,20 @@ class WorkoutSession(SQLModel, table=True):
 
 class SetLog(SQLModel, table=True):
     __tablename__ = "set_logs"
-    __table_args__ = (Index("ix_set_session", "session_id"),)
+    __table_args__ = (
+        Index("ix_set_session", "session_id"),
+        # The strength query's real shape. `strength/progress` groups by
+        # (exercise, station, profile) over a time window, so this is the
+        # index that keeps it a range scan rather than a sort of the user's
+        # whole history.
+        Index(
+            "ix_set_user_ex_station_time",
+            "user_id",
+            "exercise_id",
+            "station_id",
+            "performed_at",
+        ),
+    )
 
     id: str = Field(default_factory=_uuid, primary_key=True)
     session_id: str = Field(foreign_key="workout_sessions.id", index=True)
@@ -773,6 +933,25 @@ class SetLog(SQLModel, table=True):
     rir: Optional[float] = None
     is_warmup: bool = False
     e1rm: Optional[float] = None  # computed on write, RIR-adjusted
+
+    #: WHICH MACHINE. Nullable and staying nullable: a barbell squat has no
+    #: station, every set logged before this column existed has no answer, and
+    #: nobody may ever be blocked from logging because they cannot say what
+    #: they were standing in front of. NULL means "not recorded", which is
+    #: its own legitimate series -- not a bucket to be guessed into later.
+    station_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(
+            AutoString(),
+            ForeignKey("stations.id", ondelete="SET NULL", name="fk_set_station"),
+            nullable=True,
+        ),
+    )
+    #: The cam setting used, where the station has one. Same machine, same
+    #: load, different setting is a different exercise, so it segments the
+    #: trend rather than polluting it.
+    station_profile: Optional[str] = None
+
     performed_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
 

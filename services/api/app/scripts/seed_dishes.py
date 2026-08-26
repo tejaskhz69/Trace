@@ -31,7 +31,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from ..db import SessionLocal, init_db
+from ..db import SessionLocal
+from ._schema_guard import require_tables
 from ..models import FoodItem, FoodSource
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -248,7 +249,10 @@ def _servings(rows: list[Serving]) -> list[dict]:
 
 
 async def run(cuisine_filter: str | None) -> None:
-    await init_db()
+    # Seeds insert data; migrations own schema. This line used to
+    # call create_all, which changed the schema behind Alembic's
+    # back and broke the next upgrade.
+    await require_tables("food_items")
     now = datetime.now(timezone.utc)
     payload = []
 

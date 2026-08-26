@@ -19,7 +19,7 @@ services/api/       FastAPI + SQLModel + Postgres
                       nutrition_validator, preparation. No I/O. Fully tested.
   app/routers/      thin HTTP layer over the services
   app/scripts/      data ingestion (Open Food Facts, USDA, brand seeds)
-  tests/            84 tests. These are the spec.
+  tests/            the spec. Run pytest for the current count.
 ```
 
 ## Commands
@@ -32,7 +32,7 @@ npx jest
 
 # Backend
 cd services/api && uvicorn app.main:app --reload
-python -m pytest tests/ -q                  # must be 84 passing
+python -m pytest tests/ -q                  # must be green; run it for the count
 ```
 
 ## Non-negotiables

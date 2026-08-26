@@ -35,7 +35,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from ..db import SessionLocal, init_db
+from ..db import SessionLocal
+from ._schema_guard import require_tables
 from ..models import FoodItem, FoodSource
 from ..services import nutrition_validator as nv
 
@@ -397,7 +398,10 @@ def build_serving_sizes(p: dict) -> list[dict]:
 
 async def run(brand_filter: str | None, dry_run: bool) -> None:
     if not dry_run:
-        await init_db()
+        # Seeds insert data; migrations own schema. This line used to
+        # call create_all, which changed the schema behind Alembic's
+        # back and broke the next upgrade.
+        await require_tables("food_items")
 
     now = datetime.now(timezone.utc)
     rows: list[dict] = []

@@ -82,7 +82,15 @@ VERSION = "1.0"
 #: no ALTER TABLE, no DML, and does not reference food_items at all, so
 #: gtin14 and name_normalized still mean exactly what they meant at
 #: e4f7b0d25c63.
-EXPECTED_REVISIONS = frozenset({"e4f7b0d25c63", "f6a9c2e47d85"})
+#:
+#: a7c31d9b6e02 (gyms, stations, set_logs.station_id) was checked and added:
+#: it creates two new tables and adds two nullable columns plus an index to
+#: set_logs. It contains no reference to food_items, food_aliases, gtin14 or
+#: name_normalized, and performs no DML, so both guarded columns are
+#: untouched and still mean what they meant at e4f7b0d25c63.
+EXPECTED_REVISIONS = frozenset(
+    {"e4f7b0d25c63", "f6a9c2e47d85", "a7c31d9b6e02"}
+)
 
 REQUIRED_COLUMNS = frozenset({"gtin14", "name_normalized"})
 

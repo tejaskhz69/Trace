@@ -47,7 +47,8 @@ import httpx
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..config import get_settings
-from ..db import SessionLocal, init_db
+from ..db import SessionLocal
+from ._schema_guard import require_tables
 from ..models import FoodItem, FoodSource
 from ..services.food_sources import _off_to_resolved  # noqa: PLC2701
 from ..services.nutrition_validator import Verdict, validate
@@ -220,7 +221,10 @@ async def run(args: argparse.Namespace) -> None:
              f" for {sorted(countries)}" if countries else "")
 
     if not args.dry_run:
-        await init_db()
+        # Seeds insert data; migrations own schema. This line used to
+        # call create_all, which changed the schema behind Alembic's
+        # back and broke the next upgrade.
+        await require_tables("food_items")
 
     now = datetime.now(timezone.utc)
     stats = {"hits": 0, "unusable": 0, "quarantined": 0, "thin": 0, "written": 0}

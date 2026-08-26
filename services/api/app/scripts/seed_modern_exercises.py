@@ -19,7 +19,8 @@ import sys
 
 from sqlalchemy import select
 
-from ..db import SessionLocal, init_db
+from ..db import SessionLocal
+from ._schema_guard import require_tables
 from ..models import Exercise
 from .data.modern_exercises import EXERCISES
 
@@ -39,7 +40,10 @@ def _norm(name: str) -> str:
 
 
 async def run(dry_run: bool = False) -> None:
-    await init_db()
+    # Seeds insert data; migrations own schema. This line used to
+    # call create_all, which changed the schema behind Alembic's
+    # back and broke the next upgrade.
+    await require_tables("exercises")
 
     async with SessionLocal() as session:
         existing = (await session.execute(select(Exercise))).scalars().all()

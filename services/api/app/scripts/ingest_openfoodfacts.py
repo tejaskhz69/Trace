@@ -52,7 +52,8 @@ from typing import Any, Iterator
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from ..db import SessionLocal, init_db
+from ..db import SessionLocal
+from ._schema_guard import require_tables
 from ..models import FoodItem, FoodSource
 from ..services.food_sources import _off_to_resolved  # noqa: PLC2701
 
@@ -233,7 +234,10 @@ async def _flush_chunk(batch: list[dict[str, Any]]) -> int:
 
 
 async def run(args: argparse.Namespace) -> None:
-    await init_db()
+    # Seeds insert data; migrations own schema. This line used to
+    # call create_all, which changed the schema behind Alembic's
+    # back and broke the next upgrade.
+    await require_tables("food_items")
 
     countries = (
         {c.strip().lower() for c in args.countries.split(",")} if args.countries else None
