@@ -17,7 +17,7 @@ from app.services import programming as pg
 def _opt(
     ex_id: str,
     *,
-    pattern: str = "squat",
+    pattern: str | None = "squat",
     klass: str = "compound",
     equipment: str = "dumbbell",
     name: str | None = None,
@@ -35,6 +35,10 @@ def _opt(
         muscle_group=muscle,
         secondary_muscles=secondary,
         movement_pattern=pattern,
+        # DERIVED. `ck_exattr_isolation_matches_pattern` makes is_isolation
+        # exactly the set with no pattern; a helper that let a test set them
+        # independently would build options the database cannot hold.
+        is_isolation=pattern is None,
         exercise_class=klass,
         default_rep_min=rep_min,
         default_rep_max=rep_max,
@@ -47,14 +51,14 @@ def _opt(
 CATALOGUE = (
     _opt("goblet-squat", pattern="squat", name="Goblet squat"),
     _opt("db-rdl", pattern="hinge", name="Dumbbell RDL"),
-    _opt("db-bench", pattern="push_horizontal", name="Dumbbell bench press"),
-    _opt("db-row", pattern="pull_horizontal", name="Dumbbell row"),
-    _opt("db-press", pattern="push_vertical", name="Dumbbell shoulder press"),
-    _opt("pull-up", pattern="pull_vertical", name="Pull-up", equipment="bodyweight"),
+    _opt("db-bench", pattern="h-push", name="Dumbbell bench press"),
+    _opt("db-row", pattern="h-pull", name="Dumbbell row"),
+    _opt("db-press", pattern="v-push", name="Dumbbell shoulder press"),
+    _opt("pull-up", pattern="v-pull", name="Pull-up", equipment="bodyweight"),
     _opt("farmer-carry", pattern="carry", name="Farmer carry", klass="compound"),
     _opt(
         "db-curl",
-        pattern="isolation",
+        pattern=None,
         klass="isolation",
         name="Dumbbell curl",
         rep_min=10,
@@ -199,10 +203,37 @@ class TestDaySelection:
         assert len(patterns) == len(set(patterns))
 
     def test_the_days_own_patterns_come_first(self):
+        """A template slot is not always a movement pattern.
+
+        `isolation` asks "is this isolation work", which the eight-pattern
+        vocabulary cannot express -- those rows carry a NULL pattern by
+        design. So the slot is compared through `_fills_slot`, the same way
+        the selector does it, rather than against the pattern column.
+        """
         day = pg.split_for(1)[1][0]
         candidates = pg.eligible(CATALOGUE, equipment=pg.BEGINNER_EQUIPMENT)
         chosen = pg.select_for_day(day, candidates, budget=len(day.patterns))
-        assert [o.movement_pattern for o in chosen] == list(day.patterns)
+
+        assert len(chosen) == len(day.patterns)
+        for option, slot in zip(chosen, day.patterns):
+            assert pg._fills_slot(option, slot), (option.name, slot)
+
+    def test_the_isolation_slot_is_filled_by_a_null_pattern_row(self):
+        """Stated on its own because it is the whole point of the slot: a
+        NULL pattern is an answer, not a coverage gap."""
+        day = pg.split_for(1)[1][0]
+        assert pg.ISOLATION_SLOT in day.patterns
+        candidates = pg.eligible(CATALOGUE, equipment=pg.BEGINNER_EQUIPMENT)
+        chosen = pg.select_for_day(day, candidates, budget=len(day.patterns))
+
+        isolation = [o for o in chosen if o.is_isolation]
+        assert isolation, "the isolation slot selected nothing"
+        assert all(o.movement_pattern is None for o in isolation)
+
+    def test_no_row_claims_the_string_isolation_as_its_pattern(self):
+        """The database CHECK does not permit that value, so a candidate
+        holding it could never have come from the real catalogue."""
+        assert all(o.movement_pattern != "isolation" for o in CATALOGUE)
 
     def test_a_short_session_drops_accessories_not_the_main_lift(self):
         day = pg.split_for(1)[1][0]
@@ -336,3 +367,150 @@ class TestEndToEndDeterminism:
             pg.select_for_day(templates[0], candidates, pg.exercise_budget(120))
         )
         assert len(short) < len(long)
+
+
+class TestNoTemplateSlotSelectsNothing:
+    """The bug this exists for was silent, not loud.
+
+    `_LOWER` asks for four slots, one of which is `carry`, and `carry` has
+    resolved to zero candidates for as long as it has existed. The symptom
+    was a lower-body day with three exercises instead of four -- no error, no
+    log line, nothing anywhere saying a slot had gone unfilled.
+
+    So the guard is on the property, not on any one pattern: every slot any
+    template names must have at least one curated movement behind it, unless
+    it is listed in `KNOWN_EMPTY_PATTERNS` with a written reason.
+    """
+
+    @staticmethod
+    def _curated() -> list[tuple[str | None, bool]]:
+        """(movement_pattern, is_isolation) for every curated movement."""
+        from app.scripts.data.movement_attributes import MOVEMENT_ATTRIBUTES
+        from app.services.movement import pattern_for
+
+        out = []
+        for detail, _profile, _uni in MOVEMENT_ATTRIBUTES.values():
+            pattern = pattern_for(detail)
+            out.append((pattern, pattern is None))
+        return out
+
+    def test_every_slot_is_backed_or_explicitly_known_empty(self):
+        """ONE set equality, in both directions, because each direction
+        catches a different mistake.
+
+        Left-to-right: a slot quietly empties out and cannot hide inside the
+        exemption. Right-to-left: the first curated loaded carry makes this
+        fail with "delete carry from KNOWN_EMPTY_PATTERNS", so the exemption
+        retires itself instead of outliving its reason.
+        """
+        assert pg.unfilled_slots(self._curated()) == pg.KNOWN_EMPTY_PATTERNS
+
+    def test_the_exemption_only_names_slots_templates_actually_ask_for(self):
+        """An exemption for a slot nothing requests is dead weight that would
+        mask a real gap if a template later asked for it."""
+        assert pg.KNOWN_EMPTY_PATTERNS <= pg.template_slots()
+
+    def test_the_resolver_agrees_with_the_selector(self):
+        """`unfilled_slots` must mean the same thing as `_fills_slot`, or the
+        guard measures something the generator does not do."""
+        candidates = pg.eligible(CATALOGUE, equipment=pg.BEGINNER_EQUIPMENT)
+        classified = [(o.movement_pattern, o.is_isolation) for o in candidates]
+        empty = pg.unfilled_slots(classified)
+
+        for slot in pg.template_slots():
+            selectable = any(pg._fills_slot(o, slot) for o in candidates)
+            assert selectable == (slot not in empty), slot
+
+    def test_isolation_counts_by_the_flag_not_by_a_pattern_named_isolation(self):
+        """The slot asks a different question from the pattern slots, and a
+        resolver that compared `movement_pattern == "isolation"` would report
+        the slot empty while the generator filled it happily."""
+        only_isolation = [(None, True)]
+        assert pg.ISOLATION_SLOT not in pg.unfilled_slots(only_isolation)
+
+        no_isolation = [("squat", False)]
+        assert pg.ISOLATION_SLOT in pg.unfilled_slots(no_isolation)
+
+
+class TestGeneratorReadColumnsCarryInformation:
+    """Cardinality guard: every column selection reads must VARY.
+
+    THE CLASS OF BUG THIS EXISTS FOR, WHICH TOOK FOUR INSTANCES TO NAME.
+    Auditing a column by counting NULLs asks "is it populated". That is not
+    the same question as "does it carry information", and the gap between
+    them has now hidden three separate defects:
+
+        exercise_class          NULL on 154/154   -> caught by a null check
+        secondary_muscles       empty arrays      -> needed an emptiness check
+        default_rest_seconds    120 on 154/154    -> passed BOTH of those
+        fatigue_cost              3 on 154/154    -> passed BOTH of those
+
+    A column with one distinct value is decorative. It is NOT NULL, it is
+    fully populated, and it cannot influence any decision -- which is
+    exactly how `_sort_key` came to be ordering a 154-movement catalogue
+    alphabetically while looking like it sorted by class and fatigue.
+
+    The check is `count(DISTINCT col) > 1`, and it belongs in the fixture
+    too: a fixture whose columns all vary cannot reproduce a production
+    catalogue whose columns do not. Fixtures supply what production lacks,
+    and a fixture uniformly better-formed than production is a wish.
+    """
+
+    #: Every field of `ExerciseOption` that participates in a selection or
+    #: prescription decision. `exercise_id` is excluded: it is a tie-break
+    #: of last resort and is unique by construction.
+    DECISION_FIELDS = (
+        "name",
+        "equipment",
+        "muscle_group",
+        "movement_pattern",
+        "is_isolation",
+        "default_rep_min",
+        "default_rep_max",
+    )
+
+    def test_every_decision_field_varies_across_the_fixture(self):
+        for field in self.DECISION_FIELDS:
+            values = {getattr(o, field) for o in CATALOGUE}
+            assert len(values) > 1, (
+                f"{field!r} has one distinct value across the fixture "
+                f"({values!r}). A column that cannot vary cannot influence "
+                f"a decision, and a test using it proves nothing."
+            )
+
+    def test_the_fixture_contains_a_row_for_every_pattern_and_isolation(self):
+        """Shape guard: the fixture must be able to fill each slot."""
+        patterns = {o.movement_pattern for o in CATALOGUE}
+        assert None in patterns, (
+            "no isolation row: production allows a NULL movement_pattern, "
+            "so the fixture must contain one or the isolation slot is never "
+            "exercised"
+        )
+        for slot in pg.template_slots():
+            if slot in pg.KNOWN_EMPTY_PATTERNS or slot == pg.ISOLATION_SLOT:
+                continue
+            assert any(
+                pg._fills_slot(o, slot) for o in CATALOGUE
+            ), f"fixture cannot fill the {slot!r} slot"
+
+    def test_fatigue_cost_is_not_a_selection_input(self):
+        """It is constant in production, so selection must not depend on it.
+
+        Deliberately asserts the ABSENCE of a dependency. If someone puts
+        `fatigue_cost` back into `_sort_key`, this fails and points them at
+        the measurement that would make the column real.
+        """
+        varied = tuple(
+            pg.ExerciseOption(
+                **{
+                    **o.__dict__,
+                    "fatigue_cost": 5 if i % 2 else 1,
+                }
+            )
+            for i, o in enumerate(CATALOGUE)
+        )
+        assert [o.exercise_id for o in pg.eligible(
+            varied, equipment=pg.BEGINNER_EQUIPMENT
+        )] == [o.exercise_id for o in pg.eligible(
+            CATALOGUE, equipment=pg.BEGINNER_EQUIPMENT
+        )], "selection changed when only fatigue_cost changed"

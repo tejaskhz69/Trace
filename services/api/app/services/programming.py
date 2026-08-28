@@ -231,6 +231,12 @@ class ExerciseOption:
     default_rep_min: int | None
     default_rep_max: int | None
     default_rest_seconds: int
+    #: NOT READ BY SELECTION, on purpose. The stored column is the constant
+    #: 3 on every row, and deriving it from the columns we hold only
+    #: re-encodes `_CLASS_PRIORITY`. The version of this column that would
+    #: earn its place is fatigue MEASURED FROM LOGGED DATA -- session RPE,
+    #: next-session performance decrement -- which nobody can seed and which
+    #: Trace could uniquely derive once there is real usage.
     fatigue_cost: int
     is_unilateral: bool = False
     #: Exactly the rows with no pattern. Enforced by a CHECK.
@@ -455,17 +461,26 @@ def _sort_key(option: ExerciseOption) -> tuple:
     would order by whatever the database returned, and the same profile would
     generate two different programmes on two different days.
 
-    WHAT THIS ORDER ACTUALLY DISCRIMINATES ON TODAY. `fatigue_cost` is the
-    constant 3 on all 154 rows, so its term contributes nothing and the
-    effective order is (class, name). Within one class tier that is
-    ALPHABETICAL, which is why a 154-movement catalogue produces the same
-    handful of exercises on every day. Deriving the class fixes the set
-    counts and makes the first term real; it does not fix that. Variation is
-    a separate mechanism, not a sort key.
+    `fatigue_cost` IS DELIBERATELY NOT A TERM HERE. It was, and it did
+    nothing: the column is the constant 3 on all 154 rows. Deriving it from
+    `is_isolation`, `equipment` and `movement_pattern` -- the obvious fix --
+    was measured and rejected, because every split the derivation produces,
+    `_CLASS_PRIORITY` already produces, in the same direction:
+
+        within (class, pattern):  h-push {3,4}  squat {3,5}  v-pull {4}
+
+    That is a re-encoding of the first term, not a second signal. Including
+    it would have moved the column from one distinct value to four and
+    satisfied a cardinality check while changing not one selected exercise
+    -- the check gamed rather than passed.
+
+    So the effective order is (class, name), and within one class tier that
+    is ALPHABETICAL. Variety is not this function's job: a sort key picks a
+    best candidate, and picking a DIFFERENT candidate on a different day is
+    a separate mechanism seeded from the day, not a tie-break.
     """
     return (
         _CLASS_PRIORITY[derived_class(option)],
-        -option.fatigue_cost,
         option.name,
         option.exercise_id,
     )
