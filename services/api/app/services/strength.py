@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import date
 from enum import Enum
 
 # Epley's divisor. Above ~12 reps the estimate drifts optimistic for everyone,
@@ -44,6 +45,22 @@ EPLEY_DIVISOR = 30.0
 # Beyond this many effective reps (reps + RIR) the e1RM is a fitness
 # measurement, not a strength one. We still store the set; we refuse to let it
 # set the reference max.
+#
+# NOT A DUPLICATE OF `TREND_REP_CAP`, DESPITE ANSWERING A SIMILAR-SOUNDING
+# QUESTION. The two differ in both unit and consumer:
+#
+#   REP_CEILING    = 15  EFFECTIVE reps (reps + RIR). Gates the SINGLE-SET
+#                        verdict and the suggested-next-load route. Refuses
+#                        to call one high-rep set a strength measurement.
+#   TREND_REP_CAP  = 12  RAW reps. Gates `trend_e1rm`, so a set above it
+#                        contributes NO POINT to the trend series at all.
+#
+# A set of 12 at RIR 3 is 15 effective reps and 12 raw: inside one bound and
+# on the edge of the other. Consolidating them would silently retune both.
+#
+# See docs/11-constants-and-evidence.md for what the literature does and does
+# not support here -- Halperin 2022 locates a breakdown at 12 REPS PERFORMED,
+# which is TREND_REP_CAP's unit and not this one's.
 REP_CEILING = 15
 
 # How far below the reference a set may land and still count as maintaining.
@@ -139,11 +156,40 @@ class ExerciseTrend(str, Enum):
 # ---------------------------------------------------------------------------
 
 #: Epley is noise beyond roughly 12 raw reps.
+#:
+#: NOT A DUPLICATE OF `REP_CEILING`. This one is in RAW reps and gates the
+#: TREND SERIES: a set above it yields no point at all, so it never reaches
+#: adjudication. `REP_CEILING` is in EFFECTIVE reps (reps + RIR) and gates
+#: the single-set verdict. Different unit, different consumer, different
+#: failure mode. See the note on `REP_CEILING`.
+#:
+#: This is the value the literature supports. Halperin 2022 (Sports Med
+#: 52:377-390) reports rep-prediction error roughly eightfold worse above 12
+#: repetitions performed than at or below it (beta 0.47 vs 0.06), measured
+#: in reps performed -- which is this constant's unit.
 TREND_REP_CAP = 12
 
 #: Smoothing factor for the weekly e1RM series. 0.4 keeps roughly the last
 #: three weeks dominant without letting one good session set the trend.
 EWMA_ALPHA = 0.4
+
+#: A gap this long ends the series rather than interrupting it.
+#:
+#: `ewma()` takes a bare list of numbers and has no idea what the intervals
+#: between them were. The weekly series is built by grouping sets into
+#: ISO weeks, and weeks with no training are simply ABSENT from that
+#: grouping -- so a lifter who trained through March, vanished for six
+#: weeks, and came back in May hands the smoother two adjacent values. The
+#: return then reads as a continuation of pre-layoff form: the smoothed
+#: line barely moves, and the first session back gets scored against a
+#: reference the lifter has not been near in a month and a half.
+#:
+#: Four weeks is a judgement call, not a measured constant. Detraining
+#: research puts the onset of meaningful strength loss somewhere around
+#: three to four weeks of complete cessation, and the honest position is
+#: that the first session back is a NEW baseline rather than the next point
+#: on the old line.
+LAYOFF_RESET_WEEKS = 4
 
 
 def _epley(weight_kg: float, effective_reps: float) -> float:
@@ -186,6 +232,36 @@ def ewma(values: list[float], alpha: float = EWMA_ALPHA) -> float | None:
     for v in values[1:]:
         acc = acc + alpha * (v - acc)
     return acc
+
+
+def ewma_over_weeks(
+    points: list[tuple[date, float]],
+    *,
+    alpha: float = EWMA_ALPHA,
+    reset_after_weeks: int = LAYOFF_RESET_WEEKS,
+) -> list[float]:
+    """Smooth a DATED weekly series, restarting the accumulator after a layoff.
+
+    `ewma()` smooths a bare list and cannot see time. This one can, and it is
+    what the strength trend should use: a six-week absence is not a data point
+    with an unusual value, it is the end of one series and the start of
+    another.
+
+    Returns one smoothed value per input point, in the same order. Points must
+    be sorted oldest first; each date is the Monday of its ISO week.
+    """
+    out: list[float] = []
+    acc: float | None = None
+    previous: date | None = None
+    for when, value in points:
+        gap_weeks = ((when - previous).days / 7.0) if previous is not None else 0.0
+        if acc is None or gap_weeks >= reset_after_weeks:
+            acc = value  # a new baseline, not the next point on the old line
+        else:
+            acc = acc + alpha * (value - acc)
+        out.append(acc)
+        previous = when
+    return out
 
 
 def e1rm(weight_kg: float, reps: int, rir: float | None = None) -> float | None:
