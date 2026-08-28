@@ -253,3 +253,42 @@ catalogue alphabetically while appearing to sort by class and by fatigue.
 This is asserted in `TestGeneratorReadColumnsCarryInformation`, and it
 applies to fixtures as well as to production — a fixture whose columns all
 vary cannot reproduce a catalogue whose columns do not.
+
+## The catalogue's isolation skew is structural, and classifying more rows makes it worse
+
+Candidate counts after the beginner-equipment filter, with everything
+classifiable projected in:
+
+```
+<isolation>  93        h-push  34      core   17      v-push  11
+h-pull       11        lunge   10      squat   9      hinge    8      v-pull 8
+```
+
+**Roughly ten isolation movements for every candidate in a compound slot**,
+and before the projection it was worse — 22 against 1 to 5.
+
+This is not a gap to be closed by classifying more rows. It is a property of
+where the catalogue came from. A scraped exercise database enumerates
+accessory movements almost without limit — every grip, angle and implement
+variation of a curl is a separate row — while the compound patterns that a
+programme is actually built from have a small, fixed number of real members.
+There are perhaps a dozen genuine horizontal pulls. There are hundreds of
+curls.
+
+**So every classification batch makes the ratio worse, not better.** 82 of
+the first 94 rows classified would have gone to isolation. Anyone reading a
+thin compound slot as "we need to classify more" is reading it wrong: the
+compound slots are thin because those movements do not exist in the source
+data, and the fix is authoring them deliberately, not ingesting more.
+
+Recorded here so it is not rediscovered from scratch each time a slot comes
+up short.
+
+**Second-order consequence worth stating.** `equipment` is not a reliable
+guide to beginner-appropriateness, and the tagging beneath it is not
+reliable either. `Band Assisted Pull-Up` — the single most
+beginner-appropriate vertical pull in the catalogue — carries
+`equipment = 'other'`, while `Weighted Pull-Up` carries `'bodyweight'` and
+is therefore admitted by a filter selecting on equipment. A filter over
+equipment cannot express "a beginner can perform this"; only a difficulty
+attribute can.
