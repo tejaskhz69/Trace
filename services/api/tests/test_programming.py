@@ -56,6 +56,22 @@ CATALOGUE = (
     _opt("db-press", pattern="v-push", name="Dumbbell shoulder press"),
     _opt("pull-up", pattern="v-pull", name="Pull-up", equipment="bodyweight"),
     _opt("farmer-carry", pattern="carry", name="Farmer carry", klass="compound"),
+    # `lunge` and `core` were absent from this fixture for as long as they
+    # were absent from PATTERN_PRIORITY and from every day template -- the
+    # fixture agreed with the bug, so no test could see it. That is the
+    # shape failure the guard below exists for: a fixture built to match the
+    # code's assumptions cannot falsify them.
+    _opt("db-lunge", pattern="lunge", name="Dumbbell lunge"),
+    _opt(
+        "hanging-leg-raise",
+        pattern="core",
+        name="Hanging leg raise",
+        equipment="bodyweight",
+        rep_min=10,
+        rep_max=15,
+        muscle="core",
+        secondary=(),
+    ),
     _opt(
         "db-curl",
         pattern=None,
@@ -179,9 +195,23 @@ class TestEligibility:
         assert [o.exercise_id for o in a] == [o.exercise_id for o in b]
 
     def test_compounds_sort_before_isolation(self):
+        """Ordering reads the DERIVED class, not the stored column.
+
+        This test used to assert on `option.exercise_class`. That column is
+        NULL on all 154 production rows, so the assertion only ever passed
+        because the fixture set a value production does not have -- it was
+        testing the fixture, not the sort. `derived_class` is what
+        `_sort_key` actually calls.
+        """
         kept = pg.eligible(CATALOGUE, equipment=pg.BEGINNER_EQUIPMENT)
-        classes = [o.exercise_class for o in kept]
-        assert classes.index("isolation") == len(classes) - 1
+        classes = [pg.derived_class(o) for o in kept]
+
+        assert "isolation" in classes and "compound" in classes, (
+            "fixture must contain both, or this proves nothing"
+        )
+        assert classes == sorted(
+            classes, key=lambda c: pg._CLASS_PRIORITY[c]
+        ), f"classes are not in priority order: {classes}"
 
     def test_identical_candidates_still_order_deterministically(self):
         twins = (

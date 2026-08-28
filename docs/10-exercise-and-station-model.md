@@ -292,3 +292,25 @@ beginner-appropriate vertical pull in the catalogue — carries
 is therefore admitted by a filter selecting on equipment. A filter over
 equipment cannot express "a beginner can perform this"; only a difficulty
 attribute can.
+
+## `lunge` is a compound, `core` is not, and that asymmetry is deliberate
+
+`exercise_classify._COMPOUND_PATTERNS` lists eight of the nine movement
+patterns. `core` is the one left out, and it is not an oversight.
+
+A lunge is multi-joint — hip and knee, under load, with the same structural
+demand as a squat — so it belongs with the compounds and contributes to the
+`is_compound` cross-check like any of them.
+
+Core work is neither. A plank is not a compound and it is not an isolation
+either; a Pallof press is anti-rotation, where the movement is the *absence*
+of movement. Forcing it into the binary is the same conflation this document
+records for `exercise_class` and for `is_compound`/`is_isolation`: one
+column, two axes.
+
+Where a decision must nonetheless put core somewhere, it is grouped with
+**isolation** — accessory volume, late in the session, short rest. That call
+is made in exactly two places and they must agree: `derived_class()` for set
+count and rest, and migration `a7e2d3b64f19` for the rep range. When they
+disagreed, a hanging leg raise was prescribed as three sets with three
+minutes of rest — a squat's prescription attached to an ab exercise.

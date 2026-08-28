@@ -102,11 +102,13 @@ ISOLATION_SLOT = "isolation"
 PATTERN_PRIORITY: tuple[str, ...] = (
     "squat",
     "hinge",
+    "lunge",
     "h-push",
     "h-pull",
     "v-push",
     "v-pull",
     "carry",
+    "core",
     "isolation",
 )
 
@@ -146,6 +148,20 @@ def derived_class(option: "ExerciseOption") -> str:
     """
     if option.is_isolation:
         return "isolation"
+    # Core is the third thing this binary does not cover, and it needs a
+    # branch of its own rather than falling through to "compound". A hanging
+    # leg raise is not isolation -- `is_isolation` is False on all seven core
+    # rows, correctly -- but it is not a compound either, and without this it
+    # was prescribed as one: three sets with THREE MINUTES of rest between
+    # them, which is a squat's prescription attached to an ab exercise.
+    #
+    # It is grouped with isolation because that is what core work is for
+    # programming purposes: accessory volume, late in the session, short
+    # rest. The same call was made for its rep range in `a7e2d3b64f19`, and
+    # the two must agree or a movement gets isolation reps with compound
+    # rest.
+    if option.movement_pattern == "core":
+        return "isolation"
     if option.equipment in _MACHINE_EQUIPMENT:
         return "machine"
     return "compound"
@@ -162,6 +178,14 @@ FORM_CUES: dict[str, str] = {
     "hinge": (
         "Push your hips back before your knees bend, and keep the weight "
         "close to your legs the whole way."
+    ),
+    "lunge": (
+        "Step far enough that your front shin stays close to vertical, and "
+        "put the weight through your front heel coming back up."
+    ),
+    "core": (
+        "Breathe out and brace as though bracing for a light punch. Move "
+        "slowly -- rushing turns this into momentum instead of tension."
     ),
     "h-push": (
         "Keep your shoulder blades pulled back against the bench or floor "
@@ -284,7 +308,7 @@ _FULL_BODY_B = DayTemplate(
 _FULL_BODY_C = DayTemplate(
     label="Full body C",
     focus=("legs", "chest", "back"),
-    patterns=("squat", "v-push", "h-pull", "carry"),
+    patterns=("squat", "v-push", "h-pull", "core"),
 )
 _UPPER = DayTemplate(
     label="Upper",
@@ -300,7 +324,7 @@ _UPPER = DayTemplate(
 _LOWER = DayTemplate(
     label="Lower",
     focus=("legs", "glutes"),
-    patterns=("squat", "hinge", "isolation", "carry"),
+    patterns=("squat", "hinge", "lunge", "isolation"),
 )
 
 
@@ -325,7 +349,26 @@ ALL_TEMPLATES: tuple[DayTemplate, ...] = (
 #: runtime: `_LOWER` has asked for a carry since it was written, that slot
 #: has always resolved to nothing, and the only symptom was a lower-body day
 #: with three exercises instead of four.
-KNOWN_EMPTY_PATTERNS: frozenset[str] = frozenset({"carry"})
+KNOWN_EMPTY_PATTERNS: frozenset[str] = frozenset()
+
+#: Patterns the catalogue CAN fill that no template asks for, each with a
+#: reason. The mirror image of `KNOWN_EMPTY_PATTERNS`, and it exists because
+#: that constant could not see this failure by construction: it asks "can
+#: the catalogue fill what templates request", so a pattern no template
+#: requests is invisible to it.
+#:
+#: That blind spot was not hypothetical. `lunge` (4 candidates) and `core`
+#: (7) were absent from every template AND from `PATTERN_PRIORITY`, so two
+#: of the nine patterns were unreachable by the generator -- not thin,
+#: UNREACHABLE -- while /healthz/db reported green. The visible symptom was
+#: a lower-body day falling back to push-ups and rows, because the fallback
+#: list had nothing leg-shaped left in it.
+#:
+#: `carry` -- the catalogue has no curated loaded carries, so asking for one
+#: produced a silently short day. The slot is withdrawn until a carry is
+#: curated, at which point this entry should be removed and a template
+#: should ask for it again.
+KNOWN_UNUSED_PATTERNS: frozenset[str] = frozenset({"carry"})
 
 
 def template_slots() -> frozenset[str]:
@@ -354,6 +397,29 @@ def unfilled_slots(
         if not filled:
             empty.add(slot)
     return frozenset(empty)
+
+
+def unrequested_patterns(
+    classified: "Iterable[tuple[str | None, bool]]",
+) -> frozenset[str]:
+    """Patterns the catalogue can fill that no template ever asks for.
+
+    THE MIRROR OF `unfilled_slots`, and the pair is the point. One asks
+    "is everything we request fillable"; this asks "is everything fillable
+    requested". Either alone leaves a hole:
+
+        unfilled_slots        catches a template asking for a carry that
+                              does not exist
+        unrequested_patterns  catches a catalogue holding four lunges that
+                              nothing will ever select
+
+    The second failure is the quieter one. It has no error, no empty day and
+    no log line -- the generator simply never reaches those rows, and every
+    health check stays green because nothing it measures has gone wrong.
+    """
+    pairs = list(classified)
+    patterns = {pattern for pattern, _iso in pairs if pattern is not None}
+    return frozenset(patterns - template_slots())
 
 
 def split_for(days_per_week: int) -> tuple[str, tuple[DayTemplate, ...]]:

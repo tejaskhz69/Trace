@@ -24,6 +24,7 @@ from sqlalchemy import text
 
 from .config import get_settings
 from .db import engine, init_db
+from .services import programming as programming_service
 from .routers import (
     adjudication,
     auth,
@@ -118,15 +119,65 @@ async def health() -> dict:
 
 @app.get("/healthz/db", tags=["ops"])
 async def health_db() -> dict:
-    """Readiness. Use this when debugging a Railway deploy."""
+    """Readiness. Use this when debugging a Railway deploy.
+
+    ALSO REPORTS UNFILLED PROGRAMME SLOTS, against the live database rather
+    than the seed. The test suite has a guard for the same property, but it
+    reads the curated constant `seed_movements` writes -- so it proves the
+    SEED is coherent, not that production is. If `exercise_attributes` ever
+    drifts from the seed, that test stays green while real programmes come
+    back short.
+
+    `unfilled` names slots the generator asks for and this database cannot
+    fill. `carry` is expected there today (see KNOWN_EMPTY_PATTERNS);
+    anything else appearing is drift and means somebody is being
+    under-prescribed right now.
+    """
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-        return {"database": "ok"}
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT movement_pattern, is_isolation, classified_by "
+                        "FROM exercise_attributes"
+                    )
+                )
+            ).all()
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             status_code=503, content={"database": "unreachable", "error": str(exc)}
         )
+
+    pairs = [(pattern, bool(isolation)) for pattern, isolation, _by in rows]
+
+    # The two guards are mirror images and neither is sufficient alone.
+    # `unfilled_slots` catches a template asking for something the catalogue
+    # cannot supply. `unrequested_patterns` catches the quieter failure: the
+    # catalogue supplying something no template will ever ask for, which has
+    # no error, no empty day and no log line. `lunge` and `core` sat in that
+    # blind spot -- unreachable, with this endpoint reporting green.
+    unfilled = programming_service.unfilled_slots(pairs)
+    unexpected = sorted(unfilled - programming_service.KNOWN_EMPTY_PATTERNS)
+    unrequested = programming_service.unrequested_patterns(pairs)
+    unexpected_unrequested = sorted(
+        unrequested - programming_service.KNOWN_UNUSED_PATTERNS
+    )
+
+    # How much of the catalogue anyone actually stands behind. A bare count
+    # of classified rows says nothing about whether a person has read them.
+    human = sum(1 for _p, _i, by in rows if by == "human")
+
+    return {
+        "database": "ok",
+        "classified_movements": len(rows),
+        "human_reviewed": human,
+        "engine_derived": len(rows) - human,
+        "unfilled_slots": sorted(unfilled),
+        "unexpected_unfilled_slots": unexpected,
+        "unrequested_patterns": sorted(unrequested),
+        "unexpected_unrequested_patterns": unexpected_unrequested,
+    }
 
 
 @app.get("/", tags=["ops"])
