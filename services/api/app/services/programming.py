@@ -25,7 +25,10 @@ say nothing about injury, treatment, or whether a person should train.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+
+from .strength import REST_COMPOUND_S, REST_ISOLATION_S, REST_MACHINE_S
 
 # ---------------------------------------------------------------------------
 # Vocabulary
@@ -50,6 +53,28 @@ SETS_BY_CLASS: dict[str, int] = {
     "isolation": 2,
 }
 
+#: Rest between sets, by derived class.
+#:
+#: WHY THIS EXISTS RATHER THAN `default_rest_seconds`. The column on
+#: `exercise_attributes` is the constant 120 on all 154 rows -- NOT NULL,
+#: fully populated, and carrying no information, which is why every
+#: null-counting audit passed it clean. Meanwhile `REST_COMPOUND_S = 180`
+#: and `REST_ISOLATION_S = 90` in `strength.py` were meaningful and
+#: unreachable, because the generator read the flat column instead. The
+#: informative system was disconnected and the uninformative one was live.
+#:
+#: Prescriptions now take rest from here. `default_rest_seconds` is no
+#: longer read by generation. It is left on the table rather than dropped
+#: because dropping a column is the one edit a downgrade cannot undo, and
+#: because it is the natural home for a genuine per-exercise override if one
+#: is ever curated -- at which point it should hold NULL for "no override"
+#: rather than a default duplicated onto every row.
+REST_BY_CLASS: dict[str, int] = {
+    "compound": REST_COMPOUND_S,
+    "machine": REST_MACHINE_S,
+    "isolation": REST_ISOLATION_S,
+}
+
 #: Double progression: add reps within the range, then add load and drop back
 #: to the bottom of the range. The one progression rule that needs no
 #: percentages, no maxes, and no arithmetic mid-set.
@@ -65,18 +90,65 @@ MAX_EXERCISES_PER_SESSION = 8
 #: Movement patterns a beginner programme draws from, in priority order.
 #: Compounds first: they are where the adaptation is, and they are what a
 #: shortened session should keep.
+#: The slot templates use to ask for isolation work.
+#:
+#: NOT a movement pattern, and deliberately not stored as one. An
+#: eight-pattern taxonomy describes compounds; a bicep curl satisfies
+#: none of them, so `movement_pattern` is NULL for isolation and
+#: `is_isolation` carries it instead. A NULL pattern is an answer, not
+#: a coverage gap -- see services/movement.py.
+ISOLATION_SLOT = "isolation"
+
 PATTERN_PRIORITY: tuple[str, ...] = (
     "squat",
     "hinge",
-    "push_horizontal",
-    "pull_horizontal",
-    "push_vertical",
-    "pull_vertical",
+    "h-push",
+    "h-pull",
+    "v-push",
+    "v-pull",
     "carry",
     "isolation",
 )
 
 _CLASS_PRIORITY: dict[str, int] = {"compound": 0, "machine": 1, "isolation": 2}
+
+#: Equipment that stabilises the lifter, so the movement costs less to
+#: perform and to recover from than the free-weight equivalent.
+_MACHINE_EQUIPMENT = frozenset({"machine", "smith"})
+
+
+def derived_class(option: "ExerciseOption") -> str:
+    """Which of compound / machine / isolation this movement is.
+
+    DERIVED, NOT STORED, and `is_isolation` is tested FIRST. Both halves of
+    that matter.
+
+    NOT STORED, because `exercise_attributes.exercise_class` was NULL on all
+    154 rows and everything downstream silently fell back to a default: every
+    exercise got `SETS_BY_CLASS.get(None, 2)` -- two sets for a squat and two
+    for a lateral raise -- and `_CLASS_PRIORITY.get(None, 9)` put every row in
+    the same bucket, so the ordering logic never executed at all. The column
+    is a function of `is_isolation` and `equipment`, both of which are NOT
+    NULL on every row, so there is nothing to store and nothing to curate.
+
+    `is_isolation` FIRST, because testing equipment first -- which is what
+    `exercise_classify.py` does -- sends eleven machine-based isolations down
+    the machine branch: leg extension, lying and seated leg curl, the three
+    calf raises, hip abduction and adduction, machine lateral raise, machine
+    preacher curl, triceps extension machine. That hands a leg extension a
+    machine chest press's set count and sorts it AHEAD of a dumbbell lateral
+    raise. Complexity outranks modality here; a calf raise is isolation work
+    performed on a machine, not machine work.
+
+    Total by construction: `is_isolation` is NOT NULL and `equipment` is NOT
+    NULL, so every row lands in exactly one bucket and no caller needs a
+    fallback for an unclassifiable exercise.
+    """
+    if option.is_isolation:
+        return "isolation"
+    if option.equipment in _MACHINE_EQUIPMENT:
+        return "machine"
+    return "compound"
 
 #: Form and safety guidance, keyed by movement pattern. COACHING LANGUAGE
 #: ONLY -- these describe how to move, never whether someone is injured, what
@@ -91,19 +163,19 @@ FORM_CUES: dict[str, str] = {
         "Push your hips back before your knees bend, and keep the weight "
         "close to your legs the whole way."
     ),
-    "push_horizontal": (
+    "h-push": (
         "Keep your shoulder blades pulled back against the bench or floor "
         "and stop before your elbows flare wide."
     ),
-    "push_vertical": (
+    "v-push": (
         "Brace your ribs down so the movement happens at the shoulder, not "
         "by leaning back."
     ),
-    "pull_horizontal": (
+    "h-pull": (
         "Lead with your elbow, not your hand, and pause briefly at the top "
         "instead of yanking."
     ),
-    "pull_vertical": (
+    "v-pull": (
         "Start each rep from a full hang and pull your shoulder blades down "
         "before your arms bend."
     ),
@@ -151,13 +223,18 @@ class ExerciseOption:
     equipment: str
     muscle_group: str
     secondary_muscles: tuple[str, ...]
-    movement_pattern: str
-    exercise_class: str
-    default_rep_min: int
-    default_rep_max: int
+    #: NULL for isolation work. See ISOLATION_SLOT.
+    movement_pattern: str | None
+    exercise_class: str | None
+    #: NULLABLE since `b8d47f1c39ae`. A classified movement need not yet be a
+    #: prescribable one, and `eligible()` is what enforces the difference.
+    default_rep_min: int | None
+    default_rep_max: int | None
     default_rest_seconds: int
     fatigue_cost: int
     is_unilateral: bool = False
+    #: Exactly the rows with no pattern. Enforced by a CHECK.
+    is_isolation: bool = False
 
 
 @dataclass(frozen=True)
@@ -180,7 +257,7 @@ class Education:
 
     primary_muscle: str
     secondary_muscles: tuple[str, ...]
-    movement_pattern: str
+    movement_pattern: str | None
     form_cue: str
 
 
@@ -191,26 +268,26 @@ class Education:
 _FULL_BODY_A = DayTemplate(
     label="Full body A",
     focus=("legs", "chest", "back"),
-    patterns=("squat", "push_horizontal", "pull_horizontal", "isolation"),
+    patterns=("squat", "h-push", "h-pull", "isolation"),
 )
 _FULL_BODY_B = DayTemplate(
     label="Full body B",
     focus=("legs", "back", "shoulders"),
-    patterns=("hinge", "pull_vertical", "push_vertical", "isolation"),
+    patterns=("hinge", "v-pull", "v-push", "isolation"),
 )
 _FULL_BODY_C = DayTemplate(
     label="Full body C",
     focus=("legs", "chest", "back"),
-    patterns=("squat", "push_vertical", "pull_horizontal", "carry"),
+    patterns=("squat", "v-push", "h-pull", "carry"),
 )
 _UPPER = DayTemplate(
     label="Upper",
     focus=("chest", "back", "shoulders"),
     patterns=(
-        "push_horizontal",
-        "pull_horizontal",
-        "push_vertical",
-        "pull_vertical",
+        "h-push",
+        "h-pull",
+        "v-push",
+        "v-pull",
         "isolation",
     ),
 )
@@ -219,6 +296,58 @@ _LOWER = DayTemplate(
     focus=("legs", "glutes"),
     patterns=("squat", "hinge", "isolation", "carry"),
 )
+
+
+#: Every template, so "which slots do we ask for" has one answer.
+ALL_TEMPLATES: tuple[DayTemplate, ...] = (
+    _FULL_BODY_A,
+    _FULL_BODY_B,
+    _FULL_BODY_C,
+    _UPPER,
+    _LOWER,
+)
+
+#: Slots we KNOW nothing can fill, each with the reason and what removes it.
+#:
+#: `carry` -- there are no curated loaded carries. The catalogue holds four
+#: (Farmer's Carry, Farmer's Walk, Rickshaw Carry, Yoke Walk) but none is in
+#: the 154 rows `seed_movements` writes, so none has an `exercise_attributes`
+#: row, and generation inner-joins that table. REMOVE THIS ENTRY once any
+#: carry is curated; the guard below will fail and tell you to.
+#:
+#: This constant exists so the gap is visible in code. It was invisible at
+#: runtime: `_LOWER` has asked for a carry since it was written, that slot
+#: has always resolved to nothing, and the only symptom was a lower-body day
+#: with three exercises instead of four.
+KNOWN_EMPTY_PATTERNS: frozenset[str] = frozenset({"carry"})
+
+
+def template_slots() -> frozenset[str]:
+    """Every slot any template asks for."""
+    return frozenset(slot for t in ALL_TEMPLATES for slot in t.patterns)
+
+
+def unfilled_slots(
+    classified: "Iterable[tuple[str | None, bool]]",
+) -> frozenset[str]:
+    """Which template slots nothing can fill.
+
+    `classified` is (movement_pattern, is_isolation) for every classified
+    movement -- so this works equally over the curated constant the seed
+    writes and over a live `exercise_attributes` table, which is the point:
+    the test checks the seed, `/healthz/db` checks the database, and the two
+    cannot disagree about what "unfilled" means.
+    """
+    pairs = list(classified)
+    has_isolation = any(iso for _pattern, iso in pairs)
+    patterns = {pattern for pattern, _iso in pairs if pattern is not None}
+
+    empty: set[str] = set()
+    for slot in template_slots():
+        filled = has_isolation if slot == ISOLATION_SLOT else slot in patterns
+        if not filled:
+            empty.add(slot)
+    return frozenset(empty)
 
 
 def split_for(days_per_week: int) -> tuple[str, tuple[DayTemplate, ...]]:
@@ -325,9 +454,17 @@ def _sort_key(option: ExerciseOption) -> tuple:
     Without that final tie-break two exercises identical on every other field
     would order by whatever the database returned, and the same profile would
     generate two different programmes on two different days.
+
+    WHAT THIS ORDER ACTUALLY DISCRIMINATES ON TODAY. `fatigue_cost` is the
+    constant 3 on all 154 rows, so its term contributes nothing and the
+    effective order is (class, name). Within one class tier that is
+    ALPHABETICAL, which is why a 154-movement catalogue produces the same
+    handful of exercises on every day. Deriving the class fixes the set
+    counts and makes the first term real; it does not fix that. Variation is
+    a separate mechanism, not a sort key.
     """
     return (
-        _CLASS_PRIORITY.get(option.exercise_class, 9),
+        _CLASS_PRIORITY[derived_class(option)],
         -option.fatigue_cost,
         option.name,
         option.exercise_id,
@@ -340,14 +477,34 @@ def eligible(
     equipment: frozenset[str],
     disliked: "object" = None,
 ) -> tuple[ExerciseOption, ...]:
-    """Candidates a beginner may be prescribed, in deterministic order."""
+    """Candidates a beginner may be prescribed, in deterministic order.
+
+    A MISSING REP RANGE MAKES AN EXERCISE INELIGIBLE, CHECKED HERE.
+
+    `programmable_exercises` already filters these out, and generation reads
+    that view -- so this is braces, not belt. It exists because the belt was
+    silently unbuckled once already: the view was created to carry the
+    not-null guarantee, `_load_options` kept its raw join for weeks
+    afterwards, and the result was a 500 on every generation request that no
+    test could see.
+
+    `prescribed_exercises.rep_min` is NOT NULL, so an option with no range
+    cannot be written. The only question is whether we find that out at
+    SELECTION time, where it means "this exercise is not ready to be
+    prescribed", or at INSERT time, where it means a stack trace. If some
+    future query bypasses the view again, this still cannot produce an
+    unprescribable exercise.
+    """
     blocked = set()
     if isinstance(disliked, (list, tuple, set, frozenset)):
         blocked = {str(d) for d in disliked}
     kept = [
         o
         for o in options
-        if o.equipment in equipment and o.exercise_id not in blocked
+        if o.equipment in equipment
+        and o.exercise_id not in blocked
+        and o.default_rep_min is not None
+        and o.default_rep_max is not None
     ]
     return tuple(sorted(kept, key=_sort_key))
 
@@ -379,7 +536,7 @@ def select_for_day(
         if len(chosen) >= budget:
             break
         for option in candidates:
-            if option.movement_pattern != pattern:
+            if not _fills_slot(option, pattern):
                 continue
             if option.exercise_id in used:
                 continue
@@ -388,6 +545,20 @@ def select_for_day(
             break
 
     return tuple(chosen[:budget])
+
+
+def _fills_slot(option: "ExerciseOption", slot: str) -> bool:
+    """Whether this exercise satisfies a template slot.
+
+    Two different questions wear the same shape here. A pattern slot asks
+    "is this movement a hinge"; the isolation slot asks "is this isolation
+    work", which is not a pattern at all -- those rows carry a NULL pattern
+    on purpose. Comparing `movement_pattern == "isolation"` would match
+    nothing, because the database CHECK does not permit that value.
+    """
+    if slot == ISOLATION_SLOT:
+        return option.is_isolation
+    return option.movement_pattern == slot
 
 
 def prescribe(selected: "tuple[ExerciseOption, ...]") -> tuple[Prescription, ...]:
@@ -407,11 +578,11 @@ def prescribe(selected: "tuple[ExerciseOption, ...]") -> tuple[Prescription, ...
             Prescription(
                 exercise_id=option.exercise_id,
                 order_index=index,
-                sets=SETS_BY_CLASS.get(option.exercise_class, 2),
+                sets=SETS_BY_CLASS[derived_class(option)],
                 rep_min=option.default_rep_min,
                 rep_max=option.default_rep_max,
                 target_rir=BEGINNER_TARGET_RIR,
-                rest_seconds=option.default_rest_seconds,
+                rest_seconds=REST_BY_CLASS[derived_class(option)],
                 progression_rule=BEGINNER_PROGRESSION,
             )
         )

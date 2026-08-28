@@ -98,6 +98,11 @@ DEFAULT_WEIGHT_STEP_KG = 2.5
 REST_COMPOUND_S = 180
 REST_ISOLATION_S = 90
 REST_LIGHT_BONUS_S = -30  # taking it easy (RIR >= 3) shortens the rest
+# A machine stabilises the lifter, so a machine compound costs less to
+# recover from than the free-weight equivalent but more than isolation work.
+# JUDGEMENT: no source puts the number at 120. See
+# docs/11-constants-and-evidence.md.
+REST_MACHINE_S = 120
 
 
 class SetVerdict(str, Enum):
