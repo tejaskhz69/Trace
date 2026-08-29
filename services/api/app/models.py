@@ -1268,6 +1268,18 @@ class ExerciseAttributes(SQLModel, table=True):
     AN UNATTRIBUTED EXERCISE IS INELIGIBLE FOR PRESCRIPTION. Generation joins
     this table inner, never outer. Refusing to programme an exercise we have
     not classified beats inventing a rep range for it.
+
+    THAT RULE NOW HAS A SECOND HALF. A row here means the movement is
+    CLASSIFIED, not that it is programmable: `default_rep_min` and
+    `default_rep_max` are nullable and currently unset, because classifying a
+    movement and deciding how to prescribe it are different facts that arrive
+    at different times.
+
+    GENERATION MUST READ `programmable_exercises`, NEVER THIS TABLE DIRECTLY.
+    That view is the join plus the not-null predicate, so the guarantee the
+    old NOT NULL used to give is restored as an object rather than as a rule
+    somebody has to remember. A hand-written join against this table can
+    silently include a movement with no rep range; the view cannot.
     """
 
     __tablename__ = "exercise_attributes"
@@ -1277,25 +1289,72 @@ class ExerciseAttributes(SQLModel, table=True):
         # ordinary transaction, not the ALTER TYPE dance that cannot run in
         # one.
         CheckConstraint(
-            "movement_pattern IN ('squat','hinge','push_horizontal',"
-            "'push_vertical','pull_horizontal','pull_vertical','carry',"
-            "'isolation')",
+            "movement_pattern IS NULL OR movement_pattern IN "
+            "('squat','hinge','lunge','h-push','v-push','h-pull','v-pull',"
+            "'core','carry')",
             name="ck_exattr_movement_pattern",
         ),
         CheckConstraint(
-            "exercise_class IN ('compound','machine','isolation')",
+            "movement_detail IN ('squat','lunge','hinge','h-press','v-press',"
+            "'h-pull','v-pull','lateral','elbow-flex','elbow-ext','knee-ext',"
+            "'knee-flex','calf','abduction','shrug','trunk-flex','anti-ext',"
+            "'anti-rot','pull','carry')",
+            name="ck_exattr_movement_detail",
+        ),
+        CheckConstraint(
+            "resistance_profile IN ('lengthened','mid','shortened')",
+            name="ck_exattr_resistance_profile",
+        ),
+        # Isolation is EXACTLY the set with no pattern. Enforced rather than
+        # trusted, because the two are derived from one fact and would
+        # otherwise drift into a row claiming to be a compound with no
+        # pattern -- which generation would read as a coverage gap.
+        CheckConstraint(
+            "(movement_pattern IS NULL) = is_isolation",
+            name="ck_exattr_isolation_matches_pattern",
+        ),
+        CheckConstraint(
+            "exercise_class IS NULL OR exercise_class IN "
+            "('compound','machine','isolation')",
             name="ck_exattr_exercise_class",
         ),
-        CheckConstraint("default_rep_min >= 1", name="ck_exattr_rep_min"),
         CheckConstraint(
-            "default_rep_min <= default_rep_max", name="ck_exattr_rep_order"
+            "classified_by IN ('engine','human')",
+            name="ck_exattr_classified_by",
         ),
-        CheckConstraint("default_rep_max <= 50", name="ck_exattr_rep_max"),
+        # A human review has a date; an engine derivation does not. Keeping
+        # these two in lockstep means "reviewed" cannot be claimed without
+        # saying when, which is what makes a stale review findable.
+        CheckConstraint(
+            "(classified_by = 'human') = (reviewed_at IS NOT NULL)",
+            name="ck_exattr_reviewed_at_matches_provenance",
+        ),
+        CheckConstraint(
+            "default_rep_min IS NULL OR default_rep_min >= 1",
+            name="ck_exattr_rep_min",
+        ),
+        CheckConstraint(
+            "default_rep_min IS NULL OR default_rep_max IS NULL "
+            "OR default_rep_min <= default_rep_max",
+            name="ck_exattr_rep_order",
+        ),
+        CheckConstraint(
+            "default_rep_max IS NULL OR default_rep_max <= 50",
+            name="ck_exattr_rep_max",
+        ),
+        # One fact, two columns. A half-populated range is worse than none,
+        # because it looks like data.
+        CheckConstraint(
+            "(default_rep_min IS NULL) = (default_rep_max IS NULL)",
+            name="ck_exattr_rep_range_paired",
+        ),
         CheckConstraint(
             "default_rest_seconds BETWEEN 15 AND 600", name="ck_exattr_rest"
         ),
         CheckConstraint("fatigue_cost BETWEEN 1 AND 5", name="ck_exattr_fatigue"),
         Index("ix_exattr_pattern", "movement_pattern"),
+        Index("ix_exattr_detail", "movement_detail"),
+        Index("ix_exattr_isolation", "is_isolation"),
         Index("ix_exattr_class", "exercise_class"),
     )
 
@@ -1309,14 +1368,73 @@ class ExerciseAttributes(SQLModel, table=True):
             nullable=False,
         )
     )
-    movement_pattern: str = Field(sa_column=Column(Text, nullable=False))
-    exercise_class: str = Field(sa_column=Column(Text, nullable=False))
+    #: One of the eight, or NULL. NULL IS AN ANSWER, NOT A HOLE.
+    #:
+    #: An eight-pattern taxonomy describes compound lifts, and roughly a
+    #: third of the catalogue is isolation work that satisfies none of them.
+    #: A lateral raise is not a vertical push, and writing one in would put a
+    #: false value into a field generation trusts.
+    #:
+    #: GENERATION MUST NEVER TREAT A NULL PATTERN AS A COVERAGE GAP. Pattern
+    #: coverage is a question about compounds -- "does this session cover
+    #: push, pull and legs?" -- and trying to fill a curl's missing pattern
+    #: is how a session grows three isolation exercises nobody asked for.
+    movement_pattern: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    #: The nineteen-value vocabulary the catalogue was curated with. Kept
+    #: because it separates knee-ext from knee-flex, and lateral from
+    #: elbow-flex, in ways the eight cannot -- and that is what
+    #: muscle-targeted selection needs. The EIGHT is what programming reads;
+    #: this is what selection and analysis read.
+    movement_detail: str = Field(sa_column=Column(Text, nullable=False))
+    #: Where in the range of motion the movement is hardest.
+    resistance_profile: str = Field(sa_column=Column(Text, nullable=False))
+    #: Exactly the rows with no pattern. These are selected by target muscle
+    #: rather than by pattern; that is what carries them into a session.
+    is_isolation: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
+    )
+    #: SUPERSEDED. `is_isolation` plus `exercises.equipment` say this more
+    #: precisely and without a second source of truth -- a machine lateral
+    #: raise is 'machine' here and isolation in fact, and the two disagree.
+    #: Nullable and unpopulated; drop it once nothing reads it.
+    exercise_class: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
     is_unilateral: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default="false"),
     )
-    default_rep_min: int = Field(sa_column=Column(SmallInteger, nullable=False))
-    default_rep_max: int = Field(sa_column=Column(SmallInteger, nullable=False))
+    #: WHO decided this row's classification. 'engine' means a regex rule
+    #: produced it and nobody has checked; 'human' means a person examined
+    #: this row specifically.
+    #:
+    #: The tiering is the same one the nutrition eval set uses -- a lower
+    #: tier of evidence must never silently overwrite a higher one. A
+    #: re-run of the rule engine updates 'engine' rows and SKIPS 'human'
+    #: ones. Without this, re-running the classifier would revert every
+    #: hand correction in `f3c7a90e15d2`.
+    classified_by: str = Field(
+        default="engine",
+        sa_column=Column(Text, nullable=False, server_default="engine"),
+    )
+    #: Set exactly when `classified_by = 'human'`, enforced by a CHECK.
+    reviewed_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    #: NULL until step 3 decides them. These were NOT NULL, which meant a row
+    #: could not be classified without also inventing a rep range -- the exact
+    #: thing this table's docstring refuses to do. Classification and
+    #: prescription are different facts arriving at different times.
+    default_rep_min: Optional[int] = Field(
+        default=None, sa_column=Column(SmallInteger, nullable=True)
+    )
+    default_rep_max: Optional[int] = Field(
+        default=None, sa_column=Column(SmallInteger, nullable=True)
+    )
     default_rest_seconds: int = Field(
         default=120,
         sa_column=Column(SmallInteger, nullable=False, server_default="120"),
@@ -1327,6 +1445,40 @@ class ExerciseAttributes(SQLModel, table=True):
     )
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
     updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
+
+
+#: The join generation is allowed to see.
+#:
+#: `SQLModel.metadata` does not model views, so `create_all` cannot build
+#: this and the test harness executes it explicitly. Migration
+#: `c9e58a2d41bf` owns the copy that runs against a real database; that one
+#: is deliberately a frozen literal, because a migration must keep meaning
+#: what it meant when it ran. `tests/test_movement_attributes.py` asserts the
+#: two still agree -- one fact, two homes, so something has to check.
+PROGRAMMABLE_EXERCISES_VIEW = """
+CREATE OR REPLACE VIEW programmable_exercises AS
+SELECT
+    e.id                    AS exercise_id,
+    e.name,
+    e.muscle_group,
+    e.secondary_muscles,
+    e.equipment,
+    e.is_compound,
+    a.movement_pattern,
+    a.movement_detail,
+    a.resistance_profile,
+    a.is_isolation,
+    a.is_unilateral,
+    a.default_rep_min,
+    a.default_rep_max,
+    a.default_rest_seconds,
+    a.fatigue_cost,
+    a.exercise_class
+FROM exercises e
+JOIN exercise_attributes a ON a.exercise_id = e.id
+WHERE a.default_rep_min IS NOT NULL
+  AND a.default_rep_max IS NOT NULL
+"""
 
 
 class ExerciseSubstitution(SQLModel, table=True):
