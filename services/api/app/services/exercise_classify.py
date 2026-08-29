@@ -181,6 +181,18 @@ CAUTION_RULES: tuple[tuple[str, str, str], ...] = (
 #: patterns can be detected and sent to review rather than silently resolved
 #: by rule order.
 PATTERN_RULES: tuple[tuple[str, str, str], ...] = (
+    # EVALUATED FIRST, and it exists because a single-joint movement can
+    # carry a compound word in its name. A pec deck is not a horizontal
+    # push, a sissy squat is not a squat, and a straight-arm pulldown is not
+    # a vertical pull -- but each matched a compound rule on a substring.
+    #
+    # Every term here was confirmed against a hand review of the catalogue
+    # (migration f3c7a90e15d2), so this rule is the engine being taught what
+    # the humans already decided rather than a new guess.
+    ("isolation_override",
+     r"\b(fly|flyes|flys|flye|pec deck|face pull|rear[- ]?delt|"
+     r"straight[- ]arm|pullover|back extension|hyperextension|"
+     r"sissy|calf raise|calf press|shrug|shrugs)\b", "isolation"),
     ("carry_named", r"\b(carry|carries|farmer'?s? walk|suitcase walk|yoke walk|"
                     r"waiter walk|overhead walk)\b", "carry"),
     ("vertical_pull", r"\b(pull[- ]?up|pull[- ]?ups|chin[- ]?up|chin[- ]?ups|"
@@ -191,12 +203,14 @@ PATTERN_RULES: tuple[tuple[str, str, str], ...] = (
     ("horizontal_press", r"\b(bench press|chest press|push[- ]?up|push[- ]?ups|"
                          r"dip|dips|floor press|jm press|decline press|"
                          r"incline press)\b", "push_horizontal"),
-    ("chest_fly", r"\b(fly|flyes|flys|flye|pec deck|pectoral)\b",
-     "push_horizontal"),
-    ("horizontal_pull", r"\b(row|rows|face pull|rear[- ]delt)\b",
+    # `chest_fly` used to sit here mapping fly/pec deck to push_horizontal.
+    # It is gone: a fly is single-joint shoulder adduction, and calling it a
+    # horizontal push made a dumbbell fly eligible to fill a template's
+    # pressing slot. `isolation_override` above owns those terms now.
+    ("horizontal_pull", r"\b(row|rows)\b",
      "pull_horizontal"),
     ("hinge_named", r"\b(deadlift|romanian|rdl|stiff[- ]legged|hip thrust|"
-                    r"glute bridge|back extension|hyperextension|swing|"
+                    r"glute bridge|swing|"
                     r"swings|good ?morning|pull[- ]?through)\b", "hinge"),
     # MUST precede `squat_named`. Before this rule existed every lunge,
     # split squat and step-up matched `squat_named` and was stored as a
