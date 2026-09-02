@@ -27,13 +27,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..db import SessionLocal
-from ._schema_guard import require_tables
 from ..models import FoodItem, FoodSource
+from ._schema_guard import require_tables
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("seed.dishes")
@@ -253,7 +253,7 @@ async def run(cuisine_filter: str | None) -> None:
     # call create_all, which changed the schema behind Alembic's
     # back and broke the next upgrade.
     await require_tables("food_items")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = []
 
     for (

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -72,7 +72,7 @@ async def log_meal(
             sugars_g=round(food.sugar_g * factor, 2) if food.sugar_g else None,
             potassium_mg=_scaled_micro(food, "potassium_mg", factor),
             meal_type=payload.meal_type,
-            logged_at=payload.logged_at or datetime.now(timezone.utc),
+            logged_at=payload.logged_at or datetime.now(UTC),
             recognition_id=payload.recognition_id,
         )
         # Popularity drives search ranking.
@@ -97,7 +97,7 @@ async def log_meal(
             carbs_g=payload.carbs_g or 0,
             fat_g=payload.fat_g or 0,
             meal_type=payload.meal_type,
-            logged_at=payload.logged_at or datetime.now(timezone.utc),
+            logged_at=payload.logged_at or datetime.now(UTC),
             recognition_id=payload.recognition_id,
         )
 
@@ -113,8 +113,8 @@ async def daily_summary(
     user: Annotated[User, Depends(current_user)],
     on: date = Query(default_factory=date.today, alias="date"),
 ) -> DailySummary:
-    start = datetime.combine(on, time.min, tzinfo=timezone.utc)
-    end = datetime.combine(on, time.max, tzinfo=timezone.utc)
+    start = datetime.combine(on, time.min, tzinfo=UTC)
+    end = datetime.combine(on, time.max, tzinfo=UTC)
 
     rows = (
         await session.execute(

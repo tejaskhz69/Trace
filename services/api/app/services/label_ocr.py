@@ -263,7 +263,7 @@ async def read_label(image: bytes) -> LabelReading:
     if not settings.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
 
-    from .vision import _client, prepare_image  # noqa: PLC2701
+    from .vision import _client, prepare_image
 
     payload_bytes, mime, _ = prepare_image(image)
     client = _client()

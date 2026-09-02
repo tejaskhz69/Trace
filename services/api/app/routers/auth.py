@@ -22,7 +22,7 @@ Contract notes that matter for the mobile client:
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import jwt
@@ -35,10 +35,8 @@ from sqlmodel import select
 from ..config import get_settings
 from ..db import get_session
 from ..models import PhoneChallenge, RefreshToken, User
-from ..services import phone_auth, social_auth
 from ..schemas import (
     AuthResponse,
-    LoginRequest,
     PhoneStartRequest,
     PhoneVerifyRequest,
     RefreshRequest,
@@ -48,12 +46,13 @@ from ..schemas import (
 )
 from ..security import (
     create_token,
+    decode_token,
     dummy_verify,
     hash_password,
     hash_refresh_token,
-    decode_token,
     verify_password,
 )
+from ..services import phone_auth, social_auth
 
 settings = get_settings()
 
@@ -87,7 +86,7 @@ async def _issue_tokens(
     return AuthResponse(
         access_token=access,
         refresh_token=refresh,
-        expires_in=int((access_exp - datetime.now(timezone.utc)).total_seconds()),
+        expires_in=int((access_exp - datetime.now(UTC)).total_seconds()),
         user=UserPublic.model_validate(user, from_attributes=True),
     )
 
@@ -183,7 +182,7 @@ async def refresh_tokens(
         raise HTTPException(status_code=401, detail="Refresh token revoked.")
 
     # Rotate: a refresh token is single-use.
-    stored.revoked_at = datetime.now(timezone.utc)
+    stored.revoked_at = datetime.now(UTC)
     session.add(stored)
 
     user = await session.get(User, claims["sub"])
@@ -204,7 +203,7 @@ async def logout(
         )
     )
     if stored and stored.revoked_at is None:
-        stored.revoked_at = datetime.now(timezone.utc)
+        stored.revoked_at = datetime.now(UTC)
         session.add(stored)
         await session.commit()
 
@@ -369,7 +368,7 @@ async def phone_start(
     except phone_auth.PhoneAuthError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     window_start = now - timedelta(minutes=phone_auth.SEND_WINDOW_MINUTES)
     ip = request.client.host if request.client else None
 
@@ -481,7 +480,7 @@ async def phone_verify(
     except phone_auth.PhoneAuthError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     challenge = (
         await session.execute(
             select(PhoneChallenge)

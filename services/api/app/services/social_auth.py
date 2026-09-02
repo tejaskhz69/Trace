@@ -47,11 +47,9 @@ separate field on the request rather than being read out of the token.
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
 import jwt
 from jwt import PyJWKClient
 

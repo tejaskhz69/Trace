@@ -15,8 +15,8 @@ canvas. That is a deliberate choice, not a missing feature -- see the note on
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Annotated, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -198,7 +198,7 @@ async def coverage(
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(current_user)],
     days: int = Query(default=365, ge=1, le=3650),
-    sport: Optional[str] = Query(default=None, description="e.g. 'cycling'"),
+    sport: str | None = Query(default=None, description="e.g. 'cycling'"),
 ) -> CoverageResponse:
     """Everything the coverage map needs, in one round trip.
 
@@ -213,7 +213,7 @@ async def coverage(
     The lines alone are legible -- a city's road network is recognisable from
     the routes you have ridden through it.
     """
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
 
     stmt = (
         select(RideTrack, ExternalWorkout)

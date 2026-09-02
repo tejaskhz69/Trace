@@ -44,22 +44,22 @@ recommendation that alters training carries `requires_confirmation`.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
-from typing import Sequence
 
 __all__ = [
-    "PlateauStatus",
-    "Exposure",
-    "SeriesKey",
-    "Series",
-    "PerformanceSnapshot",
-    "PlateauAssessment",
-    "assess_plateau",
+    "MIN_COMPLETION_RATE",
     "MIN_EXPOSURES",
     "MIN_SPAN_DAYS",
-    "MIN_COMPLETION_RATE",
+    "Exposure",
+    "PerformanceSnapshot",
+    "PlateauAssessment",
+    "PlateauStatus",
+    "Series",
+    "SeriesKey",
+    "assess_plateau",
 ]
 
 
@@ -207,7 +207,7 @@ class PerformanceSnapshot:
     top_set_rir: float | None = None
 
     @classmethod
-    def of(cls, e: Exposure) -> "PerformanceSnapshot":
+    def of(cls, e: Exposure) -> PerformanceSnapshot:
         return cls(
             performed_on=e.performed_on,
             top_set_weight_kg=e.top_set_weight_kg,

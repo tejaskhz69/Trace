@@ -28,7 +28,7 @@ silently picking one is not.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # ---------------------------------------------------------------------------
 # Energy from measured mechanical work
@@ -278,12 +278,12 @@ def parse_activity(
         started = (
             datetime.fromisoformat(str(started_raw).replace("Z", "+00:00"))
             if started_raw
-            else datetime.now(timezone.utc)
+            else datetime.now(UTC)
         )
     except ValueError:
-        started = datetime.now(timezone.utc)
+        started = datetime.now(UTC)
     if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
+        started = started.replace(tzinfo=UTC)
 
     activity_type = normalise_sport(payload.get("sport_type"), payload.get("type"))
 
@@ -397,7 +397,7 @@ def is_duplicate(
         return False
     start = existing_start
     if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
+        start = start.replace(tzinfo=UTC)
     gap = abs((candidate.started_at - start).total_seconds()) / 60.0
     if gap > DUPLICATE_WINDOW_MINUTES:
         return False

@@ -119,7 +119,7 @@ _CLASS_PRIORITY: dict[str, int] = {"compound": 0, "machine": 1, "isolation": 2}
 _MACHINE_EQUIPMENT = frozenset({"machine", "smith"})
 
 
-def derived_class(option: "ExerciseOption") -> str:
+def derived_class(option: ExerciseOption) -> str:
     """Which of compound / machine / isolation this movement is.
 
     DERIVED, NOT STORED, and `is_isolation` is tested FIRST. Both halves of
@@ -377,7 +377,7 @@ def template_slots() -> frozenset[str]:
 
 
 def unfilled_slots(
-    classified: "Iterable[tuple[str | None, bool]]",
+    classified: Iterable[tuple[str | None, bool]],
 ) -> frozenset[str]:
     """Which template slots nothing can fill.
 
@@ -400,7 +400,7 @@ def unfilled_slots(
 
 
 def unrequested_patterns(
-    classified: "Iterable[tuple[str | None, bool]]",
+    classified: Iterable[tuple[str | None, bool]],
 ) -> frozenset[str]:
     """Patterns the catalogue can fill that no template ever asks for.
 
@@ -553,10 +553,10 @@ def _sort_key(option: ExerciseOption) -> tuple:
 
 
 def eligible(
-    options: "list[ExerciseOption] | tuple[ExerciseOption, ...]",
+    options: list[ExerciseOption] | tuple[ExerciseOption, ...],
     *,
     equipment: frozenset[str],
-    disliked: "object" = None,
+    disliked: object = None,
 ) -> tuple[ExerciseOption, ...]:
     """Candidates a beginner may be prescribed, in deterministic order.
 
@@ -592,7 +592,7 @@ def eligible(
 
 def select_for_day(
     day: DayTemplate,
-    candidates: "tuple[ExerciseOption, ...]",
+    candidates: tuple[ExerciseOption, ...],
     budget: int,
 ) -> tuple[ExerciseOption, ...]:
     """Pick this day's exercises, one movement pattern at a time.
@@ -628,7 +628,7 @@ def select_for_day(
     return tuple(chosen[:budget])
 
 
-def _fills_slot(option: "ExerciseOption", slot: str) -> bool:
+def _fills_slot(option: ExerciseOption, slot: str) -> bool:
     """Whether this exercise satisfies a template slot.
 
     Two different questions wear the same shape here. A pattern slot asks
@@ -642,7 +642,7 @@ def _fills_slot(option: "ExerciseOption", slot: str) -> bool:
     return option.movement_pattern == slot
 
 
-def prescribe(selected: "tuple[ExerciseOption, ...]") -> tuple[Prescription, ...]:
+def prescribe(selected: tuple[ExerciseOption, ...]) -> tuple[Prescription, ...]:
     """Turn chosen exercises into a prescription, preserving their order.
 
     `order_index` comes from position, so the ordering decided in
@@ -670,7 +670,7 @@ def prescribe(selected: "tuple[ExerciseOption, ...]") -> tuple[Prescription, ...
     return tuple(out)
 
 
-def estimated_minutes(prescriptions: "tuple[Prescription, ...]") -> int:
+def estimated_minutes(prescriptions: tuple[Prescription, ...]) -> int:
     """Rough session length. Rounded to the nearest minute, never to zero."""
     if not prescriptions:
         return 0

@@ -17,7 +17,7 @@ client-supplied plan means the numbers can never be tampered with in transit.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -135,8 +135,8 @@ async def submit_onboarding(
     user.daily_steps = payload.daily_steps
     user.goal_type = payload.goal_type
     user.activity_multiplier = plan.activity_multiplier
-    user.onboarded_at = datetime.now(timezone.utc)
-    user.updated_at = datetime.now(timezone.utc)
+    user.onboarded_at = datetime.now(UTC)
+    user.updated_at = datetime.now(UTC)
     session.add(user)
 
     # Seed week one so the Today screen has a target immediately instead of

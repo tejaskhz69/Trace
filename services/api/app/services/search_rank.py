@@ -137,7 +137,7 @@ def match_tier(query_normalized: str, matched_text: str) -> int:
     return TIER_FUZZY
 
 
-def tier_for(query_normalized: str, cand: "Candidate") -> int:
+def tier_for(query_normalized: str, cand: Candidate) -> int:
     """Best tier this candidate can claim, across identity and haystack."""
     tier = match_tier(query_normalized, cand.matched_text)
     if tier == TIER_EXACT or not cand.haystack:

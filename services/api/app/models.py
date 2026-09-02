@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import date, datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, date, datetime
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -31,16 +31,18 @@ from sqlalchemy import (
     SmallInteger,
     Text,
     UniqueConstraint,
-    text as sa_text,
 )
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy import (
+    text as sa_text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 from sqlmodel.sql.sqltypes import AutoString
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # asyncpg returns/expects timezone-aware datetimes; the SQLModel default maps
@@ -146,15 +148,15 @@ class User(SQLModel, table=True):
     # present, because a phone number is the identity key for the OTP flow and
     # two accounts sharing one would make "log in with this number"
     # ambiguous.
-    phone: Optional[str] = Field(default=None, index=True, unique=True)
-    phone_verified_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    phone: str | None = Field(default=None, index=True, unique=True)
+    phone_verified_at: datetime | None = Field(default=None, sa_type=TZDateTime)
 
-    display_name: Optional[str] = None
-    date_of_birth: Optional[date] = None
-    sex: Optional[str] = None  # 'male' | 'female' | 'other'
-    height_cm: Optional[float] = None
-    starting_weight_kg: Optional[float] = None
-    goal_weight_kg: Optional[float] = None
+    display_name: str | None = None
+    date_of_birth: date | None = None
+    sex: str | None = None  # 'male' | 'female' | 'other'
+    height_cm: float | None = None
+    starting_weight_kg: float | None = None
+    goal_weight_kg: float | None = None
     goal_type: GoalType = Field(default=GoalType.maintain)
     program_type: ProgramType = Field(default=ProgramType.collaborative)
     activity_multiplier: float = 1.45
@@ -175,11 +177,11 @@ class User(SQLModel, table=True):
     # measurably less than someone who has always been 70 kg, and starting them
     # on the textbook number stalls them from day one. None means "not asked",
     # which is deliberately distinct from "never been heavier".
-    highest_weight_kg: Optional[float] = None
-    daily_steps: Optional[int] = None
-    cardio_sessions_per_week: Optional[int] = None
-    lifting_sessions_per_week: Optional[int] = None
-    onboarded_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    highest_weight_kg: float | None = None
+    daily_steps: int | None = None
+    cardio_sessions_per_week: int | None = None
+    lifting_sessions_per_week: int | None = None
+    onboarded_at: datetime | None = Field(default=None, sa_type=TZDateTime)
 
     is_pro: bool = False
     timezone: str = "UTC"
@@ -216,11 +218,11 @@ class PhoneChallenge(SQLModel, table=True):
     expires_at: datetime = Field(sa_type=TZDateTime)
     attempts: int = 0
     sent_count: int = 1
-    consumed_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    consumed_at: datetime | None = Field(default=None, sa_type=TZDateTime)
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
     # For per-IP throttling; a single number is cheap to rotate, an IP is less
     # so. Nullable because a proxy may not forward one.
-    request_ip: Optional[str] = None
+    request_ip: str | None = None
 
 
 class RefreshToken(SQLModel, table=True):
@@ -236,8 +238,8 @@ class RefreshToken(SQLModel, table=True):
     user_id: str = Field(foreign_key="users.id", index=True)
     token_hash: str = Field(index=True, unique=True)
     expires_at: datetime = Field(sa_type=TZDateTime)
-    revoked_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
-    device_label: Optional[str] = None
+    revoked_at: datetime | None = Field(default=None, sa_type=TZDateTime)
+    device_label: str | None = None
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
 
@@ -268,11 +270,11 @@ class FoodItem(SQLModel, table=True):
     source: FoodSource = Field(
         default=FoodSource.curated, sa_column=_food_source_column()
     )
-    source_id: Optional[str] = None
+    source_id: str | None = None
 
     name: str
-    brand: Optional[str] = None
-    barcode: Optional[str] = None
+    brand: str | None = None
+    barcode: str | None = None
 
     # Translations / colloquial names, e.g. {"hi": "रोटी", "aliases": ["chapati", "phulka"]}
     names_i18n: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
@@ -296,14 +298,14 @@ class FoodItem(SQLModel, table=True):
         default_factory=list, sa_column=Column(JSONB)
     )
 
-    cuisine: Optional[str] = None       # 'indian_north', 'italian', ...
-    category: Optional[str] = None      # 'dal', 'bread', 'snack', ...
+    cuisine: str | None = None       # 'indian_north', 'italian', ...
+    category: str | None = None      # 'dal', 'bread', 'snack', ...
     countries: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
 
     # Confidence in the *nutrition data itself* (not the AI estimate).
     data_quality: float = 0.5           # 0..1; verified sources score higher
     is_verified: bool = False
-    created_by_user_id: Optional[str] = Field(default=None, foreign_key="users.id")
+    created_by_user_id: str | None = Field(default=None, foreign_key="users.id")
     moderation_status: str = "approved"  # approved | pending | rejected
 
     search_text: str = Field(default="", sa_column=Column(Text))
@@ -326,7 +328,7 @@ class FoodItem(SQLModel, table=True):
     )
     #: Deep link to the upstream record. The plan's rule is "do not hide the
     #: source"; a licence name alone does not let a user verify a number.
-    source_url: Optional[str] = None
+    source_url: str | None = None
     #: 1-7, LOWER IS BETTER. See services/licensing.Tier. An ordinal, which
     #: `data_quality` cannot be: that float is smeared over 51 values with
     #: 107,863 rows on 0.51 alone, so it cannot express "a curated dish
@@ -335,11 +337,11 @@ class FoodItem(SQLModel, table=True):
         default=6,
         sa_column=Column(SmallInteger, nullable=False, server_default="6"),
     )
-    last_verified_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    last_verified_at: datetime | None = Field(default=None, sa_type=TZDateTime)
     #: Normalised barcode, GTIN-14. `barcode` above is left EXACTLY as the
     #: source sent it -- this is an additional lookup key, never a
     #: replacement, so the existing /barcode endpoint is unaffected.
-    gtin14: Optional[str] = None
+    gtin14: str | None = None
     #: normalize(name), for exact-match ranking without a correlated subquery.
     name_normalized: str = Field(
         default="",
@@ -453,12 +455,12 @@ class MealLog(SQLModel, table=True):
 
     id: str = Field(default_factory=_uuid, primary_key=True)
     user_id: str = Field(foreign_key="users.id", index=True)
-    food_item_id: Optional[str] = Field(default=None, foreign_key="food_items.id")
+    food_item_id: str | None = Field(default=None, foreign_key="food_items.id")
 
     # Snapshot at log time -- never recomputed from FoodItem.
     display_name: str
     grams: float
-    serving_label: Optional[str] = None
+    serving_label: str | None = None
     calories: float
     protein_g: float = 0.0
     carbs_g: float = 0.0
@@ -469,19 +471,19 @@ class MealLog(SQLModel, table=True):
     # difference between "this food contains no sodium" and "we don't know" --
     # summing unknowns as zero would under-report a day's sodium and quietly
     # tell a user they are under a limit they have actually blown.
-    sodium_mg: Optional[float] = None
-    potassium_mg: Optional[float] = None
-    sugars_g: Optional[float] = None
+    sodium_mg: float | None = None
+    potassium_mg: float | None = None
+    sugars_g: float | None = None
 
     meal_type: MealType = Field(default=MealType.snack)
     logged_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
-    photo_url: Optional[str] = None
-    recognition_id: Optional[str] = Field(default=None, foreign_key="recognitions.id")
+    photo_url: str | None = None
+    recognition_id: str | None = Field(default=None, foreign_key="recognitions.id")
     # Uncertainty carried through from an AI estimate, so the weekly report can
     # say "your intake was 2,640 kcal ± 180" instead of pretending to precision.
-    kcal_low: Optional[float] = None
-    kcal_high: Optional[float] = None
+    kcal_low: float | None = None
+    kcal_high: float | None = None
 
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
@@ -494,7 +496,7 @@ class Recognition(SQLModel, table=True):
     id: str = Field(default_factory=_uuid, primary_key=True)
     user_id: str = Field(foreign_key="users.id", index=True)
     image_hash: str = Field(index=True)      # perceptual hash -> deterministic rescans
-    image_url: Optional[str] = None
+    image_url: str | None = None
     model_used: str
     latency_ms: int = 0
     input_tokens: int = 0
@@ -595,14 +597,14 @@ class Recipe(SQLModel, table=True):
     user_id: str = Field(foreign_key="users.id", index=True)
 
     name: str
-    description: Optional[str] = None
-    cuisine: Optional[str] = None
-    photo_url: Optional[str] = None
+    description: str | None = None
+    cuisine: str | None = None
+    photo_url: str | None = None
 
     visibility: RecipeVisibility = Field(
         default=RecipeVisibility.private, sa_column=_recipe_visibility_column()
     )
-    published_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    published_at: datetime | None = Field(default=None, sa_type=TZDateTime)
 
     #: How many portions the whole recipe makes. The exact logging unit --
     #: calories do not evaporate, so total/servings survives any cooking loss.
@@ -612,10 +614,10 @@ class Recipe(SQLModel, table=True):
     #: the common case and is why `per_100g_*` below are nullable. Deriving a
     #: per-100 g panel from the raw ingredient sum would understate every dish
     #: that lost water on the hob -- see services/recipes.py.
-    cooked_weight_g: Optional[float] = None
+    cooked_weight_g: float | None = None
 
-    prep_minutes: Optional[int] = None
-    cook_minutes: Optional[int] = None
+    prep_minutes: int | None = None
+    cook_minutes: int | None = None
     #: Free-text method, one string per step.
     steps: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
@@ -633,7 +635,7 @@ class Recipe(SQLModel, table=True):
     #: NULL when `cooked_weight_g` is NULL. A nullable column rather than a
     #: zero default, because "we do not know this dish's density" and "this
     #: dish has no calories" must never render the same way.
-    per_100g_calories: Optional[float] = None
+    per_100g_calories: float | None = None
     #: Share of the calories traceable to a catalogue food rather than a
     #: hand-typed line. Drives the confidence marker on the panel.
     sourced_fraction: float = 1.0
@@ -641,7 +643,7 @@ class Recipe(SQLModel, table=True):
     # --- social ------------------------------------------------------------
     #: Set when this recipe was copied from someone else's published one. The
     #: copy is fully independent; this is provenance, not a live link.
-    forked_from_id: Optional[str] = Field(default=None, foreign_key="recipes.id")
+    forked_from_id: str | None = Field(default=None, foreign_key="recipes.id")
     save_count: int = 0
     log_count: int = 0
 
@@ -667,14 +669,14 @@ class RecipeIngredient(SQLModel, table=True):
     id: str = Field(default_factory=_uuid, primary_key=True)
     recipe_id: str = Field(foreign_key="recipes.id", index=True)
     #: None for a hand-entered line the user estimated themselves.
-    food_item_id: Optional[str] = Field(default=None, foreign_key="food_items.id")
+    food_item_id: str | None = Field(default=None, foreign_key="food_items.id")
 
     display_name: str
     grams: float
     #: What the user actually typed, e.g. "2 medium onions". Kept verbatim so
     #: the recipe reads like a recipe rather than like a spreadsheet.
-    quantity_label: Optional[str] = None
-    note: Optional[str] = None
+    quantity_label: str | None = None
+    note: str | None = None
     sort_order: int = 0
 
     # Per 100 g, copied at add time.
@@ -755,10 +757,10 @@ class Gym(SQLModel, table=True):
 
     id: str = Field(default_factory=_uuid, primary_key=True)
     name: str = Field(index=True)
-    city: Optional[str] = None
-    country: Optional[str] = None
-    lat: Optional[float] = None
-    lon: Optional[float] = None
+    city: str | None = None
+    country: str | None = None
+    lat: float | None = None
+    lon: float | None = None
     created_by_user_id: str = Field(
         sa_column=Column(
             AutoString(),
@@ -824,7 +826,7 @@ class Station(SQLModel, table=True):
     )
     #: NULLABLE. A home-gym lifter has no gym, and "no gym setup, ever" means
     #: we cannot demand one before somebody's first set.
-    gym_id: Optional[str] = Field(
+    gym_id: str | None = Field(
         default=None,
         sa_column=Column(
             AutoString(),
@@ -843,11 +845,11 @@ class Station(SQLModel, table=True):
         )
     )
 
-    brand: Optional[str] = None
-    model: Optional[str] = None
+    brand: str | None = None
+    model: str | None = None
 
     #: plate | pin | dial | cable | bodyweight | free_weight
-    loading: Optional[str] = None
+    loading: str | None = None
 
     #: PRIME-style cam adjustment. Setting 1 peaks mid-range, 2 at the
     #: contraction, 3 at the stretch -- same machine, same load, genuinely
@@ -867,10 +869,10 @@ class Station(SQLModel, table=True):
 
     unit: str = "kg"
     #: Add-on magnets and micro-plates, where the gym has them.
-    micro_adjust_kg: Optional[float] = None
+    micro_adjust_kg: float | None = None
     #: Leg-press sleds and similar, where known. Recorded, never used to
     #: convert anything.
-    carriage_weight_kg: Optional[float] = None
+    carriage_weight_kg: float | None = None
 
     #: Visible to everyone at this gym. This one flag is what makes the model
     #: scale globally: once one member names the PRIME Extreme Row, every
@@ -882,7 +884,7 @@ class Station(SQLModel, table=True):
     #: Denormalised ordering key -- the machine people actually use floats up.
     log_count: int = 0
     #: name + brand + model, lowercased, for cheap matching.
-    search_text: Optional[str] = Field(default=None, sa_column=Column(Text))
+    search_text: str | None = Field(default=None, sa_column=Column(Text))
 
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
     updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
@@ -895,9 +897,9 @@ class WorkoutSession(SQLModel, table=True):
     id: str = Field(default_factory=_uuid, primary_key=True)
     user_id: str = Field(foreign_key="users.id", index=True)
     started_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
-    ended_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
-    routine_name: Optional[str] = None
-    notes: Optional[str] = None
+    ended_at: datetime | None = Field(default=None, sa_type=TZDateTime)
+    routine_name: str | None = None
+    notes: str | None = None
 
 
 class SetLog(SQLModel, table=True):
@@ -924,22 +926,22 @@ class SetLog(SQLModel, table=True):
     set_index: int = 0
     weight_kg: float
     reps: int
-    rpe: Optional[float] = None
+    rpe: float | None = None
     # Reps left in the tank. THIS is what turns a logged set into a
     # measurement of strength -- 75 kg x 10 with five left and 75 kg x 10 with
     # nothing left are different facts about the same lifter. Nullable because
     # every set logged before this column existed genuinely has no answer, and
     # defaulting those to 0 would retroactively inflate the whole history.
-    rir: Optional[float] = None
+    rir: float | None = None
     is_warmup: bool = False
-    e1rm: Optional[float] = None  # computed on write, RIR-adjusted
+    e1rm: float | None = None  # computed on write, RIR-adjusted
 
     #: WHICH MACHINE. Nullable and staying nullable: a barbell squat has no
     #: station, every set logged before this column existed has no answer, and
     #: nobody may ever be blocked from logging because they cannot say what
     #: they were standing in front of. NULL means "not recorded", which is
     #: its own legitimate series -- not a bucket to be guessed into later.
-    station_id: Optional[str] = Field(
+    station_id: str | None = Field(
         default=None,
         sa_column=Column(
             AutoString(),
@@ -950,7 +952,7 @@ class SetLog(SQLModel, table=True):
     #: The cam setting used, where the station has one. Same machine, same
     #: load, different setting is a different exercise, so it segments the
     #: trend rather than polluting it.
-    station_profile: Optional[str] = None
+    station_profile: str | None = None
 
     performed_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
@@ -985,7 +987,7 @@ class BodyComposition(SQLModel, table=True):
     user_id: str = Field(foreign_key="users.id", index=True)
     week_start: date
     trend_weight_kg: float
-    tdee_observed: Optional[float] = None
+    tdee_observed: float | None = None
     tdee_prior: float
     tdee_blended: float
     confidence: float = 0.0
@@ -994,9 +996,9 @@ class BodyComposition(SQLModel, table=True):
     # Nullable: rows written before these were persisted have no value, and
     # the client renders a macro with no target as "no goal set" rather than
     # inventing one.
-    fat_target_g: Optional[float] = None
-    carb_target_g: Optional[float] = None
-    fiber_target_g: Optional[float] = None
+    fat_target_g: float | None = None
+    carb_target_g: float | None = None
+    fiber_target_g: float | None = None
 
 
 class Adjudication(SQLModel, table=True):
@@ -1012,14 +1014,14 @@ class Adjudication(SQLModel, table=True):
     week_start: date
 
     verdict: Verdict = Field(default=Verdict.insufficient_data)
-    strength_index_delta_pct: Optional[float] = None
-    weight_delta_pct_per_week: Optional[float] = None
-    protein_g_per_kg: Optional[float] = None
-    logging_adherence: Optional[float] = None
+    strength_index_delta_pct: float | None = None
+    weight_delta_pct_per_week: float | None = None
+    protein_g_per_kg: float | None = None
+    logging_adherence: float | None = None
 
-    previous_target: Optional[float] = None
-    recommended_target: Optional[float] = None
-    recommended_protein_g: Optional[float] = None
+    previous_target: float | None = None
+    recommended_target: float | None = None
+    recommended_protein_g: float | None = None
 
     headline: str = ""
     explanation: str = ""
@@ -1030,7 +1032,7 @@ class Adjudication(SQLModel, table=True):
         default_factory=list, sa_column=Column(JSONB)
     )
 
-    user_accepted: Optional[bool] = None
+    user_accepted: bool | None = None
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
 
@@ -1062,18 +1064,18 @@ class ActivityDay(SQLModel, table=True):
     user_id: str = Field(foreign_key="users.id", index=True)
     day: date = Field(index=True)
 
-    steps: Optional[int] = None
-    active_energy_kcal: Optional[float] = None
-    resting_energy_kcal: Optional[float] = None
-    exercise_minutes: Optional[float] = None
-    stand_hours: Optional[float] = None
-    distance_km: Optional[float] = None
-    flights_climbed: Optional[int] = None
+    steps: int | None = None
+    active_energy_kcal: float | None = None
+    resting_energy_kcal: float | None = None
+    exercise_minutes: float | None = None
+    stand_hours: float | None = None
+    distance_km: float | None = None
+    flights_climbed: int | None = None
 
     # Cardio / recovery signals where available
-    resting_heart_rate: Optional[float] = None
-    hrv_ms: Optional[float] = None
-    vo2_max: Optional[float] = None
+    resting_heart_rate: float | None = None
+    hrv_ms: float | None = None
+    vo2_max: float | None = None
 
     source: HealthSource = Field(default=HealthSource.healthkit)
     synced_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
@@ -1090,12 +1092,12 @@ class SleepNight(SQLModel, table=True):
     night_of: date = Field(index=True)
 
     asleep_hours: float
-    in_bed_hours: Optional[float] = None
-    deep_hours: Optional[float] = None
-    rem_hours: Optional[float] = None
-    core_hours: Optional[float] = None
-    awakenings: Optional[int] = None
-    efficiency: Optional[float] = None
+    in_bed_hours: float | None = None
+    deep_hours: float | None = None
+    rem_hours: float | None = None
+    core_hours: float | None = None
+    awakenings: int | None = None
+    efficiency: float | None = None
 
     source: HealthSource = Field(default=HealthSource.healthkit)
     synced_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
@@ -1121,12 +1123,12 @@ class ExternalWorkout(SQLModel, table=True):
 
     activity_type: str  # 'running', 'cycling', 'hiit', ...
     started_at: datetime = Field(sa_type=TZDateTime)
-    ended_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    ended_at: datetime | None = Field(default=None, sa_type=TZDateTime)
     duration_minutes: float = 0.0
-    active_energy_kcal: Optional[float] = None
-    distance_km: Optional[float] = None
-    mean_heart_rate: Optional[float] = None
-    max_heart_rate: Optional[float] = None
+    active_energy_kcal: float | None = None
+    distance_km: float | None = None
+    mean_heart_rate: float | None = None
+    max_heart_rate: float | None = None
 
     source: HealthSource = Field(default=HealthSource.healthkit)
     synced_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
@@ -1179,10 +1181,10 @@ class RideTrack(SQLModel, table=True):
     # --- elevation, computed from the full track before simplification ----
     #: NULL, not 0.0, when the device gave no altitude. "This ride was flat"
     #: and "we have no altitude for this ride" must never render alike.
-    gain_m: Optional[float] = None
-    loss_m: Optional[float] = None
-    max_alt_m: Optional[float] = None
-    min_alt_m: Optional[float] = None
+    gain_m: float | None = None
+    loss_m: float | None = None
+    max_alt_m: float | None = None
+    min_alt_m: float | None = None
     altitude_samples: int = 0
 
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
@@ -1199,8 +1201,8 @@ class HealthSyncState(SQLModel, table=True):
     id: str = Field(default_factory=_uuid, primary_key=True)
     user_id: str = Field(foreign_key="users.id", index=True)
     metric: str  # 'steps', 'sleep', 'workouts', ...
-    last_synced_through: Optional[date] = None
-    anchor: Optional[str] = None  # HealthKit anchored-query token
+    last_synced_through: date | None = None
+    anchor: str | None = None  # HealthKit anchored-query token
     permission_granted: bool = False
     updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
@@ -1217,16 +1219,16 @@ class CoachBriefingRecord(SQLModel, table=True):
     user_id: str = Field(foreign_key="users.id", index=True)
     for_date: date
 
-    primary_key_: Optional[str] = Field(default=None, alias="primary_insight_key")
-    primary_lever: Optional[str] = None
+    primary_key_: str | None = Field(default=None, alias="primary_insight_key")
+    primary_lever: str | None = None
     headline: str = ""
     body: str = ""
     narrated: bool = False
     payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
     data_completeness: float = 0.0
 
-    user_dismissed: Optional[bool] = None
-    user_acted: Optional[bool] = None
+    user_dismissed: bool | None = None
+    user_acted: bool | None = None
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
 
@@ -1379,7 +1381,7 @@ class ExerciseAttributes(SQLModel, table=True):
     #: coverage is a question about compounds -- "does this session cover
     #: push, pull and legs?" -- and trying to fill a curl's missing pattern
     #: is how a session grows three isolation exercises nobody asked for.
-    movement_pattern: Optional[str] = Field(
+    movement_pattern: str | None = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
     #: The nineteen-value vocabulary the catalogue was curated with. Kept
@@ -1400,7 +1402,7 @@ class ExerciseAttributes(SQLModel, table=True):
     #: precisely and without a second source of truth -- a machine lateral
     #: raise is 'machine' here and isolation in fact, and the two disagree.
     #: Nullable and unpopulated; drop it once nothing reads it.
-    exercise_class: Optional[str] = Field(
+    exercise_class: str | None = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
     is_unilateral: bool = Field(
@@ -1421,7 +1423,7 @@ class ExerciseAttributes(SQLModel, table=True):
         sa_column=Column(Text, nullable=False, server_default="engine"),
     )
     #: Set exactly when `classified_by = 'human'`, enforced by a CHECK.
-    reviewed_at: Optional[datetime] = Field(
+    reviewed_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
@@ -1429,10 +1431,10 @@ class ExerciseAttributes(SQLModel, table=True):
     #: could not be classified without also inventing a rep range -- the exact
     #: thing this table's docstring refuses to do. Classification and
     #: prescription are different facts arriving at different times.
-    default_rep_min: Optional[int] = Field(
+    default_rep_min: int | None = Field(
         default=None, sa_column=Column(SmallInteger, nullable=True)
     )
-    default_rep_max: Optional[int] = Field(
+    default_rep_max: int | None = Field(
         default=None, sa_column=Column(SmallInteger, nullable=True)
     )
     default_rest_seconds: int = Field(
@@ -1590,7 +1592,7 @@ class TrainingProfile(SQLModel, table=True):
     #: here. Never logged, never in an error message, never sent to an AI
     #: provider until the consent wording question in
     #: WORKOUT_SCHEMA_DESIGN.md 10.8 is answered.
-    limitations: Optional[str] = Field(
+    limitations: str | None = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
     #: The user's own opt-in for AI programming, deliberately SEPARATE from
@@ -1668,7 +1670,7 @@ class TrainingProgramme(SQLModel, table=True):
         sa_column=Column(Text, nullable=False, server_default="template"),
     )
     started_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
-    archived_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    archived_at: datetime | None = Field(default=None, sa_type=TZDateTime)
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
     updated_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
 
@@ -1713,7 +1715,7 @@ class ProgrammeDay(SQLModel, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=sa_text("'[]'::jsonb")),
     )
     #: NULL means "inherit the profile", which is distinct from any number.
-    target_minutes: Optional[int] = Field(
+    target_minutes: int | None = Field(
         default=None, sa_column=Column(SmallInteger, nullable=True)
     )
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
@@ -1780,7 +1782,7 @@ class PlannedSession(SQLModel, table=True):
     #: SET NULL, not CASCADE. If a programme structure is rebuilt, the record
     #: that a user trained on a given day must survive -- it becomes a
     #: one-off, not a deletion.
-    programme_day_id: Optional[str] = Field(
+    programme_day_id: str | None = Field(
         default=None,
         sa_column=Column(
             AutoString,
@@ -1790,7 +1792,7 @@ class PlannedSession(SQLModel, table=True):
     )
     #: NULL until the session is started. Non-null links this plan to exactly
     #: one performed WorkoutSession.
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         sa_column=Column(
             AutoString,
@@ -1807,17 +1809,17 @@ class PlannedSession(SQLModel, table=True):
     #: Deferred -- readiness adjustment does not ship in the MVP, so this is
     #: always NULL for now. The column exists so the questionnaire can start
     #: collecting before anything acts on it.
-    readiness_status: Optional[str] = Field(
+    readiness_status: str | None = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
-    estimated_minutes: Optional[int] = Field(
+    estimated_minutes: int | None = Field(
         default=None, sa_column=Column(SmallInteger, nullable=True)
     )
     generated_by: str = Field(
         default="template",
         sa_column=Column(Text, nullable=False, server_default="template"),
     )
-    generation_id: Optional[str] = Field(
+    generation_id: str | None = Field(
         default=None,
         sa_column=Column(
             AutoString,
@@ -1915,7 +1917,7 @@ class PrescribedExercise(SQLModel, table=True):
     #: NULL means "no basis in history yet". The UI renders that as an em
     #: dash, never as a number -- the same discipline the nutrition side
     #: applies to estimates.
-    suggested_weight_kg: Optional[float] = Field(
+    suggested_weight_kg: float | None = Field(
         default=None, sa_column=Column(Float, nullable=True)
     )
     progression_rule: str = Field(
@@ -1933,7 +1935,7 @@ class PrescribedExercise(SQLModel, table=True):
         default="prescribed",
         sa_column=Column(Text, nullable=False, server_default="prescribed"),
     )
-    replaced_with_exercise_id: Optional[str] = Field(
+    replaced_with_exercise_id: str | None = Field(
         default=None,
         sa_column=Column(
             AutoString,
@@ -1998,19 +2000,19 @@ class ReadinessCheckin(SQLModel, table=True):
         )
     )
     for_date: date = Field(sa_column=Column(Date, nullable=False))
-    available_minutes: Optional[int] = Field(
+    available_minutes: int | None = Field(
         default=None, sa_column=Column(SmallInteger, nullable=True)
     )
-    energy: Optional[int] = Field(
+    energy: int | None = Field(
         default=None, sa_column=Column(SmallInteger, nullable=True)
     )
-    sleep_quality: Optional[int] = Field(
+    sleep_quality: int | None = Field(
         default=None, sa_column=Column(SmallInteger, nullable=True)
     )
-    soreness: Optional[int] = Field(
+    soreness: int | None = Field(
         default=None, sa_column=Column(SmallInteger, nullable=True)
     )
-    stress: Optional[int] = Field(
+    stress: int | None = Field(
         default=None, sa_column=Column(SmallInteger, nullable=True)
     )
     pain_flag: bool = Field(
@@ -2018,7 +2020,7 @@ class ReadinessCheckin(SQLModel, table=True):
         sa_column=Column(Boolean, nullable=False, server_default="false"),
     )
     #: HEALTH-SENSITIVE FREE TEXT. See the class docstring.
-    pain_note: Optional[str] = Field(
+    pain_note: str | None = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)
@@ -2077,12 +2079,12 @@ class AIGeneration(SQLModel, table=True):
     model: str = Field(sa_column=Column(Text, nullable=False))
     #: SHA-256 of the prompt. See the class docstring.
     prompt_digest: str = Field(sa_column=Column(Text, nullable=False))
-    raw_response: Optional[dict[str, Any]] = Field(
+    raw_response: dict[str, Any] | None = Field(
         default=None, sa_column=Column(JSONB, nullable=True)
     )
     validation_status: str = Field(sa_column=Column(Text, nullable=False))
-    rejection_reason: Optional[str] = Field(
+    rejection_reason: str | None = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
-    latency_ms: Optional[int] = Field(default=None)
+    latency_ms: int | None = Field(default=None)
     created_at: datetime = Field(default_factory=_utcnow, sa_type=TZDateTime)

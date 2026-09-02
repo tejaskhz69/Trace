@@ -63,7 +63,7 @@ class Nutrients:
     sugar_g: float = 0.0
     sodium_mg: float = 0.0
 
-    def __add__(self, other: "Nutrients") -> "Nutrients":
+    def __add__(self, other: Nutrients) -> Nutrients:
         return Nutrients(
             *(
                 getattr(self, f) + getattr(other, f)
@@ -74,7 +74,7 @@ class Nutrients:
             )
         )
 
-    def scaled(self, factor: float) -> "Nutrients":
+    def scaled(self, factor: float) -> Nutrients:
         return Nutrients(
             *(getattr(self, f) * factor for f in (
                 "kcal", "protein_g", "carbs_g", "fat_g",
@@ -82,12 +82,12 @@ class Nutrients:
             ))
         )
 
-    def per_100g(self, total_grams: float) -> "Nutrients":
+    def per_100g(self, total_grams: float) -> Nutrients:
         if total_grams <= 0:
             return Nutrients()
         return self.scaled(100.0 / total_grams)
 
-    def rounded(self, places: int = 1) -> "Nutrients":
+    def rounded(self, places: int = 1) -> Nutrients:
         return Nutrients(
             *(round(getattr(self, f), places) for f in (
                 "kcal", "protein_g", "carbs_g", "fat_g",

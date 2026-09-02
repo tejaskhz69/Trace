@@ -17,12 +17,13 @@ a naive client will try to send all of it in one request.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
-from typing import Annotated, Any, Optional
+from datetime import UTC, date, datetime, timedelta
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select as sa_select
+from sqlalchemy import func
+from sqlalchemy import select as sa_select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -30,15 +31,19 @@ from sqlmodel import select
 from ..db import get_session
 from ..models import (
     ActivityDay as ActivityDayModel,
+)
+from ..models import (
     CoachBriefingRecord,
     ExternalWorkout,
     HealthSource,
     HealthSyncState,
     MealLog,
-    SleepNight as SleepNightModel,
     User,
     WeightEntry,
     WorkoutSession,
+)
+from ..models import (
+    SleepNight as SleepNightModel,
 )
 from ..services import activity as act
 from ..services import coach as coach_svc
@@ -59,38 +64,38 @@ MAX_BATCH = 400
 
 class ActivityDayIn(BaseModel):
     day: date
-    steps: Optional[int] = Field(default=None, ge=0, le=200_000)
-    active_energy_kcal: Optional[float] = Field(default=None, ge=0, le=15_000)
-    resting_energy_kcal: Optional[float] = Field(default=None, ge=0, le=5_000)
-    exercise_minutes: Optional[float] = Field(default=None, ge=0, le=1_440)
-    stand_hours: Optional[float] = Field(default=None, ge=0, le=24)
-    distance_km: Optional[float] = Field(default=None, ge=0, le=500)
-    flights_climbed: Optional[int] = Field(default=None, ge=0, le=2_000)
-    resting_heart_rate: Optional[float] = Field(default=None, ge=25, le=150)
-    hrv_ms: Optional[float] = Field(default=None, ge=1, le=400)
-    vo2_max: Optional[float] = Field(default=None, ge=10, le=100)
+    steps: int | None = Field(default=None, ge=0, le=200_000)
+    active_energy_kcal: float | None = Field(default=None, ge=0, le=15_000)
+    resting_energy_kcal: float | None = Field(default=None, ge=0, le=5_000)
+    exercise_minutes: float | None = Field(default=None, ge=0, le=1_440)
+    stand_hours: float | None = Field(default=None, ge=0, le=24)
+    distance_km: float | None = Field(default=None, ge=0, le=500)
+    flights_climbed: int | None = Field(default=None, ge=0, le=2_000)
+    resting_heart_rate: float | None = Field(default=None, ge=25, le=150)
+    hrv_ms: float | None = Field(default=None, ge=1, le=400)
+    vo2_max: float | None = Field(default=None, ge=10, le=100)
 
 
 class SleepNightIn(BaseModel):
     night_of: date
     asleep_hours: float = Field(ge=0, le=24)
-    in_bed_hours: Optional[float] = Field(default=None, ge=0, le=24)
-    deep_hours: Optional[float] = Field(default=None, ge=0, le=12)
-    rem_hours: Optional[float] = Field(default=None, ge=0, le=12)
-    core_hours: Optional[float] = Field(default=None, ge=0, le=16)
-    awakenings: Optional[int] = Field(default=None, ge=0, le=100)
+    in_bed_hours: float | None = Field(default=None, ge=0, le=24)
+    deep_hours: float | None = Field(default=None, ge=0, le=12)
+    rem_hours: float | None = Field(default=None, ge=0, le=12)
+    core_hours: float | None = Field(default=None, ge=0, le=16)
+    awakenings: int | None = Field(default=None, ge=0, le=100)
 
 
 class ExternalWorkoutIn(BaseModel):
     external_id: str
     activity_type: str
     started_at: datetime
-    ended_at: Optional[datetime] = None
+    ended_at: datetime | None = None
     duration_minutes: float = Field(ge=0, le=2_880)
-    active_energy_kcal: Optional[float] = Field(default=None, ge=0, le=15_000)
-    distance_km: Optional[float] = Field(default=None, ge=0, le=500)
-    mean_heart_rate: Optional[float] = Field(default=None, ge=25, le=250)
-    max_heart_rate: Optional[float] = Field(default=None, ge=25, le=250)
+    active_energy_kcal: float | None = Field(default=None, ge=0, le=15_000)
+    distance_km: float | None = Field(default=None, ge=0, le=500)
+    mean_heart_rate: float | None = Field(default=None, ge=25, le=250)
+    max_heart_rate: float | None = Field(default=None, ge=25, le=250)
 
 
 class HealthSyncRequest(BaseModel):
@@ -104,7 +109,7 @@ class HealthSyncResponse(BaseModel):
     activity_days_written: int
     sleep_nights_written: int
     workouts_written: int
-    synced_through: Optional[date]
+    synced_through: date | None
     message: str
 
 
@@ -114,31 +119,31 @@ class InsightOut(BaseModel):
     lever: str
     headline: str
     detail: str
-    action: Optional[str]
+    action: str | None
     evidence: dict[str, Any]
     confidence: float
 
 
 class ActivityTodayOut(BaseModel):
-    steps: Optional[int]
-    active_energy_kcal: Optional[float]
-    exercise_minutes: Optional[float]
+    steps: int | None
+    active_energy_kcal: float | None
+    exercise_minutes: float | None
     sessions_today: int
-    steps_vs_baseline: Optional[int]  # % vs the user's own 28-day baseline
-    synced_at: Optional[str]
+    steps_vs_baseline: int | None  # % vs the user's own 28-day baseline
+    synced_at: str | None
 
 
 class BriefingOut(BaseModel):
     for_date: date
-    primary: Optional[InsightOut]
+    primary: InsightOut | None
     secondary: list[InsightOut]
     prompts: list[str]
     data_completeness: float
-    neat: Optional[dict[str, Any]] = None
-    sleep: Optional[dict[str, Any]] = None
-    energy_reconciliation: Optional[dict[str, Any]] = None
+    neat: dict[str, Any] | None = None
+    sleep: dict[str, Any] | None = None
+    energy_reconciliation: dict[str, Any] | None = None
     # Consumed by the home screen's "Activity today" block.
-    activity_today: Optional[ActivityTodayOut] = None
+    activity_today: ActivityTodayOut | None = None
     step_history: list[int] = []
 
 
@@ -163,7 +168,7 @@ async def sync_health(
             detail=f"Send at most {MAX_BATCH} records of each type per request.",
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     written = {"activity": 0, "sleep": 0, "workouts": 0}
 
     # --- Activity ---------------------------------------------------------
@@ -407,7 +412,7 @@ async def _load_coach_input(
             )
             .where(
                 MealLog.user_id == user.id,
-                MealLog.logged_at >= datetime.combine(since_14, datetime.min.time(), tzinfo=timezone.utc),
+                MealLog.logged_at >= datetime.combine(since_14, datetime.min.time(), tzinfo=UTC),
             )
             .group_by(func.date(MealLog.logged_at))
         )
@@ -428,7 +433,7 @@ async def _load_coach_input(
             sa_select(func.count(WorkoutSession.id)).where(
                 WorkoutSession.user_id == user.id,
                 WorkoutSession.started_at
-                >= datetime.combine(today - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc),
+                >= datetime.combine(today - timedelta(days=7), datetime.min.time(), tzinfo=UTC),
             )
         )
     ) or 0
@@ -437,7 +442,7 @@ async def _load_coach_input(
             sa_select(func.count(WorkoutSession.id)).where(
                 WorkoutSession.user_id == user.id,
                 WorkoutSession.started_at
-                >= datetime.combine(since_14, datetime.min.time(), tzinfo=timezone.utc),
+                >= datetime.combine(since_14, datetime.min.time(), tzinfo=UTC),
             )
         )
     ) or 0
@@ -446,7 +451,7 @@ async def _load_coach_input(
             sa_select(func.count(WorkoutSession.id)).where(
                 WorkoutSession.user_id == user.id,
                 WorkoutSession.started_at
-                >= datetime.combine(today - timedelta(days=56), datetime.min.time(), tzinfo=timezone.utc),
+                >= datetime.combine(today - timedelta(days=56), datetime.min.time(), tzinfo=UTC),
             )
         )
     ) or 0
@@ -458,7 +463,7 @@ async def _load_coach_input(
         .where(
             WorkoutSession.user_id == user.id,
             WorkoutSession.started_at
-            >= datetime.now(timezone.utc) - timedelta(hours=6),
+            >= datetime.now(UTC) - timedelta(hours=6),
         )
         .order_by(WorkoutSession.started_at.desc())  # type: ignore[union-attr]
     )
@@ -498,7 +503,7 @@ async def _load_coach_input(
             sa_select(func.count(WorkoutSession.id)).where(
                 WorkoutSession.user_id == user.id,
                 WorkoutSession.started_at
-                >= datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc),
+                >= datetime.combine(today, datetime.min.time(), tzinfo=UTC),
             )
         )
     ) or 0
@@ -545,6 +550,8 @@ async def coach_briefing(
         verdict = await weekly_verdict(session=session, user=user, recompute=False)
         from ..services.adjudication import (
             AdjudicationResult,
+        )
+        from ..services.adjudication import (
             Verdict as SvcVerdict,
         )
 
@@ -703,7 +710,7 @@ class SportsResponse(BaseModel):
     #: duration dial moves without a round trip per tap. Null when we have
     #: none on file -- the client then widens the band and says why, rather
     #: than quietly substituting an average and looking equally confident.
-    weight_kg: Optional[float]
+    weight_kg: float | None
 
 
 @router.get("/sports", response_model=SportsResponse)
@@ -732,13 +739,13 @@ class ActivityLogRequest(BaseModel):
     sport: str
     duration_minutes: float
     intensity: str = "moderate"
-    started_at: Optional[datetime] = None
-    distance_km: Optional[float] = Field(default=None, ge=0, le=1000)
-    mean_heart_rate: Optional[float] = Field(default=None, ge=30, le=240)
+    started_at: datetime | None = None
+    distance_km: float | None = Field(default=None, ge=0, le=1000)
+    mean_heart_rate: float | None = Field(default=None, ge=30, le=240)
     #: Let the user overrule us. A chest strap beats a MET table, and
     #: refusing their measured number in favour of our population average
     #: would be the wrong kind of confident.
-    active_energy_kcal: Optional[float] = Field(default=None, ge=0, le=10000)
+    active_energy_kcal: float | None = Field(default=None, ge=0, le=10000)
 
 
 class BurnOut(BaseModel):
@@ -758,10 +765,10 @@ class ActivityOut(BaseModel):
     name: str
     started_at: datetime
     duration_minutes: float
-    distance_km: Optional[float]
-    mean_heart_rate: Optional[float]
+    distance_km: float | None
+    mean_heart_rate: float | None
     source: str
-    burn: Optional[BurnOut]
+    burn: BurnOut | None
 
 
 class ActivityLogResponse(BaseModel):
@@ -851,7 +858,7 @@ async def log_activity(
         # writes 6,000 kcal of "activity" poisons the training load for weeks.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    started = payload.started_at or datetime.now(timezone.utc)
+    started = payload.started_at or datetime.now(UTC)
     row = ExternalWorkout(
         user_id=user.id,
         # Manual entries still need a unique external_id: the table's
@@ -908,7 +915,7 @@ async def list_activities(
     splitting them in the API would mean the client had to merge and re-sort
     two feeds to render one timeline.
     """
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
     rows = (
         await session.execute(
             select(ExternalWorkout)
@@ -991,9 +998,9 @@ class ConsistencyOut(BaseModel):
     consistency_pct: float
     logged_today: bool
     data_confidence: float
-    milestone: Optional[str]
-    next_milestone: Optional[str]
-    days_to_next: Optional[int]
+    milestone: str | None
+    next_milestone: str | None
+    days_to_next: int | None
     headline: str
 
 
@@ -1001,11 +1008,11 @@ class PhaseOut(BaseModel):
     verdict: str
     goal: str
     weeks_elapsed: float
-    start_weight_kg: Optional[float]
-    current_weight_kg: Optional[float]
-    total_change_kg: Optional[float]
-    rate_kg_per_week: Optional[float]
-    target_rate_kg_per_week: Optional[float]
+    start_weight_kg: float | None
+    current_weight_kg: float | None
+    total_change_kg: float | None
+    rate_kg_per_week: float | None
+    target_rate_kg_per_week: float | None
     headline: str
     detail: str
     notes: list[str]

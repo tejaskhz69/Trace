@@ -39,8 +39,8 @@ accepts. Short forms (`push_h`, `pull_v`) would be rejected by the database.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, asdict
-from typing import Any, Optional
+from dataclasses import asdict, dataclass
+from typing import Any
 
 CLASSIFIER_VERSION = "1.0"
 
@@ -273,14 +273,14 @@ class Proposal:
     exercise_name: str
     equipment: str
     muscle_group: str
-    movement_pattern: Optional[str]
-    movement_pattern_short: Optional[str]
-    exercise_class: Optional[str]
+    movement_pattern: str | None
+    movement_pattern_short: str | None
+    exercise_class: str | None
     is_unilateral: bool
-    default_rep_min: Optional[int]
-    default_rep_max: Optional[int]
-    default_rest_seconds: Optional[int]
-    fatigue_cost: Optional[int]
+    default_rep_min: int | None
+    default_rep_max: int | None
+    default_rest_seconds: int | None
+    fatigue_cost: int | None
     confidence: float
     classification_rule: str
     review_status: str
@@ -319,7 +319,7 @@ def classify(exercise: dict[str, Any]) -> Proposal:
     unilateral = _search(_UNILATERAL_RULE, name)
 
     def _incomplete(rule: str, status: str, reason: str, confidence: float,
-                    pattern: Optional[str] = None) -> Proposal:
+                    pattern: str | None = None) -> Proposal:
         """A proposal carrying no numbers.
 
         Rep and rest values are deliberately NULL for anything not approved:
@@ -440,7 +440,7 @@ def classify(exercise: dict[str, Any]) -> Proposal:
     )
 
 
-def classify_all(catalogue: "list[dict[str, Any]]") -> tuple[Proposal, ...]:
+def classify_all(catalogue: list[dict[str, Any]]) -> tuple[Proposal, ...]:
     """Classify a whole catalogue, sorted stably by exercise_id.
 
     Sorting on the id rather than the name makes the output independent of
@@ -451,7 +451,7 @@ def classify_all(catalogue: "list[dict[str, Any]]") -> tuple[Proposal, ...]:
     )
 
 
-def seedable(proposals: "tuple[Proposal, ...]") -> tuple[Proposal, ...]:
+def seedable(proposals: tuple[Proposal, ...]) -> tuple[Proposal, ...]:
     """The strict subset safe to write to `exercise_attributes`.
 
     THIS IS THE GATE. Only approved rows are ever seeded, so an unreviewed
@@ -468,7 +468,7 @@ def seedable(proposals: "tuple[Proposal, ...]") -> tuple[Proposal, ...]:
     )
 
 
-def summarise(proposals: "tuple[Proposal, ...]") -> dict[str, Any]:
+def summarise(proposals: tuple[Proposal, ...]) -> dict[str, Any]:
     """Counts a reviewer needs before reading 874 rows."""
     def tally(key) -> dict[str, int]:
         out: dict[str, int] = {}

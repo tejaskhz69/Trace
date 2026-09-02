@@ -12,12 +12,13 @@ half a state.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
-from typing import Annotated, Any, Optional
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select as sa_select
+from sqlalchemy import func
+from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -57,8 +58,8 @@ async def _calorie_target(session: AsyncSession, user: User) -> float | None:
 async def _meals_on(
     session: AsyncSession, user: User, on: date
 ) -> list[MealLog]:
-    start = datetime.combine(on, time.min, tzinfo=timezone.utc)
-    end = datetime.combine(on, time.max, tzinfo=timezone.utc)
+    start = datetime.combine(on, time.min, tzinfo=UTC)
+    end = datetime.combine(on, time.max, tzinfo=UTC)
     return list(
         (
             await session.execute(
@@ -104,11 +105,11 @@ class UncertaintyOut(BaseModel):
     band_pct: float
     mix: list[SliceOut]
     items: list[ItemOut]
-    worst_item: Optional[str]
-    worst_item_band: Optional[float]
+    worst_item: str | None
+    worst_item_band: float | None
     headline: str
-    advice: Optional[str]
-    calorie_target: Optional[float]
+    advice: str | None
+    calorie_target: float | None
 
 
 @router.get("/uncertainty", response_model=UncertaintyOut)
@@ -191,9 +192,9 @@ class DayOut(BaseModel):
     day: date
     baseline_kcal: float
     planned_kcal: float
-    logged_kcal: Optional[float]
+    logged_kcal: float | None
     shift: float
-    delta: Optional[float]
+    delta: float | None
     flagged: bool
     is_past: bool
     is_today: bool
@@ -207,7 +208,7 @@ class WeekOut(BaseModel):
     spent: float
     remaining: float
     days_left: int
-    per_day_remaining: Optional[float]
+    per_day_remaining: float | None
     status: str
     days: list[DayOut]
     headline: str
@@ -319,10 +320,10 @@ class FoodOut(BaseModel):
 
 class ProteinOut(BaseModel):
     total_g: float
-    target_g: Optional[float]
+    target_g: float | None
     short_by_g: float
     shape: str
-    thinnest_meal: Optional[str]
+    thinnest_meal: str | None
     real_doses: int
     meals: list[MealProteinOut]
     headline: str
@@ -419,15 +420,15 @@ class ShiftOut(BaseModel):
 class FuelOut(BaseModel):
     verdict: str
     pairs: int
-    rho: Optional[float]
-    high_carb_volume: Optional[float]
-    low_carb_volume: Optional[float]
-    uplift_pct: Optional[float]
-    carb_threshold_g: Optional[float]
+    rho: float | None
+    high_carb_volume: float | None
+    low_carb_volume: float | None
+    uplift_pct: float | None
+    carb_threshold_g: float | None
     headline: str
     detail: str
     notes: list[str]
-    suggestion: Optional[ShiftOut]
+    suggestion: ShiftOut | None
 
 
 @router.get("/fuel", response_model=FuelOut)
@@ -514,9 +515,9 @@ class NutrientRowOut(BaseModel):
     unit: str
     group: str
     kind: str
-    amount: Optional[float]
+    amount: float | None
     target: float
-    pct: Optional[float]
+    pct: float | None
     status: str
     covered: float
 
@@ -528,7 +529,7 @@ class PanelOut(BaseModel):
     known: int
     headline: str
     notes: dict[str, str]
-    sodium_potassium_ratio: Optional[float]
+    sodium_potassium_ratio: float | None
     sodium_potassium_note: str
 
 

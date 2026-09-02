@@ -54,7 +54,7 @@ import io
 import logging
 import sys
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -367,7 +367,7 @@ def to_row(food: dict, dataset: str) -> dict | None:
         "moderation_status": "approved",
         "search_text": f"{name} {food['usda_category']}".lower(),
         "log_count": 5 if is_dish else 0,
-        "updated_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(UTC),
     }
 
 

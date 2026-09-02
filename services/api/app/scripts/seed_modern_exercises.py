@@ -20,8 +20,8 @@ import sys
 from sqlalchemy import select
 
 from ..db import SessionLocal
-from ._schema_guard import require_tables
 from ..models import Exercise
+from ._schema_guard import require_tables
 from .data.modern_exercises import EXERCISES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

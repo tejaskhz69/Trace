@@ -5,7 +5,7 @@ Wires the two pure engines (tdee.py + adjudication.py) to real user data.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -21,9 +21,11 @@ from ..models import (
     MealLog,
     SetLog,
     User,
-    Verdict as VerdictModel,
     WeightEntry,
     WorkoutSession,
+)
+from ..models import (
+    Verdict as VerdictModel,
 )
 from ..schemas import AdjudicationPublic
 from ..services import adjudication as adj
@@ -97,7 +99,7 @@ async def weekly_verdict(
             .where(
                 MealLog.user_id == user.id,
                 MealLog.logged_at
-                >= datetime.combine(window_start, time.min, tzinfo=timezone.utc),
+                >= datetime.combine(window_start, time.min, tzinfo=UTC),
             )
             .group_by(func.date(MealLog.logged_at))
         )
@@ -117,7 +119,7 @@ async def weekly_verdict(
             select(func.count(WorkoutSession.id)).where(
                 WorkoutSession.user_id == user.id,
                 WorkoutSession.started_at
-                >= datetime.combine(window_start, time.min, tzinfo=timezone.utc),
+                >= datetime.combine(window_start, time.min, tzinfo=UTC),
             )
         )
     ) or 0
@@ -129,7 +131,7 @@ async def weekly_verdict(
             .where(
                 SetLog.user_id == user.id,
                 SetLog.performed_at
-                >= datetime.combine(window_start, time.min, tzinfo=timezone.utc),
+                >= datetime.combine(window_start, time.min, tzinfo=UTC),
                 SetLog.is_warmup == False,  # noqa: E712
             )
             .order_by(SetLog.performed_at)  # type: ignore[arg-type]

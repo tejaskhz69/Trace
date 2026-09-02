@@ -43,19 +43,20 @@ tested exhaustively without a database.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Iterable, Literal, Mapping, Sequence
+from typing import Literal
 
 __all__ = [
-    "normalise_term",
     "CLASSIFICATION_TOKENS",
-    "is_classification_token",
     "CatalogueEntry",
     "Collision",
     "SeedPlan",
     "build_namespace",
-    "plan_seed",
+    "is_classification_token",
     "merge_aliases",
+    "normalise_term",
+    "plan_seed",
 ]
 
 

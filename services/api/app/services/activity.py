@@ -49,8 +49,8 @@ Pure functions. No I/O. Fully tested.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, timedelta
+from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 
 # Steps -> kcal is body-mass dependent. ~0.04 kcal per step per kg is the

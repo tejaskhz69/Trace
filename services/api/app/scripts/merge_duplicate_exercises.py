@@ -59,7 +59,7 @@ import asyncio
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import text
@@ -747,7 +747,7 @@ def _load_ledger() -> list[dict]:
 
 def _write_record(planned: list[dict], removals: list[dict]) -> None:
     """The reversal record. Without this, a wrong merge is unrecoverable."""
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
     ledger = _load_ledger()
     seen = {e["id"] for e in ledger}

@@ -40,7 +40,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -48,10 +48,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..config import get_settings
 from ..db import SessionLocal
-from ._schema_guard import require_tables
 from ..models import FoodItem, FoodSource
-from ..services.food_sources import _off_to_resolved  # noqa: PLC2701
+from ..services.food_sources import _off_to_resolved
 from ..services.nutrition_validator import Verdict, validate
+from ._schema_guard import require_tables
 from .data.store_brands import brand_slugs, summary
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -226,7 +226,7 @@ async def run(args: argparse.Namespace) -> None:
         # back and broke the next upgrade.
         await require_tables("food_items")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stats = {"hits": 0, "unusable": 0, "quarantined": 0, "thin": 0, "written": 0}
     empty_slugs: list[str] = []
     batch: list[dict[str, Any]] = []

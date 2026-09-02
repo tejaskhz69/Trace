@@ -39,8 +39,10 @@ import asyncio
 from sqlalchemy import text
 from sqlmodel import SQLModel
 
+from .. import (
+    models,  # noqa: F401  -- imported for its side effect of registering tables
+)
 from ..db import engine
-from .. import models  # noqa: F401  -- imported for its side effect of registering tables
 
 
 async def live_columns(conn) -> dict[str, dict[str, str]]:

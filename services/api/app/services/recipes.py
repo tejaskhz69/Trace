@@ -79,13 +79,13 @@ class Panel:
     sodium_mg: float = 0.0
     saturated_fat_g: float = 0.0
 
-    def scaled(self, factor: float) -> "Panel":
+    def scaled(self, factor: float) -> Panel:
         return Panel(**{k: getattr(self, k) * factor for k in NUTRIENT_KEYS})
 
-    def plus(self, other: "Panel") -> "Panel":
+    def plus(self, other: Panel) -> Panel:
         return Panel(**{k: getattr(self, k) + getattr(other, k) for k in NUTRIENT_KEYS})
 
-    def rounded(self) -> "Panel":
+    def rounded(self) -> Panel:
         return Panel(
             calories=round(self.calories, 1),
             protein_g=round(self.protein_g, 2),

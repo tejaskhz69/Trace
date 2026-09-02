@@ -48,7 +48,6 @@ provider in production.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import date
@@ -58,7 +57,7 @@ import httpx
 
 from ..config import get_settings
 from ..models import FoodSource
-from .food_sources import ResolvedFood, _f  # noqa: PLC2701
+from .food_sources import ResolvedFood, _f
 from .nutrition_validator import Verdict, validate
 
 log = logging.getLogger(__name__)

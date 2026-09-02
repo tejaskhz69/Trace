@@ -20,11 +20,12 @@ already forked stay theirs -- that is what forking means.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Annotated, Optional
+from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete as sa_delete, func, text, update
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -231,7 +232,7 @@ def _apply_fields(recipe: Recipe, payload: RecipeRequest) -> None:
     recipe.cook_minutes = payload.cook_minutes
     recipe.steps = [s.strip() for s in payload.steps if s.strip()][:MAX_STEPS]
     recipe.tags = [t.strip().lower() for t in payload.tags if t.strip()][:12]
-    recipe.updated_at = datetime.now(timezone.utc)
+    recipe.updated_at = datetime.now(UTC)
 
 
 def _cache_composition(
@@ -429,7 +430,7 @@ async def create_recipe(
                 ).model_dump(),
             )
         recipe.visibility = RecipeVisibility.published
-        recipe.published_at = datetime.now(timezone.utc)
+        recipe.published_at = datetime.now(UTC)
 
     await session.commit()
     await session.refresh(recipe)
@@ -441,7 +442,7 @@ async def my_library(
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(current_user)],
     scope: str = Query(default="mine", pattern="^(mine|saved|all)$"),
-    q: Optional[str] = Query(default=None, max_length=120),
+    q: str | None = Query(default=None, max_length=120),
     limit: int = Query(default=50, le=100),
 ) -> RecipeListResponse:
     """The user's own library.
@@ -497,8 +498,8 @@ async def my_library(
 async def discover(
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(current_user)],
-    q: Optional[str] = Query(default=None, max_length=120),
-    cuisine: Optional[str] = Query(default=None, max_length=60),
+    q: str | None = Query(default=None, max_length=120),
+    cuisine: str | None = Query(default=None, max_length=60),
     #: Protein-forward sorting, because "high protein recipes" is the single
     #: most common thing anyone searches a fitness app's recipe list for.
     sort: str = Query(default="popular", pattern="^(popular|recent|protein)$"),
@@ -598,7 +599,7 @@ async def update_recipe(
                 ).model_dump(),
             )
         if not was_published:
-            recipe.published_at = datetime.now(timezone.utc)
+            recipe.published_at = datetime.now(UTC)
         recipe.visibility = RecipeVisibility.published
     else:
         recipe.visibility = payload.visibility
@@ -679,13 +680,13 @@ async def set_visibility(
                 ).model_dump(),
             )
         if recipe.visibility != RecipeVisibility.published:
-            recipe.published_at = datetime.now(timezone.utc)
+            recipe.published_at = datetime.now(UTC)
         recipe.visibility = RecipeVisibility.published
     else:
         recipe.visibility = RecipeVisibility.private
         recipe.published_at = None
 
-    recipe.updated_at = datetime.now(timezone.utc)
+    recipe.updated_at = datetime.now(UTC)
     await session.commit()
     await session.refresh(recipe)
     return _public(recipe, rows, composed, is_owner=True, author_name=user.display_name)
@@ -852,7 +853,7 @@ async def log_recipe(
         sodium_mg=panel.sodium_mg or None,
         sugars_g=panel.sugar_g or None,
         meal_type=payload.meal_type,
-        logged_at=payload.logged_at or datetime.now(timezone.utc),
+        logged_at=payload.logged_at or datetime.now(UTC),
     )
     session.add(entry)
     await session.execute(

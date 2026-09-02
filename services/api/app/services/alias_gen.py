@@ -26,8 +26,8 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Iterable, Sequence
 
 from .food_text import detect_script, normalize
 

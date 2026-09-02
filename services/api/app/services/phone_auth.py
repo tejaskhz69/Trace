@@ -46,7 +46,7 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -174,7 +174,7 @@ def new_challenge(phone: str) -> Challenge:
         phone=phone,
         code=code,
         code_hash=hash_code(phone, code),
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=CODE_TTL_MINUTES),
+        expires_at=datetime.now(UTC) + timedelta(minutes=CODE_TTL_MINUTES),
     )
 
 

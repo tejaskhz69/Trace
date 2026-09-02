@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 
-from .activity import NeatDrift, ActivityTrend, SleepSummary
+from .activity import ActivityTrend, NeatDrift, SleepSummary
 from .adjudication import AdjudicationResult, Verdict
 
 

@@ -34,17 +34,17 @@ import argparse
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..db import SessionLocal
-from ._schema_guard import require_tables
 from ..models import FoodItem, FoodSource
 from ..services import nutrition_validator as nv
-from ..services.food_sources import _off_to_resolved  # noqa: PLC2701
+from ..services.food_sources import _off_to_resolved
+from ._schema_guard import require_tables
 from .ingest_openfoodfacts import iter_jsonl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -188,7 +188,7 @@ async def run(args: argparse.Namespace) -> None:
             )
         wanted = set(BRAND_PREFIXES[args.brand])
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rows: list[dict] = []
     quarantine: list[dict] = []
     stats = {"scanned": 0, "matched": 0, "accepted": 0, "quarantined": 0,

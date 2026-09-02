@@ -46,16 +46,17 @@ import gzip
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..db import SessionLocal
-from ._schema_guard import require_tables
 from ..models import FoodItem, FoodSource
-from ..services.food_sources import _off_to_resolved  # noqa: PLC2701
+from ..services.food_sources import _off_to_resolved
+from ._schema_guard import require_tables
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ingest.off")
@@ -249,7 +250,7 @@ async def run(args: argparse.Namespace) -> None:
 
     seen = kept = written = 0
     batch: list[dict[str, Any]] = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     for product in source:
         seen += 1

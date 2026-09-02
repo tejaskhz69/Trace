@@ -24,7 +24,6 @@ from sqlalchemy import text
 
 from .config import get_settings
 from .db import engine, init_db
-from .services import programming as programming_service
 from .routers import (
     adjudication,
     auth,
@@ -44,6 +43,7 @@ from .routers import (
 # Aliased: the liveness endpoint below is also called `health`, and a bare
 # `health` import would be shadowed by it at include_router() time.
 from .routers import health as health_router
+from .services import programming as programming_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -144,7 +144,7 @@ async def health_db() -> dict:
                     )
                 )
             ).all()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return JSONResponse(
             status_code=503, content={"database": "unreachable", "error": str(exc)}
         )
