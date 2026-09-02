@@ -20,11 +20,12 @@ than trusted from the path.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
-from typing import Annotated, Optional
+from datetime import UTC, date, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
+from sqlalchemy import text as sa_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,12 +84,12 @@ def _today_for(user: User) -> date:
 
         return datetime.now(ZoneInfo(user.timezone or "UTC")).date()
     except Exception:
-        return datetime.now(timezone.utc).date()
+        return datetime.now(UTC).date()
 
 
 async def _load_profile(
     session: AsyncSession, user: User
-) -> Optional[TrainingProfile]:
+) -> TrainingProfile | None:
     return (
         await session.execute(
             select(TrainingProfile).where(TrainingProfile.user_id == user.id)
@@ -139,36 +140,53 @@ async def _owned_planned(
 
 
 async def _load_options(session: AsyncSession) -> list[programming.ExerciseOption]:
-    """Every catalogue exercise that carries programming attributes.
+    """Every exercise that can actually be PRESCRIBED.
 
-    INNER JOIN, not outer. An exercise with no attributes row is not
-    classified, and generation must refuse to prescribe it rather than invent
-    a rep range -- so it never becomes an option in the first place.
+    READS THE VIEW, NEVER THE RAW JOIN. This used to be
+    `select(Exercise, ExerciseAttributes).join(...)`, and the comment above it
+    said an inner join was proof an exercise was programmable. That stopped
+    being true at `b8d47f1c39ae`, which made the rep columns nullable: after
+    it, a row in `exercise_attributes` proves the movement is CLASSIFIED and
+    nothing more.
+
+    The gap was not academic. All 154 classified movements have a NULL rep
+    range, `prescribed_exercises.rep_min` is NOT NULL, and so every single
+    generation attempt inserted NULL into a NOT NULL column -- a 500 for
+    every user, every request. The suite never saw it because the fixture
+    supplies rep ranges production does not have.
+
+    `programmable_exercises` carries the not-null predicate itself, so a
+    query written by hand cannot forget it. Today it returns zero rows, and
+    the honest consequence is that generation refuses rather than crashes.
     """
     rows = (
         await session.execute(
-            select(Exercise, ExerciseAttributes).join(
-                ExerciseAttributes,
-                ExerciseAttributes.exercise_id == Exercise.id,
+            sa_text(
+                "SELECT exercise_id, name, muscle_group, secondary_muscles,"
+                " equipment, is_compound, movement_pattern, is_isolation,"
+                " is_unilateral, default_rep_min, default_rep_max,"
+                " default_rest_seconds, fatigue_cost, exercise_class"
+                " FROM programmable_exercises"
             )
         )
     ).all()
     return [
         programming.ExerciseOption(
-            exercise_id=ex.id,
-            name=ex.name,
-            equipment=ex.equipment,
-            muscle_group=ex.muscle_group,
-            secondary_muscles=tuple(ex.secondary_muscles or ()),
-            movement_pattern=attr.movement_pattern,
-            exercise_class=attr.exercise_class,
-            default_rep_min=attr.default_rep_min,
-            default_rep_max=attr.default_rep_max,
-            default_rest_seconds=attr.default_rest_seconds,
-            fatigue_cost=attr.fatigue_cost,
-            is_unilateral=attr.is_unilateral,
+            exercise_id=r.exercise_id,
+            name=r.name,
+            equipment=r.equipment,
+            muscle_group=r.muscle_group,
+            secondary_muscles=tuple(r.secondary_muscles or ()),
+            movement_pattern=r.movement_pattern,
+            exercise_class=r.exercise_class,
+            default_rep_min=r.default_rep_min,
+            default_rep_max=r.default_rep_max,
+            default_rest_seconds=r.default_rest_seconds,
+            fatigue_cost=r.fatigue_cost,
+            is_unilateral=r.is_unilateral,
+            is_isolation=r.is_isolation,
         )
-        for ex, attr in rows
+        for r in rows
     ]
 
 
@@ -227,7 +245,7 @@ async def _planned_public(
         )
     ).all()
 
-    label: Optional[str] = None
+    label: str | None = None
     if planned.programme_day_id:
         label = (
             await session.execute(
@@ -257,6 +275,7 @@ async def _planned_public(
                     default_rest_seconds=attr.default_rest_seconds,
                     fatigue_cost=attr.fatigue_cost,
                     is_unilateral=attr.is_unilateral,
+                    is_isolation=attr.is_isolation,
                 )
             )
             education = ExerciseEducationPublic(
@@ -393,7 +412,7 @@ async def update_training_profile(
     changes = body.model_dump(exclude_unset=True)
     for field, value in changes.items():
         setattr(profile, field, value)
-    profile.updated_at = datetime.now(timezone.utc)
+    profile.updated_at = datetime.now(UTC)
     session.add(profile)
     await session.commit()
     await session.refresh(profile)
@@ -433,7 +452,7 @@ async def create_programme(
     ).scalar_one_or_none()
     if existing is not None:
         existing.status = "archived"
-        existing.archived_at = datetime.now(timezone.utc)
+        existing.archived_at = datetime.now(UTC)
         existing.updated_at = existing.archived_at
         session.add(existing)
 
@@ -505,7 +524,7 @@ async def archive_programme(
     programme = await _owned_programme(session, programme_id, user)
     if programme.status != "archived":
         programme.status = "archived"
-        programme.archived_at = datetime.now(timezone.utc)
+        programme.archived_at = datetime.now(UTC)
         programme.updated_at = programme.archived_at
         session.add(programme)
         await session.commit()
@@ -645,11 +664,16 @@ async def materialise_planned_session(
 
     options = await _load_options(session)
     if not options:
+        # Reached whenever `programmable_exercises` is empty -- which it is
+        # today, because every classified movement still has a NULL rep
+        # range. Refusing here is the correct behaviour and a strict
+        # improvement on what this did before the view was wired in, which
+        # was to build prescriptions with rep_min=None and 500 on the insert.
         raise HTTPException(
             status_code=422,
             detail=(
-                "No exercises in the catalogue carry programming attributes "
-                "yet, so no session can be generated."
+                "No exercises are ready to be prescribed yet: the catalogue "
+                "is classified but no movement has a rep range set."
             ),
         )
 
@@ -801,7 +825,7 @@ async def start_planned_session(
             created=False,
         )
 
-    routine_name: Optional[str] = None
+    routine_name: str | None = None
     if planned.programme_day_id:
         routine_name = (
             await session.execute(
@@ -819,7 +843,7 @@ async def start_planned_session(
 
     planned.session_id = workout.id
     planned.status = "active"
-    planned.updated_at = datetime.now(timezone.utc)
+    planned.updated_at = datetime.now(UTC)
     session.add(planned)
     await session.commit()
 
@@ -910,7 +934,7 @@ async def update_prescribed_exercise(
         presc.status = "prescribed"
         presc.replaced_with_exercise_id = None
 
-    presc.updated_at = datetime.now(timezone.utc)
+    presc.updated_at = datetime.now(UTC)
     session.add(presc)
     await session.commit()
     await session.refresh(presc)

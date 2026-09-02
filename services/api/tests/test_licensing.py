@@ -11,10 +11,13 @@ import pytest
 
 from app.models import FoodSource
 from app.services.licensing import (
+    DISPLAY_NAMES,
     LICENCE_MAP,
     Licence,
     Tier,
     attribution_for,
+    attribution_line,
+    display_name_for,
     attribution_notice,
     export_filter_summary,
     is_exportable,
@@ -185,3 +188,110 @@ class TestSourceUrl:
         assert source_url_for(FoodSource.curated, "abc", None) is None
         assert source_url_for(FoodSource.off, "x", None) is None
         assert source_url_for(FoodSource.usda, None, None) is None
+
+
+class TestDisplayNames:
+    """What a source is CALLED in front of a user.
+
+    Split from `attribution_for` because a list row has space for a name and
+    nothing else, while a detail view has room for the whole sentence. The
+    failure this guards is the one that already happened once: `nutritionix`
+    was added to the API and never to the client's copy of this table, so
+    metered rows rendered "SOURCE UNKNOWN" and dropped a credit owed by
+    contract.
+    """
+
+    @pytest.mark.parametrize("source", list(FoodSource))
+    def test_every_source_has_a_display_name(self, source):
+        assert source in DISPLAY_NAMES, f"{source} has no display name"
+        assert DISPLAY_NAMES[source].strip()
+
+    def test_names_are_the_ones_a_user_would_recognise(self):
+        assert display_name_for(FoodSource.off) == "Open Food Facts"
+        assert display_name_for(FoodSource.usda) == "USDA FoodData Central"
+        assert display_name_for(FoodSource.nutritionix) == "Nutritionix"
+
+    def test_our_own_estimate_says_so(self):
+        """`ai_estimated` is not an unknown source. We know exactly whose it is."""
+        assert display_name_for(FoodSource.ai) == "Trace estimate"
+        assert "unknown" not in display_name_for(FoodSource.ai).lower()
+
+    def test_an_unmapped_source_is_not_prettified_into_a_name(self):
+        """A made-up name reads as authoritative. "We do not know" is true."""
+        assert display_name_for("some_feed_added_next_year") == "Source not recorded"
+
+
+class TestAttributionLine:
+    """The sentence rendered on the food-detail sheet."""
+
+    def test_open_food_facts_names_the_licence(self):
+        line = attribution_line(FoodSource.off)
+        assert "Open Food Facts" in line
+        assert "Open Database License (ODbL)" in line
+
+    def test_usda_is_public_domain_and_never_odbl(self):
+        line = attribution_line(FoodSource.usda)
+        assert "USDA FoodData Central" in line
+        assert "public domain" in line
+        assert "ODbL" not in line
+        assert "Open Food Facts" not in line
+
+    def test_nutritionix_is_credited_as_licensed(self):
+        line = attribution_line(FoodSource.nutritionix)
+        assert "Nutritionix" in line
+        assert "under licence" in line
+
+    @pytest.mark.parametrize(
+        "source", [FoodSource.curated, FoodSource.user, FoodSource.ai]
+    )
+    def test_our_own_rows_get_no_credit_line_at_all(self, source):
+        """None, not an empty string.
+
+        The UI branches on it: None means render nothing, "" would render an
+        empty notice with a divider above it.
+        """
+        assert attribution_line(source) is None
+
+    def test_the_rows_stored_licence_wins_over_the_source_default(self):
+        """A row whose licence column says 'unknown' must SAY so.
+
+        Inheriting ODbL from the source table would be the app asserting a
+        licence the row does not actually record.
+        """
+        line = attribution_line(FoodSource.off, Licence.unknown)
+        assert "Open Food Facts" in line
+        assert "licence not recorded" in line
+        assert "ODbL" not in line
+
+    def test_a_named_publisher_is_credited_even_under_an_unknown_licence(self):
+        """IFCT: named publisher, licence nobody has confirmed.
+
+        The two fail-closed directions in this module point opposite ways.
+        For EXPORT, unsure means no -- distributing without the right is the
+        harm. For CREDIT, unsure means yes -- omitting a credit is the harm
+        and showing one costs nothing.
+        """
+        line = attribution_line(FoodSource.ifct)
+        assert "Indian Food Composition Tables" in line
+        assert "licence not recorded" in line
+        assert not is_exportable(licence_for(FoodSource.ifct))
+
+    @pytest.mark.parametrize("source", list(FoodSource))
+    def test_no_line_ever_claims_compliance(self, source):
+        """Nothing in this app may assert that showing a credit discharges
+        an obligation. That is a question for a lawyer, not for a format
+        string. See services/api/review/LICENSING_REVIEW.md."""
+        line = attribution_line(source) or ""
+        low = line.lower()
+        for banned in ("compliant", "compliance", "permitted", "authorised",
+                       "authorized", "we own", "all rights"):
+            assert banned not in low, f"{source}: {line!r}"
+
+    @pytest.mark.parametrize("source", list(FoodSource))
+    def test_a_line_never_credits_the_wrong_party(self, source):
+        """The specific error this whole module exists to prevent."""
+        line = attribution_line(source) or ""
+        if source is not FoodSource.off:
+            assert "Open Food Facts" not in line
+        if source is not FoodSource.usda:
+            assert "USDA" not in line

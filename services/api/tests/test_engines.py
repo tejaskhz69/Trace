@@ -8,7 +8,7 @@ tested exhaustively without a database.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -431,3 +431,115 @@ def test_ambiguous_signals_are_not_forced_into_a_verdict():
     )
     assert result.verdict == Verdict.insufficient_data
     assert "signals_within_noise_band" in result.guardrails_triggered
+
+
+# ---------------------------------------------------------------------------
+# The MIN_SESSIONS boundary itself
+# ---------------------------------------------------------------------------
+
+
+class TestTheEighthSessionIsTheThreshold:
+    """`session_count=3` was the only coverage. That test still passes if
+    somebody lowers MIN_SESSIONS to 4, so it does not pin the boundary."""
+
+    def test_seven_sessions_is_a_refusal_not_a_verdict(self):
+        from app.services.adjudication import MIN_SESSIONS
+
+        assert MIN_SESSIONS == 8
+        result = adjudicate(_input(session_count=MIN_SESSIONS - 1))
+        assert result.verdict == Verdict.insufficient_data
+        assert "insufficient_data" in result.guardrails_triggered
+
+    def test_the_eighth_session_produces_a_real_verdict(self):
+        """The other half. Without it a change that broke adjudication
+        entirely -- always refusing -- would pass the test above."""
+        from app.services.adjudication import MIN_SESSIONS
+
+        result = adjudicate(
+            _input(
+                session_count=MIN_SESSIONS,
+                trend_weight_start=79.0,
+                trend_weight_end=80.2,
+            )
+        )
+        assert result.verdict != Verdict.insufficient_data
+
+    def test_the_refusal_explains_itself_rather_than_returning_a_bare_null(self):
+        """A null renders as "no progress" in a UI that does not special-case
+        it. The refusal has to carry words."""
+        result = adjudicate(_input(session_count=7))
+        assert result.explanation
+        assert "7 workouts" in result.explanation
+        assert result.headline
+        # And it must NOT hand back a number the UI could plot as progress.
+        assert result.recommended_calorie_delta == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Product invariant #1, as a standing guard
+# ---------------------------------------------------------------------------
+
+
+class TestExerciseCaloriesNeverReachACalorieTarget:
+    """Non-negotiable #1 in CLAUDE.md. The adaptive TDEE already contains
+    exercise via the weight trend, so adding active energy double-counts.
+
+    `strava.calorie_target_delta` already names the invariant for the Strava
+    path. These widen it to the function that actually computes the target,
+    and to the source of the module it lives in, so the guard survives
+    somebody adding a new caller rather than editing the old one.
+    """
+
+    def test_the_target_function_cannot_even_accept_exercise_energy(self):
+        """The strongest available form: it is not a rule about what callers
+        pass, it is the absence of a parameter to pass it through."""
+        import inspect
+
+        from app.services.tdee import recommend_targets
+
+        params = set(inspect.signature(recommend_targets).parameters)
+        forbidden = {
+            "active_energy_kcal",
+            "active_energy",
+            "exercise_kcal",
+            "exercise_calories",
+            "workout_kcal",
+            "calories_burned",
+        }
+        assert not (params & forbidden), sorted(params & forbidden)
+
+    def test_the_tdee_module_never_reads_active_energy(self):
+        """An AST walk rather than a substring scan, so the module's own
+        prose explaining the invariant cannot satisfy the test."""
+        import ast
+        import inspect
+
+        import app.services.tdee as tdee
+
+        tree = ast.parse(inspect.getsource(tdee))
+        names = {
+            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+        } | {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        assert "active_energy_kcal" not in names
+        assert "active_energy" not in names
+
+    def test_importing_activities_moves_the_target_by_exactly_zero(self):
+        from app.services.strava import ImportedActivity, calorie_target_delta
+
+        activities = [
+            ImportedActivity(
+                external_id=str(i),
+                name="Evening Ride",
+                activity_type="Ride",
+                started_at=datetime(2026, 3, 1, 7, 0, tzinfo=timezone.utc),
+                duration_minutes=90.0,
+                distance_km=45.0,
+                elevation_gain_m=300.0,
+                mean_heart_rate=142.0,
+                max_heart_rate=171.0,
+                energy=None,
+            )
+            for i in range(5)
+        ]
+        assert calorie_target_delta(activities) == 0.0
+        assert calorie_target_delta([]) == 0.0

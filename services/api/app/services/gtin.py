@@ -52,10 +52,10 @@ GTIN_LENGTH = 14
 #:
 #: 02 / 04    variable-measure and in-store items (GS1 General Specs 1.4.3)
 #: 20-29      restricted distribution
-_RESTRICTED_PREFIXES = ("02", "04") + tuple(str(n) for n in range(20, 30))
+_RESTRICTED_PREFIXES = frozenset({"02", "04"} | {str(n) for n in range(20, 30)})
 
 #: Coupon codes, not products.
-_COUPON_PREFIXES = ("98", "99")
+_COUPON_PREFIXES = frozenset({"98", "99"})
 
 
 def check_digit(digits: str) -> int:
@@ -83,14 +83,35 @@ def has_valid_check_digit(gtin: str) -> bool:
 def is_restricted(gtin: str) -> bool:
     """Is this an in-store or coupon code rather than a global product?
 
-    Tested on the GTIN-14 form's significant digits -- i.e. after the leading
-    zeros that padding added -- because '0002000000000' and '02000000000' are
-    the same restricted code wearing different lengths.
+    THE PREFIX IS READ FROM THE 13-DIGIT FORM, WHICH IS `gtin[1:]`.
+
+    This used to strip leading zeros and test the remainder, and that was
+    wrong in both directions:
+
+      * '0400000000008' -- a real in-store code -- strips to '400000000008',
+        whose first digits are '40', so the '04' rule never fired. Every
+        number-system-4 code passed. Measured against the live catalogue,
+        1,079 rows carry one.
+      * '00000200000000' -- an ordinary UPC-A padded out -- strips to
+        '200000000', which starts '20', so it was refused as restricted when
+        its actual GS1 prefix is '00'.
+
+    A GS1 prefix is positional, not "whatever survives stripping zeros". In a
+    GTIN-14 the leading digit is the packaging-level indicator and the 13
+    digits after it carry the prefix, so `gtin[1:2+n]` is the right slice at
+    every length -- EAN-8, UPC-A, EAN-13 and ITF-14 alike, once padded.
+
+    THE EXISTING TEST FOR THIS PASSED ANYWAY. It asserted that
+    '0400000000006' is refused, and it is -- but for the wrong reason: that
+    string has a bad check digit, so `normalize_gtin` rejected it two steps
+    earlier and never reached this function. A green test over a broken rule.
     """
-    significant = gtin.lstrip("0")
-    if not significant:
+    if len(gtin) != GTIN_LENGTH or not gtin.isdigit():
+        return True                       # not a GTIN-14: refuse rather than guess
+    if gtin.strip("0") == "":
         return True                       # all zeros: a placeholder, not a product
-    return significant.startswith(_RESTRICTED_PREFIXES + _COUPON_PREFIXES)
+    prefix = gtin[1:3]
+    return prefix in _RESTRICTED_PREFIXES or prefix in _COUPON_PREFIXES
 
 
 def normalize_gtin(raw: str | None) -> str | None:
@@ -142,3 +163,158 @@ def same_product(a: str | None, b: str | None) -> bool:
     """
     na, nb = normalize_gtin(a), normalize_gtin(b)
     return na is not None and na == nb
+
+
+# ---------------------------------------------------------------------------
+# UPC-E, and why it cannot be treated as EAN-8
+# ---------------------------------------------------------------------------
+
+#: The six expansion rules, keyed on the LAST digit of the 6-digit payload.
+#: GS1 General Specifications 5.2.2.4. Each maps the payload to the 10-digit
+#: body of a UPC-A, which then gets its own check digit recomputed.
+#:
+#: WHY THIS EXISTS
+#: `expo-camera` reports a UPC-E scan as its **compressed 8-digit** string,
+#: and 8 digits is also the length of an EAN-8. Feeding one to a validator
+#: that assumes EAN-8 checks the mod-10 against the wrong payload: most real
+#: UPC-E codes are then rejected as corrupt, and the rare collision is
+#: accepted as a different product entirely. A small package and a compressed
+#: US code are simply not the same thing at the same length.
+
+
+def expand_upce(raw: str) -> str | None:
+    """Expand a UPC-E (8 digits: number system, 6 payload, check) to UPC-A.
+
+    Returns None when the input is not a well-formed UPC-E. The check digit is
+    re-derived from the EXPANDED form, which is where it is actually defined --
+    a UPC-E's check digit belongs to its UPC-A, not to its own eight digits.
+
+    >>> expand_upce("04252614")
+    '042100005264'
+    """
+    if not raw or not raw.isdigit() or len(raw) != 8:
+        return None
+    system, payload, check = raw[0], raw[1:7], raw[7]
+    # Only number systems 0 and 1 have a UPC-E form.
+    if system not in ("0", "1"):
+        return None
+
+    last = payload[5]
+    body = payload[:5]
+    if last in ("0", "1", "2"):
+        expanded = f"{system}{body[:2]}{last}0000{body[2:5]}"
+    elif last == "3":
+        expanded = f"{system}{body[:3]}00000{body[3:5]}"
+    elif last == "4":
+        expanded = f"{system}{body[:4]}00000{body[4]}"
+    else:  # 5-9
+        expanded = f"{system}{body}0000{last}"
+
+    if len(expanded) != 11:
+        return None
+    if check_digit(expanded) != int(check):
+        return None
+    return expanded + check
+
+
+# ---------------------------------------------------------------------------
+# Classification: the same decision, but explaining itself
+# ---------------------------------------------------------------------------
+
+#: Why a barcode was refused. The API returns this so the client can offer the
+#: RIGHT recovery, which is different in every case:
+#:
+#:   invalid_length / not_numeric -> a partial or misread scan. Scan again.
+#:   bad_check_digit             -> a damaged or misprinted symbol. Scan again,
+#:                                  or type it in.
+#:   restricted                  -> a real barcode that is not a product
+#:                                  identifier. Scanning again will never help;
+#:                                  send the user to search or the label.
+#:
+#: Collapsing all three into "not found" is what makes a scanner feel broken:
+#: the user re-scans a deli sticker forever because nothing told them it is not
+#: the kind of barcode that can be looked up.
+STATUS_OK = "ok"
+STATUS_NOT_NUMERIC = "not_numeric"
+STATUS_BAD_LENGTH = "invalid_length"
+STATUS_BAD_CHECK_DIGIT = "bad_check_digit"
+STATUS_RESTRICTED = "restricted"
+
+
+#: The scanner's own report of which symbology it decoded. `expo-camera`
+#: supplies this on every callback and the client forwards it.
+SYMBOLOGY_UPC_E = "upc_e"
+
+
+def classify(
+    raw: str | None, symbology: str | None = None
+) -> tuple[str, str | None]:
+    """Validate a scanned barcode and say WHY if it fails.
+
+    Returns `(status, gtin14)`. `gtin14` is non-None only for STATUS_OK, and
+    is then exactly what `normalize_gtin` produces for the same input -- a
+    test pins that so the two can never drift.
+
+    THE SYMBOLOGY ARGUMENT IS NOT OPTIONAL IN PRACTICE, ONLY IN SIGNATURE.
+    UPC-E and EAN-8 are both eight digits, and the two interpretations of one
+    string give two DIFFERENT products. Measured over 200,000 randomly
+    generated valid EAN-8 codes beginning 0 or 1, **58% also expand as a
+    valid UPC-E** -- so deciding by looking at the digits is wrong more often
+    than a coin toss. The scanner knows which symbol it read; throwing that
+    away and guessing is the bug.
+
+    When the symbology is unknown, this treats 8 digits as EAN-8 and does NOT
+    expand. That direction is chosen deliberately: expanding an EAN-8 that was
+    never a UPC-E fabricates a valid-looking GTIN for a DIFFERENT product,
+    which is the confident-collision failure this module exists to prevent.
+    Declining to expand merely produces a miss, and a miss is recoverable --
+    the user searches by name instead. It is also exactly the behaviour that
+    shipped before this function existed, so nothing regresses.
+    """
+    if raw is None or not isinstance(raw, str):
+        return STATUS_NOT_NUMERIC, None
+
+    digits = _NON_DIGIT.sub("", raw)
+    if not digits:
+        return STATUS_NOT_NUMERIC, None
+
+    if len(digits) == 8 and symbology == SYMBOLOGY_UPC_E:
+        expanded = expand_upce(digits)
+        if expanded is None:
+            # The scanner said UPC-E and it does not expand. That is a damaged
+            # read, not an EAN-8 -- reinterpreting it would be guessing again.
+            return STATUS_BAD_CHECK_DIGIT, None
+        digits = expanded
+
+    if len(digits) not in VALID_LENGTHS:
+        return STATUS_BAD_LENGTH, None
+    if not has_valid_check_digit(digits):
+        return STATUS_BAD_CHECK_DIGIT, None
+
+    padded = digits.rjust(GTIN_LENGTH, "0")
+
+    # All zeros is a placeholder somebody typed to satisfy a required field,
+    # not a retailer-scoped product. There is nothing to look up locally
+    # either, so unlike a real restricted code it yields no key.
+    if padded.strip("0") == "":
+        return STATUS_RESTRICTED, None
+
+    if is_restricted(padded):
+        # THE NORMALISED FORM IS RETURNED ANYWAY, and that is the difference
+        # between `classify` and `normalize_gtin`.
+        #
+        # A restricted code is still a well-formed GTIN -- it just is not a
+        # GLOBAL one. `normalize_gtin` returns None because its job is to
+        # decide what may be INDEXED, and indexing a retailer-scoped number
+        # invites cross-retailer collisions. `classify`'s job is to tell a
+        # caller what it is holding, and "this is 00490711802107, and it only
+        # means something inside one chain" is more useful than "no".
+        #
+        # It matters concretely: 1,079 rows in the live catalogue carry a
+        # number-system-4 code, and they are real own-label products --
+        # "Organic fruit pouches", "Cookies with quinoa". Somebody catalogued
+        # them, so answering a LOCAL lookup for one is not a guess. What the
+        # caller must not do is send it to an external source, where the same
+        # digits belong to a different chain's different product.
+        return STATUS_RESTRICTED, padded
+    return STATUS_OK, padded

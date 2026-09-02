@@ -27,13 +27,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from functools import lru_cache
 import hashlib
 import io
 import json
 import logging
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from ..config import get_settings
@@ -104,6 +104,21 @@ guess confidently.
 BEVERAGES
 Estimate drinks separately. If a glass contains an unidentifiable liquid, ask \
 rather than guess -- water and mango lassi differ by 300 kcal.
+
+PALE SAUCES ARE NOT AUTOMATICALLY CREAM
+Do NOT assume a white or cream-coloured sauce is dairy cream. It may be \
+yoghurt, blended paneer, cashew paste, or a flour roux. These differ by up to \
+3x in calories per gram, so name the one you actually believe and widen the \
+band if you cannot tell.
+
+REFUSING IS A CORRECT ANSWER
+Set `refused` to true, with a short `refusal_reason`, when you cannot \
+responsibly estimate at all: the food is in an opaque container, it is \
+substantially hidden or obscured, or the photo is too dark or blurred to \
+identify what is on the plate. Refusing is a correct answer, not a failure -- \
+it is strictly better than a confident wrong number. Do NOT refuse merely \
+because portions are uncertain: that is what the range and `confidence` \
+are for, and a refusal used to dodge a hard plate is itself a wrong answer.
 
 OUTPUT
 Call the `report_nutrition` tool exactly once. Never write prose.
@@ -183,6 +198,18 @@ TOOL_SCHEMA = {
                 },
             },
             "hidden_ingredients": {"type": "array", "items": {"type": "string"}},
+            "refused": {
+                "type": "boolean",
+                "description": (
+                    "True only if you cannot responsibly estimate at all "
+                    "-- opaque container, food hidden, photo unusable. "
+                    "Not for merely uncertain portions."
+                ),
+            },
+            "refusal_reason": {
+                "type": "string",
+                "description": "One short sentence. Empty unless refused is true.",
+            },
             "overall_confidence": {
                 "type": "number",
                 "description": "Your real belief across the whole plate, 0.0 to 1.0",
@@ -472,7 +499,7 @@ async def recognize(
                     _call_once(settings.VISION_MODEL_ACCURATE),
                     timeout=max(1.0, _remaining()),
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 # KEEP THE FAST RESULT. An escalation that fails is a missed
                 # improvement, not a failed scan. Throwing away a usable
                 # estimate because the optional second opinion timed out --
@@ -533,46 +560,211 @@ def _widen(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+# --------------------------------------------------------------------------
+# Structured-output validation
+# --------------------------------------------------------------------------
+
+#: Any identifier-looking field the model might emit. It is asked for none of
+#: these -- `TOOL_SCHEMA` has no barcode property -- but a model that decides
+#: to be helpful can add keys anyway, and a fabricated GTIN is the single most
+#: dangerous thing this pipeline could produce: it looks exactly like a scanned
+#: one, it would be believed, and it would attach a real product's identity to
+#: an estimate of somebody's dinner.
+#:
+#: THE RULE IS DELETION, NOT VALIDATION. Even a checksum-valid GTIN invented by
+#: a language model is a guess about identity, and `services/gtin.py` cannot
+#: tell "read off a packet" from "plausible digits". There is no verification
+#: available here, so the only safe action is to drop it.
+_FORBIDDEN_IDENTIFIER_KEYS = (
+    "barcode", "gtin", "gtin14", "ean", "upc", "sku", "product_id",
+    "product_code", "fdc_id", "off_id",
+)
+
+#: A single food item beyond this is a misread, not a meal.
+MAX_ITEM_KCAL = 5000.0
+MAX_ITEM_GRAMS = 5000.0
+
+#: Macro mass cannot exceed the portion mass. Allowed a little slack because
+#: `grams_est` is itself an estimate and the model may round both independently
+#: -- 5% stops a 100 g portion carrying 105 g of macros without flagging every
+#: rounding artefact.
+MACRO_MASS_SLACK = 1.05
+
+#: Two items are "the same food" when their names match after casefolding and
+#: whitespace collapse. Deliberately conservative: "Dal" and "Dal tadka" are
+#: different dishes and must not be merged, while "dal  tadka" and "Dal Tadka"
+#: are one item the model listed twice.
+def _dedupe_key(name: str) -> str:
+    return " ".join(name.split()).casefold()
+
+
+def _macro_issues(item: dict[str, Any]) -> list[str]:
+    """Field names whose values do not hold together.
+
+    Returned rather than repaired. Silently rewriting a macro to make the
+    arithmetic work produces a number no human ever asserted and no source
+    supports, presented with the same authority as a real reading -- so the
+    item is flagged for review instead, and `review_required` carries that to
+    the client.
+    """
+    from .nutrition_validator import (
+        ATWATER_HARD_LIMIT,
+        KCAL_CARB,
+        KCAL_FAT,
+        KCAL_PROTEIN,
+    )
+
+    bad: list[str] = []
+    p, c, f = item["protein_g"], item["carbs_g"], item["fat_g"]
+    point, grams = item["kcal_point"], item["grams_est"]
+
+    # Macro mass against portion mass.
+    if p + c + f > grams * MACRO_MASS_SLACK:
+        bad.append("grams_est")
+
+    # Atwater. THE SAME TOLERANCE THE CATALOGUE USES -- deliberately not a
+    # second, private threshold. `nutrition_validator.ATWATER_HARD_LIMIT` is
+    # 35% and is loose on purpose: fibre contributes ~2 kcal/g rather than 4,
+    # sugar alcohols less again, and labels round every figure independently,
+    # so demanding equality would flag most real food. Beyond 35% the numbers
+    # genuinely disagree with each other.
+    derived = p * KCAL_PROTEIN + c * KCAL_CARB + f * KCAL_FAT
+    if derived > 0 and point > 0:
+        drift = abs(derived - point) / point
+        if drift > ATWATER_HARD_LIMIT:
+            bad.append("kcal_point")
+
+    # A band that does not contain its own point estimate is incoherent.
+    if not (item["kcal_low"] <= point <= item["kcal_high"]):
+        bad.append("kcal_range")
+
+    return bad
+
+
 def _sanitize(payload: dict[str, Any]) -> dict[str, Any]:
-    """Defend against a malformed tool call.
+    """Defend against a malformed, contradictory or over-helpful tool call.
 
     Never trust model output enough to write it straight into a user's diary.
+
+    THREE KINDS OF DEFENCE, AND THEY ARE NOT THE SAME:
+
+      DROP   -- the item is unusable (no name, impossible mass, non-numeric).
+                Nothing of value is lost by discarding it.
+      DELETE -- a field that must not exist at all, i.e. an invented product
+                identifier. Removed silently because the model was never asked
+                for it and its presence is always an error.
+      FLAG   -- the item is plausible but its numbers do not hold together.
+                Kept, marked `review_required`, with the offending fields
+                named in `uncertain_fields` so the UI can point at them.
+
+    The third is the important one. The temptation is to "fix" a macro so the
+    arithmetic closes, and that would invent a number no human asserted and no
+    source supports, wearing the same confidence as a real reading.
     """
-    items = []
+    items: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    dropped_identifier = False
+
     for raw in payload.get("items", []) or []:
         try:
+            name = str(raw["name"]).strip()[:120]
+            if not name:
+                continue
+
             low = float(raw["kcal_low"])
             point = float(raw["kcal_point"])
             high = float(raw["kcal_high"])
-            if not (low <= point <= high):
-                low, point, high = sorted((low, point, high))
-            if point <= 0 or point > 5000:
+
+            # RANGE-CHECK THE STATED POINT BEFORE TOUCHING THE BAND.
+            #
+            # Reordering first was a bug, and the tests below caught it: an
+            # item claiming 0 kcal with a band of 190-300 sorts to
+            # (0, 190, 300), which makes 190 the new point estimate. The item
+            # is then kept, carrying a number the model never asserted, and
+            # the "impossible calories" check it was supposed to fail never
+            # sees the value it was written to reject. Same for a negative
+            # figure, and same for 6,000 kcal -- which sorts down to the band
+            # ceiling and survives.
+            #
+            # What the model SAID is what gets judged.
+            if point <= 0 or point > MAX_ITEM_KCAL:
                 continue
+
+            band_was_disordered = not (low <= point <= high)
+            if band_was_disordered:
+                # Only the bounds move, and the point stays where it was. The
+                # item is flagged for review below either way.
+                low, high = min(low, point), max(high, point)
             grams = float(raw.get("grams_est", 0))
-            if grams <= 0 or grams > 5000:
+            if grams <= 0 or grams > MAX_ITEM_GRAMS:
                 continue
-            items.append(
-                {
-                    "name": str(raw["name"])[:120],
-                    "name_local": str(raw.get("name_local") or "")[:120] or None,
-                    "portion_unit": str(raw.get("portion_unit", "g"))[:40],
-                    "portion_count": float(raw.get("portion_count", 1)),
-                    "grams_est": grams,
-                    "grams_range": [
-                        float(x) for x in (raw.get("grams_range") or [grams, grams])
-                    ][:2],
-                    "kcal_point": round(point, 1),
-                    "kcal_low": round(max(0.0, low), 1),
-                    "kcal_high": round(high, 1),
-                    "protein_g": max(0.0, float(raw.get("protein_g", 0))),
-                    "carbs_g": max(0.0, float(raw.get("carbs_g", 0))),
-                    "fat_g": max(0.0, float(raw.get("fat_g", 0))),
-                    "confidence": min(1.0, max(0.0, float(raw.get("confidence", 0.5)))),
-                    "clarifying_question": raw.get("clarifying_question"),
-                }
-            )
+
+            item = {
+                "name": name,
+                "name_local": str(raw.get("name_local") or "")[:120] or None,
+                "portion_unit": str(raw.get("portion_unit", "g"))[:40],
+                "portion_count": float(raw.get("portion_count", 1)),
+                "grams_est": grams,
+                "grams_range": [
+                    float(x) for x in (raw.get("grams_range") or [grams, grams])
+                ][:2],
+                "kcal_point": round(point, 1),
+                "kcal_low": round(max(0.0, low), 1),
+                "kcal_high": round(high, 1),
+                "protein_g": max(0.0, float(raw.get("protein_g", 0))),
+                "carbs_g": max(0.0, float(raw.get("carbs_g", 0))),
+                "fat_g": max(0.0, float(raw.get("fat_g", 0))),
+                "confidence": min(1.0, max(0.0, float(raw.get("confidence", 0.5)))),
+                "clarifying_question": raw.get("clarifying_question"),
+            }
+
+            # DELETE: an invented identifier never reaches the client.
+            if any(k in raw for k in _FORBIDDEN_IDENTIFIER_KEYS):
+                dropped_identifier = True
+
+            # FLAG: numbers that do not hold together.
+            uncertain = _macro_issues(item)
+            if band_was_disordered:
+                uncertain.append("kcal_range")
+            item["uncertain_fields"] = sorted(set(uncertain))
+            item["review_required"] = bool(uncertain)
+            # An estimate is never verified. Stated explicitly rather than
+            # left for the client to infer from the absence of a flag.
+            item["is_estimated"] = True
+
+            # DEDUPE: one food listed twice would be logged twice.
+            key = _dedupe_key(name)
+            if key in seen:
+                prior = items[seen[key]]
+                # Keep the more confident reading rather than the first seen,
+                # and mark it so the UI can say why the plate looks shorter
+                # than the photo.
+                if item["confidence"] > prior["confidence"]:
+                    item["uncertain_fields"] = sorted(
+                        set(item["uncertain_fields"]) | {"duplicate_merged"}
+                    )
+                    item["review_required"] = True
+                    items[seen[key]] = item
+                else:
+                    prior["uncertain_fields"] = sorted(
+                        set(prior["uncertain_fields"]) | {"duplicate_merged"}
+                    )
+                    prior["review_required"] = True
+                continue
+
+            seen[key] = len(items)
+            items.append(item)
+
         except (KeyError, TypeError, ValueError) as exc:
             log.warning("Dropping malformed item from vision output: %s", exc)
+
+    if dropped_identifier:
+        # No image data, no field values -- just the fact that it happened, so
+        # a model regression is visible without logging anybody's dinner.
+        log.warning(
+            "Vision output carried a product identifier it was never asked "
+            "for; discarded. A fabricated barcode must never reach a client."
+        )
 
     return {
         "items": items,
@@ -582,4 +774,16 @@ def _sanitize(payload: dict[str, Any]) -> dict[str, Any]:
         "overall_confidence": min(
             1.0, max(0.0, float(payload.get("overall_confidence", 0.5)))
         ),
+        # Product invariant 3: refusing to answer beats answering wrong.
+        # This has to survive as its own field rather than being inferred
+        # from a wide band, because a model that refuses and a model that
+        # guesses with low confidence are not the same failure and must
+        # not score the same. eval/score.py reads `refused` BY NAME --
+        # see adversarial_ok() there. Renaming this key breaks the eval
+        # silently, so tests/test_eval_contract.py asserts on it.
+        "refused": bool(payload.get("refused", False)),
+        "refusal_reason": str(payload.get("refusal_reason", "") or "")[:200],
+        # True when ANY item needs a human look. The client uses this to pick
+        # "Review and save" over "Save".
+        "review_required": any(i["review_required"] for i in items),
     }

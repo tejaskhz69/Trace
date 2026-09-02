@@ -71,298 +71,321 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..db import SessionLocal
+from ..models import Exercise
 from ..services.catalogue import CatalogueEntry, merge_aliases, plan_seed
 from ._catalogue_report import report_collisions
 from ._schema_guard import require_tables
-from ..models import Exercise
+from .data.movement_attributes import MOVEMENT_ATTRIBUTES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("seed.movements")
 
-# (name, muscle, secondary[], equipment, is_compound, pattern, profile, unilateral, aliases[])
+# (name, muscle, secondary[], equipment, is_compound, aliases[])
 #
-# `profile` is where in the range of motion the movement is hardest --
-# lengthened / mid / shortened. It drives exercise SELECTION advice (a
-# programme wants both ends covered) and it is the axis the 2023-26
-# stretch-mediated-hypertrophy literature is about. It is NOT a load figure.
+# THIS FILE OWNS THE CATALOGUE ROW, NOTHING MORE. How a movement is
+# CLASSIFIED -- its movement detail, resistance profile and whether it is
+# unilateral -- lives in `data/movement_attributes.py` and is written to
+# `exercise_attributes` by `seed_exercise_attributes.py`.
+#
+# Those three used to be arguments here, and were folded into `aliases` so
+# they would be searchable without new columns. An alias list is the search
+# index, so every one of these rows then answered to a classification token:
+# "mid" returned 58 unrelated movements. Different question, different
+# reviewer, different table.
 #
 # `aliases` absorbs brand and model names on purpose. See the docstring.
 E: list[tuple] = []
 
 
-def add(name, muscle, sec, equip, comp, pattern, profile, uni, aliases):
-    E.append((name, muscle, sec, equip, comp, pattern, profile, uni, aliases))
+def add(name, muscle, sec, equip, comp, aliases):
+    E.append((name, muscle, sec, equip, comp, aliases))
 
 
 
 # ---------------- SQUAT PATTERN ----------------
-add("Barbell Back Squat","quads",["glutes","hamstrings","core"],"barbell",True,"squat","mid",False,
+add("Barbell Back Squat","quads",["glutes","hamstrings","core"],"barbell",True,
     ["back squat","bb squat","barbell squat","high bar squat","low bar squat"])
-add("Barbell Front Squat","quads",["glutes","core"],"barbell",True,"squat","lengthened",False,
+add("Barbell Front Squat","quads",["glutes","core"],"barbell",True,
     ["front squat","bb front squat"])
-add("Hack Squat","quads",["glutes"],"machine",True,"squat","lengthened",False,
+add("Hack Squat","quads",["glutes"],"machine",True,
     ["hack squat machine","panatta hack","atlantis hack squat","pw412"])
-add("Pendulum Squat","quads",["glutes"],"machine",True,"squat","lengthened",False,
+add("Pendulum Squat","quads",["glutes"],"machine",True,
     ["pendulum","prime pendulum squat","panatta pendulum","arsenal pendulum"])
-add("Smith Machine Squat","quads",["glutes"],"smith",True,"squat","mid",False,["smith squat"])
-add("Leg Press","quads",["glutes","hamstrings"],"machine",True,"squat","mid",False,
+add("Smith Machine Squat","quads",["glutes"],"smith",True,["smith squat"])
+add("Leg Press","quads",["glutes","hamstrings"],"machine",True,
     ["leg press machine","45 degree leg press","hammer strength leg press","cybex leg press",
      "panatta leg press","horizontal leg press"])
-add("Single-Leg Press","quads",["glutes"],"machine",True,"squat","mid",True,
+add("Single-Leg Press","quads",["glutes"],"machine",True,
     ["unilateral leg press","one leg press","pw419"])
-add("Goblet Squat","quads",["glutes","core"],"dumbbell",True,"squat","lengthened",False,["goblet"])
-add("Bulgarian Split Squat","quads",["glutes"],"dumbbell",True,"lunge","lengthened",True,
+add("Goblet Squat","quads",["glutes","core"],"dumbbell",True,["goblet"])
+add("Bulgarian Split Squat","quads",["glutes"],"dumbbell",True,
     ["split squat","bss","rear foot elevated split squat","rfess"])
-add("Dumbbell Lunge","quads",["glutes","hamstrings"],"dumbbell",True,"lunge","mid",True,
+add("Dumbbell Lunge","quads",["glutes","hamstrings"],"dumbbell",True,
     ["db lunge"])
-add("Reverse Lunge","quads",["glutes"],"dumbbell",True,"lunge","mid",True,["backward lunge"])
-add("Cyclist Squat","quads",["glutes"],"barbell",True,"squat","lengthened",False,
+add("Reverse Lunge","quads",["glutes"],"dumbbell",True,["backward lunge"])
+add("Cyclist Squat","quads",["glutes"],"barbell",True,
     ["heels elevated squat","narrow stance squat","quad squat"])
-add("Zercher Squat","quads",["glutes","core","upper back"],"barbell",True,"squat","mid",False,["zercher"])
-add("Hatfield Squat","quads",["glutes"],"barbell",True,"squat","mid",False,
+add("Zercher Squat","quads",["glutes","core","upper back"],"barbell",True,["zercher"])
+add("Hatfield Squat","quads",["glutes"],"barbell",True,
     ["safety bar squat with handles","hatfield"])
-add("Anderson Squat","quads",["glutes"],"barbell",True,"squat","shortened",False,
+add("Anderson Squat","quads",["glutes"],"barbell",True,
     ["pin squat","dead stop squat"])
-add("Sissy Squat","quads",[],"bodyweight",False,"squat","lengthened",False,["sissy"])
-add("Belt Squat","quads",["glutes"],"machine",True,"squat","mid",False,["belt squat machine","pit shark"])
-add("Step-Up","quads",["glutes"],"dumbbell",True,"lunge","mid",True,["box step up","dumbbell step up"])
+add("Sissy Squat","quads",[],"bodyweight",False,["sissy"])
+add("Belt Squat","quads",["glutes"],"machine",True,["belt squat machine","pit shark"])
+add("Step-Up","quads",["glutes"],"dumbbell",True,["box step up","dumbbell step up"])
 
 # ---------------- HINGE ----------------
-add("Conventional Deadlift","hamstrings",["glutes","back","traps"],"barbell",True,"hinge","mid",False,
+add("Conventional Deadlift","hamstrings",["glutes","back","traps"],"barbell",True,
     ["deadlift","dl","conventional dl"])
-add("Sumo Deadlift","glutes",["quads","hamstrings","back"],"barbell",True,"hinge","mid",False,["sumo dl","sumo"])
-add("Romanian Deadlift","hamstrings",["glutes","back"],"barbell",True,"hinge","lengthened",False,
+add("Sumo Deadlift","glutes",["quads","hamstrings","back"],"barbell",True,["sumo dl","sumo"])
+add("Romanian Deadlift","hamstrings",["glutes","back"],"barbell",True,
     ["rdl","romanian dl"])
-add("Dumbbell Romanian Deadlift","hamstrings",["glutes"],"dumbbell",True,"hinge","lengthened",False,["db rdl"])
-add("Single-Leg Romanian Deadlift","hamstrings",["glutes","core"],"dumbbell",True,"hinge","lengthened",True,
+add("Dumbbell Romanian Deadlift","hamstrings",["glutes"],"dumbbell",True,["db rdl"])
+add("Single-Leg Romanian Deadlift","hamstrings",["glutes","core"],"dumbbell",True,
     ["sl rdl","single leg rdl"])
-add("Deficit Deadlift","hamstrings",["glutes","back"],"barbell",True,"hinge","lengthened",False,["deficit dl"])
-add("Trap Bar Deadlift","glutes",["quads","hamstrings","back"],"barbell",True,"hinge","mid",False,
+add("Deficit Deadlift","hamstrings",["glutes","back"],"barbell",True,["deficit dl"])
+add("Trap Bar Deadlift","glutes",["quads","hamstrings","back"],"barbell",True,
     ["hex bar deadlift","trap bar dl"])
-add("Rack Pull","back",["traps","glutes"],"barbell",True,"hinge","shortened",False,["block pull"])
-add("Jefferson Deadlift","glutes",["quads","back"],"barbell",True,"hinge","mid",False,
+add("Rack Pull","back",["traps","glutes"],"barbell",True,["block pull"])
+add("Jefferson Deadlift","glutes",["quads","back"],"barbell",True,
     ["jefferson lift","straddle deadlift"])
-add("Dimel Deadlift","hamstrings",["glutes"],"barbell",True,"hinge","lengthened",False,["dimel"])
-add("Good Morning","hamstrings",["glutes","back"],"barbell",True,"hinge","lengthened",False,["gm"])
-add("Hip Thrust","glutes",["hamstrings"],"barbell",True,"hinge","shortened",False,
+add("Dimel Deadlift","hamstrings",["glutes"],"barbell",True,["dimel"])
+add("Good Morning","hamstrings",["glutes","back"],"barbell",True,["gm"])
+add("Hip Thrust","glutes",["hamstrings"],"barbell",True,
     ["barbell hip thrust","glute bridge","glute drive","nautilus glute drive"])
-add("Machine Hip Thrust","glutes",["hamstrings"],"machine",True,"hinge","shortened",False,
+add("Machine Hip Thrust","glutes",["hamstrings"],"machine",True,
     ["hip thrust machine","glute drive machine","booty builder","glutebuilder","precor glutebuilder"])
-add("Back Extension","back",["glutes","hamstrings"],"bodyweight",False,"hinge","lengthened",False,
+add("Back Extension","back",["glutes","hamstrings"],"bodyweight",False,
     ["hyperextension","45 degree back extension","roman chair"])
-add("Reverse Hyperextension","glutes",["hamstrings","back"],"machine",False,"hinge","shortened",False,["reverse hyper"])
-add("Nordic Curl","hamstrings",[],"bodyweight",False,"hinge","lengthened",False,
+add("Reverse Hyperextension","glutes",["hamstrings","back"],"machine",False,["reverse hyper"])
+add("Nordic Curl","hamstrings",[],"bodyweight",False,
     ["nordic ham curl","nordic hamstring curl"])
-add("Kettlebell Swing","glutes",["hamstrings","back"],"other",True,"hinge","mid",False,["kb swing","swing"])
+add("Kettlebell Swing","glutes",["hamstrings","back"],"other",True,["kb swing","swing"])
 
 # ---------------- HORIZONTAL PRESS ----------------
-add("Barbell Bench Press","chest",["triceps","front delts"],"barbell",True,"h-press","mid",False,
+add("Barbell Bench Press","chest",["triceps","front delts"],"barbell",True,
     ["bench","bench press","flat bench","bb bench"])
-add("Incline Barbell Bench Press","chest",["front delts","triceps"],"barbell",True,"h-press","lengthened",False,
+add("Incline Barbell Bench Press","chest",["front delts","triceps"],"barbell",True,
     ["incline bench","incline barbell"])
-add("Decline Barbell Bench Press","chest",["triceps"],"barbell",True,"h-press","mid",False,["decline bench"])
-add("Dumbbell Bench Press","chest",["triceps","front delts"],"dumbbell",True,"h-press","lengthened",False,
+add("Decline Barbell Bench Press","chest",["triceps"],"barbell",True,["decline bench"])
+add("Dumbbell Bench Press","chest",["triceps","front delts"],"dumbbell",True,
     ["db bench","dumbbell press","flat db press"])
-add("Incline Dumbbell Press","chest",["front delts","triceps"],"dumbbell",True,"h-press","lengthened",False,
+add("Incline Dumbbell Press","chest",["front delts","triceps"],"dumbbell",True,
     ["incline db press","incline dumbbell bench"])
-add("Chest Press Machine","chest",["triceps","front delts"],"machine",True,"h-press","mid",False,
+add("Chest Press Machine","chest",["triceps","front delts"],"machine",True,
     ["machine chest press","hammer strength chest press","iso lateral chest press","hammer chest press",
      "prime chest press","panatta chest press","technogym chest press","seated chest press"])
-add("Incline Press Machine","chest",["front delts","triceps"],"machine",True,"h-press","lengthened",False,
+add("Incline Press Machine","chest",["front delts","triceps"],"machine",True,
     ["machine incline press","iso lateral incline press","hammer strength incline","panatta super inclined"])
-add("Smith Machine Bench Press","chest",["triceps"],"smith",True,"h-press","mid",False,["smith bench"])
-add("Weighted Dip","chest",["triceps","front delts"],"bodyweight",True,"h-press","lengthened",False,
+add("Smith Machine Bench Press","chest",["triceps"],"smith",True,["smith bench"])
+add("Weighted Dip","chest",["triceps","front delts"],"bodyweight",True,
     ["dip","dips","weighted dips","chest dip"])
-add("Larsen Press","chest",["triceps"],"barbell",True,"h-press","mid",False,["larsen bench","legs up bench"])
-add("Spoto Press","chest",["triceps"],"barbell",True,"h-press","mid",False,["spoto bench","paused above chest"])
-add("Guillotine Press","chest",["front delts"],"barbell",True,"h-press","lengthened",False,
+add("Larsen Press","chest",["triceps"],"barbell",True,["larsen bench","legs up bench"])
+add("Spoto Press","chest",["triceps"],"barbell",True,["spoto bench","paused above chest"])
+add("Guillotine Press","chest",["front delts"],"barbell",True,
     ["gironda neck press","neck press"])
-add("Deficit Push-Up","chest",["triceps","front delts"],"bodyweight",False,"h-press","lengthened",False,
+add("Deficit Push-Up","chest",["triceps","front delts"],"bodyweight",False,
     ["deficit pushup","push up on handles","parallette push up"])
-add("Push-Up","chest",["triceps","front delts","core"],"bodyweight",False,"h-press","mid",False,["pushup","press up"])
+add("Push-Up","chest",["triceps","front delts","core"],"bodyweight",False,["pushup","press up"])
 
 # ---------------- VERTICAL PRESS ----------------
-add("Overhead Press","shoulders",["triceps","core"],"barbell",True,"v-press","mid",False,
+add("Overhead Press","shoulders",["triceps","core"],"barbell",True,
     ["ohp","military press","strict press","shoulder press","standing press"])
-add("Seated Barbell Overhead Press","shoulders",["triceps"],"barbell",True,"v-press","mid",False,["seated ohp"])
-add("Dumbbell Shoulder Press","shoulders",["triceps"],"dumbbell",True,"v-press","lengthened",False,
+add("Seated Barbell Overhead Press","shoulders",["triceps"],"barbell",True,["seated ohp"])
+add("Dumbbell Shoulder Press","shoulders",["triceps"],"dumbbell",True,
     ["db shoulder press","dumbbell overhead press"])
-add("Shoulder Press Machine","shoulders",["triceps"],"machine",True,"v-press","mid",False,
+add("Shoulder Press Machine","shoulders",["triceps"],"machine",True,
     ["machine shoulder press","hammer strength shoulder press","iso lateral shoulder press",
      "panatta deltoid press","mts shoulder press"])
-add("Arnold Press","shoulders",["triceps"],"dumbbell",True,"v-press","lengthened",False,["arnold"])
-add("Z-Press","shoulders",["triceps","core"],"barbell",True,"v-press","mid",False,["z press","seated floor press"])
-add("Push Press","shoulders",["triceps","quads"],"barbell",True,"v-press","mid",False,["push jerk"])
-add("Bradford Press","shoulders",["triceps"],"barbell",False,"v-press","mid",False,["bradford"])
-add("Scott Press","shoulders",[],"dumbbell",False,"v-press","shortened",False,["larry scott press"])
-add("Landmine Press","shoulders",["chest","triceps"],"barbell",True,"v-press","mid",True,
+add("Arnold Press","shoulders",["triceps"],"dumbbell",True,["arnold"])
+add("Z-Press","shoulders",["triceps","core"],"barbell",True,["z press","seated floor press"])
+add("Push Press","shoulders",["triceps","quads"],"barbell",True,["push jerk"])
+add("Bradford Press","shoulders",["triceps"],"barbell",False,["bradford"])
+add("Scott Press","shoulders",[],"dumbbell",False,["larry scott press"])
+add("Landmine Press","shoulders",["chest","triceps"],"barbell",True,
     ["landmine shoulder press","half kneeling landmine press"])
 
 # ---------------- HORIZONTAL PULL ----------------
-add("Barbell Row","back",["biceps","rear delts"],"barbell",True,"h-pull","mid",False,
+add("Barbell Row","back",["biceps","rear delts"],"barbell",True,
     ["bent over row","bb row","barbell bent over row"])
-add("Pendlay Row","back",["biceps","rear delts"],"barbell",True,"h-pull","lengthened",False,
+add("Pendlay Row","back",["biceps","rear delts"],"barbell",True,
     ["pendlay","dead stop row"])
-add("Yates Row","back",["biceps"],"barbell",True,"h-pull","mid",False,["yates","underhand barbell row"])
-add("Dumbbell Row","back",["biceps","rear delts"],"dumbbell",True,"h-pull","lengthened",True,
+add("Yates Row","back",["biceps"],"barbell",True,["yates","underhand barbell row"])
+add("Dumbbell Row","back",["biceps","rear delts"],"dumbbell",True,
     ["db row","single arm row","one arm row"])
-add("Kroc Row","back",["biceps","forearms"],"dumbbell",True,"h-pull","lengthened",True,["kroc"])
-add("Meadows Row","back",["biceps","rear delts"],"barbell",True,"h-pull","lengthened",True,
+add("Kroc Row","back",["biceps","forearms"],"dumbbell",True,["kroc"])
+add("Meadows Row","back",["biceps","rear delts"],"barbell",True,
     ["meadows","john meadows row"])
-add("Chest-Supported Row","back",["biceps","rear delts"],"machine",True,"h-pull","mid",False,
+add("Chest-Supported Row","back",["biceps","rear delts"],"machine",True,
     ["hammer strength row","iso lateral row","hammer row","prime row","prime extreme row",
-     "arsenal row","panatta row","seal row","machine row","t bar chest supported row","mts row"])
-add("Seated Cable Row","back",["biceps","rear delts"],"cable",True,"h-pull","lengthened",False,
+     "arsenal row","panatta row","seal row","machine row","t bar chest supported row","mts row",
+     # "hs" is what people actually type for Hammer Strength.
+     "hs row"])
+add("Seated Cable Row","back",["biceps","rear delts"],"cable",True,
     ["cable row","seated row","low row","panatta pulley row"])
-add("T-Bar Row","back",["biceps","rear delts"],"barbell",True,"h-pull","mid",False,["tbar row","t bar row"])
-add("High Row Machine","back",["biceps","rear delts"],"machine",True,"h-pull","lengthened",False,
+add("T-Bar Row","back",["biceps","rear delts"],"barbell",True,["tbar row","t bar row"])
+add("High Row Machine","back",["biceps","rear delts"],"machine",True,
     ["hammer strength high row","iso lateral high row","panatta high row convergent","mts high row"])
-add("Inverted Row","back",["biceps"],"bodyweight",True,"h-pull","mid",False,["body row","australian pull up"])
-add("Kelso Shrug","traps",["rear delts"],"barbell",False,"h-pull","shortened",False,
+add("Inverted Row","back",["biceps"],"bodyweight",True,["body row","australian pull up"])
+add("Kelso Shrug","traps",["rear delts"],"barbell",False,
     ["kelso","bent over shrug","prone shrug"])
-add("Seated Cable Row (single arm)","back",["biceps"],"cable",True,"h-pull","lengthened",True,
+add("Seated Cable Row (single arm)","back",["biceps"],"cable",True,
     ["one arm cable row","single arm row cable"])
 
 # ---------------- VERTICAL PULL ----------------
-add("Weighted Pull-Up","back",["biceps","forearms"],"bodyweight",True,"v-pull","lengthened",False,
+add("Weighted Pull-Up","back",["biceps","forearms"],"bodyweight",True,
     ["weighted pullup"])
-add("Chin-Up","back",["biceps"],"bodyweight",True,"v-pull","lengthened",False,["chinup","chin ups"])
-add("Lat Pulldown","back",["biceps"],"cable",True,"v-pull","lengthened",False,
-    ["pulldown","lat pull down","panatta lat pulldown","hammer strength pulldown","front pulldown","1fe001"])
-add("Neutral-Grip Lat Pulldown","back",["biceps"],"cable",True,"v-pull","lengthened",False,
+add("Chin-Up","back",["biceps"],"bodyweight",True,["chinup","chin ups"])
+add("Lat Pulldown","back",["biceps"],"cable",True,
+    ["pulldown","lat pull down","panatta lat pulldown","hammer strength pulldown","front pulldown","1fe001",
+     # The nameplate on the Hammer Strength unit reads FIXED PULLDOWN. Nobody
+     # says that out loud, but somebody standing in front of the machine and
+     # typing what is written on it must still land here.
+     "fixed pulldown","hammer strength fixed pulldown"])
+add("Neutral-Grip Lat Pulldown","back",["biceps"],"cable",True,
     ["hammer grip pulldown","parallel grip pulldown"])
-add("Single-Arm Lat Pulldown","back",["biceps"],"cable",True,"v-pull","lengthened",True,
+add("Single-Arm Lat Pulldown","back",["biceps"],"cable",True,
     ["one arm pulldown","unilateral pulldown","pw623"])
-add("Cross-Body Lat Pulldown","back",["biceps"],"cable",True,"v-pull","lengthened",True,
+add("Cross-Body Lat Pulldown","back",["biceps"],"cable",True,
     ["crossbody pulldown","across body pulldown"])
-add("Sternum Chin-Up","back",["biceps"],"bodyweight",True,"v-pull","shortened",False,["gironda chin up"])
-add("Cable Lat Prayer","back",[],"cable",False,"v-pull","lengthened",False,
+add("Sternum Chin-Up","back",["biceps"],"bodyweight",True,["gironda chin up"])
+add("Cable Lat Prayer","back",[],"cable",False,
     ["lat prayer","kneeling cable pullover","straight arm kneeling pulldown"])
-add("Straight-Arm Pulldown","back",[],"cable",False,"v-pull","mid",False,
+add("Straight-Arm Pulldown","back",[],"cable",False,
     ["straight arm lat pulldown","cable pullover standing"])
-add("Machine Pullover","back",[],"machine",False,"v-pull","lengthened",False,
+add("Machine Pullover","back",[],"machine",False,
     ["pullover machine","nautilus pullover","hammer strength pullover","panatta pullover","1fe039"])
-add("Dumbbell Pullover","back",["chest"],"dumbbell",False,"v-pull","lengthened",False,["db pullover"])
+add("Dumbbell Pullover","back",["chest"],"dumbbell",False,["db pullover"])
 
 # ---------------- SHOULDERS: ISOLATION ----------------
-add("Dumbbell Lateral Raise","shoulders",[],"dumbbell",False,"lateral","shortened",False,
+add("Dumbbell Lateral Raise","shoulders",[],"dumbbell",False,
     ["lateral raise","side raise","lat raise","db lateral raise"])
-add("Cable Lateral Raise","shoulders",[],"cable",False,"lateral","lengthened",True,
+add("Cable Lateral Raise","shoulders",[],"cable",False,
     ["cable side raise","one arm cable lateral"])
-add("Behind-the-Back Cable Lateral Raise","shoulders",[],"cable",False,"lateral","lengthened",True,
+add("Behind-the-Back Cable Lateral Raise","shoulders",[],"cable",False,
     ["btb cable lateral","cuffed lateral raise","behind back lateral raise"])
-add("Cross-Body Cable Lateral Raise","shoulders",[],"cable",False,"lateral","lengthened",True,
+add("Cross-Body Cable Lateral Raise","shoulders",[],"cable",False,
     ["crossbody lateral raise","across body raise"])
-add("Lean-Away Lateral Raise","shoulders",[],"dumbbell",False,"lateral","lengthened",True,
+add("Lean-Away Lateral Raise","shoulders",[],"dumbbell",False,
     ["lean away raise"])
-add("Machine Lateral Raise","shoulders",[],"machine",False,"lateral","shortened",False,
+add("Machine Lateral Raise","shoulders",[],"machine",False,
     ["lateral raise machine","standing lateral raise machine","atlantis lateral raise","watson lateral raise",
-     "hammer strength lateral raise","panatta lateral deltoid"])
-add("Cable Y-Raise","shoulders",["traps"],"cable",False,"lateral","mid",False,["y raise","scaption cable"])
-add("Poliquin Lateral Raise","shoulders",[],"dumbbell",False,"lateral","shortened",False,["poliquin raise"])
-add("Front Raise","shoulders",[],"dumbbell",False,"lateral","mid",False,["db front raise"])
-add("Rear Delt Fly","shoulders",["back"],"dumbbell",False,"h-pull","shortened",False,
+     "hammer strength lateral raise","panatta lateral deltoid",
+     # Brand shorthand, both forms. The bare term "lateral raise" belongs to
+     # the dumbbell row and is deliberately NOT claimed here.
+     "hammer lateral raise","hs lateral raise"])
+add("Cable Y-Raise","shoulders",["traps"],"cable",False,["y raise","scaption cable"])
+add("Poliquin Lateral Raise","shoulders",[],"dumbbell",False,["poliquin raise"])
+add("Front Raise","shoulders",[],"dumbbell",False,["db front raise"])
+add("Rear Delt Fly","shoulders",["back"],"dumbbell",False,
     ["reverse fly","rear delt raise","bent over fly"])
-add("Reverse Pec Deck","shoulders",["back"],"machine",False,"h-pull","shortened",False,
+add("Reverse Pec Deck","shoulders",["back"],"machine",False,
     ["rear delt machine","reverse fly machine","rear delt pec deck"])
-add("Reverse Cable Crossover","shoulders",["back"],"cable",False,"h-pull","lengthened",False,
+add("Reverse Cable Crossover","shoulders",["back"],"cable",False,
     ["cable rear delt fly","reverse crossover"])
-add("Face Pull","shoulders",["back"],"cable",False,"h-pull","mid",False,["face pulls","rope face pull"])
-add("Svend Press","chest",["front delts"],"other",False,"h-press","shortened",False,["plate pinch press"])
+add("Face Pull","shoulders",["back"],"cable",False,["face pulls","rope face pull"])
+add("Svend Press","chest",["front delts"],"other",False,["plate pinch press"])
 
 # ---------------- CHEST: ISOLATION ----------------
-add("Cable Chest Fly","chest",[],"cable",False,"h-press","lengthened",False,
+add("Cable Chest Fly","chest",[],"cable",False,
     ["cable fly","pec fly","chest fly","cable crossover"])
-add("Low-to-High Cable Fly","chest",[],"cable",False,"h-press","shortened",False,["low cable fly","incline cable fly"])
-add("High-to-Low Cable Fly","chest",[],"cable",False,"h-press","shortened",False,["high cable fly","decline cable fly"])
-add("Pec Deck","chest",[],"machine",False,"h-press","mid",False,
+add("Low-to-High Cable Fly","chest",[],"cable",False,["low cable fly","incline cable fly"])
+add("High-to-Low Cable Fly","chest",[],"cable",False,["high cable fly","decline cable fly"])
+add("Pec Deck","chest",[],"machine",False,
     ["pec deck machine","butterfly machine","panatta pectoral","nautilus pec fly"])
-add("Dumbbell Fly","chest",[],"dumbbell",False,"h-press","lengthened",False,["db fly","flat fly"])
-add("Incline Dumbbell Fly","chest",[],"dumbbell",False,"h-press","lengthened",False,["incline fly"])
-add("Cable Press-Around","chest",["front delts"],"cable",False,"h-press","shortened",True,["press around","cable adduction"])
-add("Seated Cable Pec Fly","chest",[],"cable",False,"h-press","lengthened",False,["chest supported cable fly"])
+add("Dumbbell Fly","chest",[],"dumbbell",False,["db fly","flat fly"])
+add("Incline Dumbbell Fly","chest",[],"dumbbell",False,["incline fly"])
+add("Cable Press-Around","chest",["front delts"],"cable",False,["press around","cable adduction"])
+add("Seated Cable Pec Fly","chest",[],"cable",False,["chest supported cable fly"])
 
 # ---------------- BICEPS ----------------
-add("Barbell Curl","biceps",["forearms"],"barbell",False,"elbow-flex","mid",False,["bicep curl","bb curl"])
-add("EZ-Bar Curl","biceps",["forearms"],"barbell",False,"elbow-flex","mid",False,["ez curl"])
-add("Dumbbell Curl","biceps",["forearms"],"dumbbell",False,"elbow-flex","mid",False,
+add("Barbell Curl","biceps",["forearms"],"barbell",False,["bicep curl","bb curl"])
+add("EZ-Bar Curl","biceps",["forearms"],"barbell",False,["ez curl"])
+add("Dumbbell Curl","biceps",["forearms"],"dumbbell",False,
     ["db curl","alternating curl","standing db curl"])
-add("Incline Dumbbell Curl","biceps",[],"dumbbell",False,"elbow-flex","lengthened",False,
+add("Incline Dumbbell Curl","biceps",[],"dumbbell",False,
     ["incline curl","seated incline curl"])
-add("Bayesian Curl","biceps",[],"cable",False,"elbow-flex","lengthened",True,
+add("Bayesian Curl","biceps",[],"cable",False,
     ["bayesian cable curl","behind body cable curl","facing away cable curl"])
-add("Preacher Curl","biceps",[],"barbell",False,"elbow-flex","lengthened",False,
+add("Preacher Curl","biceps",[],"barbell",False,
     ["ez bar preacher curl","scott curl","scott bench curl","b856"])
-add("Machine Preacher Curl","biceps",[],"machine",False,"elbow-flex","lengthened",False,
+add("Machine Preacher Curl","biceps",[],"machine",False,
     ["preacher curl machine","panatta curling","hammer strength biceps curl","mts biceps curl"])
-add("Hammer Curl","biceps",["forearms"],"dumbbell",False,"elbow-flex","mid",False,["hammer curls","neutral grip curl"])
-add("Cable Curl","biceps",["forearms"],"cable",False,"elbow-flex","mid",False,["standing cable curl"])
-add("Zottman Curl","biceps",["forearms"],"dumbbell",False,"elbow-flex","mid",False,["zottman"])
-add("Drag Curl","biceps",[],"barbell",False,"elbow-flex","shortened",False,["gironda drag curl"])
-add("Spider Curl","biceps",[],"dumbbell",False,"elbow-flex","shortened",False,["prone incline curl"])
-add("Concentration Curl","biceps",[],"dumbbell",False,"elbow-flex","mid",True,["conc curl"])
-add("Reverse Curl","forearms",["biceps"],"barbell",False,"elbow-flex","mid",False,["pronated curl"])
+add("Hammer Curl","biceps",["forearms"],"dumbbell",False,["hammer curls","neutral grip curl"])
+add("Cable Curl","biceps",["forearms"],"cable",False,["standing cable curl"])
+add("Zottman Curl","biceps",["forearms"],"dumbbell",False,["zottman"])
+add("Drag Curl","biceps",[],"barbell",False,["gironda drag curl"])
+add("Spider Curl","biceps",[],"dumbbell",False,["prone incline curl"])
+add("Concentration Curl","biceps",[],"dumbbell",False,["conc curl"])
+add("Reverse Curl","forearms",["biceps"],"barbell",False,["pronated curl"])
 
 # ---------------- TRICEPS ----------------
-add("Triceps Pushdown","triceps",[],"cable",False,"elbow-ext","shortened",False,
+add("Triceps Pushdown","triceps",[],"cable",False,
     ["tricep pushdown","rope pushdown","pushdown","cable pushdown"])
-add("Overhead Cable Triceps Extension","triceps",[],"cable",False,"elbow-ext","lengthened",False,
+add("Overhead Cable Triceps Extension","triceps",[],"cable",False,
     ["overhead rope extension","cable overhead extension"])
-add("Overhead Dumbbell Extension","triceps",[],"dumbbell",False,"elbow-ext","lengthened",False,
+add("Overhead Dumbbell Extension","triceps",[],"dumbbell",False,
     ["french press","db overhead extension","seated overhead extension"])
-add("Skull Crusher","triceps",[],"barbell",False,"elbow-ext","lengthened",False,
+add("Skull Crusher","triceps",[],"barbell",False,
     ["lying triceps extension","ez bar skullcrusher"])
-add("JM Press","triceps",["chest"],"barbell",True,"elbow-ext","mid",False,["jm","jm blakley press"])
-add("Close-Grip Bench Press","triceps",["chest"],"barbell",True,"h-press","mid",False,["cgbp","close grip bench"])
-add("Katana Cable Extension","triceps",[],"cable",False,"elbow-ext","lengthened",False,
+add("JM Press","triceps",["chest"],"barbell",True,["jm","jm blakley press"])
+add("Close-Grip Bench Press","triceps",["chest"],"barbell",True,["cgbp","close grip bench"])
+add("Katana Cable Extension","triceps",[],"cable",False,
     ["katana extension","crossed cable triceps"])
-add("Tate Press","triceps",[],"dumbbell",False,"elbow-ext","mid",False,["tate"])
-add("Triceps Extension Machine","triceps",[],"machine",False,"elbow-ext","mid",False,
+add("Tate Press","triceps",[],"dumbbell",False,["tate"])
+add("Triceps Extension Machine","triceps",[],"machine",False,
     ["machine triceps extension","panatta french press","mts triceps extension","t262"])
-add("Bench Dip","triceps",["front delts"],"bodyweight",False,"elbow-ext","lengthened",False,["tricep dip bench"])
+add("Bench Dip","triceps",["front delts"],"bodyweight",False,["tricep dip bench"])
 
 # ---------------- LEGS: ISOLATION ----------------
-add("Leg Extension","quads",[],"machine",False,"knee-ext","shortened",False,
+add("Leg Extension","quads",[],"machine",False,
     ["quad extension","leg extensions","panatta leg extension","prime leg extension"])
-add("Lying Leg Curl","hamstrings",[],"machine",False,"knee-flex","shortened",False,
+add("Lying Leg Curl","hamstrings",[],"machine",False,
     ["leg curl","hamstring curl","prone leg curl"])
-add("Seated Leg Curl","hamstrings",[],"machine",False,"knee-flex","lengthened",False,["seated hamstring curl"])
-add("Reverse Nordic Curl","quads",[],"bodyweight",False,"knee-ext","lengthened",False,
+add("Seated Leg Curl","hamstrings",[],"machine",False,["seated hamstring curl"])
+add("Reverse Nordic Curl","quads",[],"bodyweight",False,
     ["reverse nordic","kneeling quad stretch curl"])
-add("Standing Calf Raise","calves",[],"machine",False,"calf","lengthened",False,["calf raise","calves"])
-add("Seated Calf Raise","calves",[],"machine",False,"calf","lengthened",False,["soleus raise"])
-add("Leg Press Calf Raise","calves",[],"machine",False,"calf","lengthened",False,["calf press"])
-add("Tibialis Raise","calves",[],"other",False,"calf","shortened",False,["tib raise","dorsiflexion raise"])
-add("Hip Abduction","glutes",[],"machine",False,"abduction","shortened",False,
+add("Standing Calf Raise","calves",[],"machine",False,["calf raise","calves"])
+add("Seated Calf Raise","calves",[],"machine",False,["soleus raise"])
+add("Leg Press Calf Raise","calves",[],"machine",False,["calf press"])
+add("Tibialis Raise","calves",[],"other",False,["tib raise","dorsiflexion raise"])
+add("Hip Abduction","glutes",[],"machine",False,
     ["abductor machine","hip abductor","pw429"])
-add("Hip Adduction","quads",[],"machine",False,"abduction","lengthened",False,["adductor machine"])
-add("Cable Kickback","glutes",["hamstrings"],"cable",False,"hinge","shortened",True,["cable glute kickback"])
+add("Hip Adduction","quads",[],"machine",False,["adductor machine"])
+add("Cable Kickback","glutes",["hamstrings"],"cable",False,["cable glute kickback"])
 
 # ---------------- TRAPS / NECK / CORE ----------------
-add("Barbell Shrug","traps",["forearms"],"barbell",False,"shrug","shortened",False,["shrugs","trap shrug"])
-add("Dumbbell Shrug","traps",["forearms"],"dumbbell",False,"shrug","shortened",False,["db shrug"])
-add("Haney Shrug","traps",[],"barbell",False,"shrug","shortened",False,["behind the back shrug","haney"])
-add("Cable Crunch","core",[],"cable",False,"trunk-flex","shortened",False,["kneeling cable crunch","rope crunch"])
-add("Hanging Leg Raise","core",[],"bodyweight",False,"trunk-flex","lengthened",False,
+add("Barbell Shrug","traps",["forearms"],"barbell",False,["shrugs","trap shrug"])
+add("Dumbbell Shrug","traps",["forearms"],"dumbbell",False,["db shrug"])
+add("Haney Shrug","traps",[],"barbell",False,["behind the back shrug","haney"])
+add("Cable Crunch","core",[],"cable",False,["kneeling cable crunch","rope crunch"])
+add("Hanging Leg Raise","core",[],"bodyweight",False,
     ["leg raise","hanging knee raise","toes to bar"])
-add("Plank","core",[],"bodyweight",False,"anti-ext","mid",False,["front plank"])
-add("Ab Wheel Rollout","core",[],"other",False,"anti-ext","lengthened",False,["ab wheel","rollout"])
-add("Pallof Press","core",[],"cable",False,"anti-rot","mid",True,["anti rotation press"])
-add("Machine Crunch","core",[],"machine",False,"trunk-flex","shortened",False,
+add("Plank","core",[],"bodyweight",False,["front plank"])
+add("Ab Wheel Rollout","core",[],"other",False,["ab wheel","rollout"])
+add("Pallof Press","core",[],"cable",False,["anti rotation press"])
+add("Machine Crunch","core",[],"machine",False,
     ["ab crunch machine","abdominal machine","mts abdominal crunch"])
-add("Rotary Torso","core",[],"machine",False,"anti-rot","mid",False,["torso rotation machine"])
+add("Rotary Torso","core",[],"machine",False,["torso rotation machine"])
 
 # ---------------- OLYMPIC / POWER ----------------
-add("Power Clean","back",["quads","traps","shoulders"],"barbell",True,"pull","mid",False,["power cleans"])
-add("Hang Clean","back",["quads","traps"],"barbell",True,"pull","mid",False,["hang power clean"])
-add("Power Snatch","shoulders",["back","quads","traps"],"barbell",True,"pull","mid",False,[])
-add("Barbell Jammer","shoulders",["chest","triceps"],"barbell",True,"v-press","mid",False,
+add("Power Clean","back",["quads","traps","shoulders"],"barbell",True,["power cleans"])
+add("Hang Clean","back",["quads","traps"],"barbell",True,["hang power clean"])
+add("Power Snatch","shoulders",["back","quads","traps"],"barbell",True,[])
+add("Barbell Jammer","shoulders",["chest","triceps"],"barbell",True,
     ["ground base jammer","jammer press","1hp534","landmine jammer"])
 
 
 
 async def run(dry_run: bool, pattern: str | None) -> None:
-    selected = [e for e in E if not pattern or e[5] == pattern]
+    # `--pattern` filters on the movement detail, which now lives beside the
+    # rest of the classification rather than in the tuples here. Looked up
+    # rather than duplicated: one fact, one home.
+    selected = [
+        e
+        for e in E
+        if not pattern or MOVEMENT_ATTRIBUTES.get(e[0], (None,))[0] == pattern
+    ]
     rows = [
         {
             "name": name,
@@ -371,21 +394,18 @@ async def run(dry_run: bool, pattern: str | None) -> None:
             "equipment": equip,
             "is_compound": comp,
             # THE MOVEMENT PATTERN AND RESISTANCE PROFILE ARE NOT ALIASES.
-            # They used to be folded in here, so that "hinge" and
-            # "lengthened" were searchable without new columns. That was a
-            # shortcut and it cost more than it saved: an alias list is the
-            # search index, so every one of these 155 rows answered to a
-            # classification token. Searching "mid" returned 58 unrelated
-            # movements, and alias search is the one thing the exercise/
-            # station split depends on being precise.
+            # They used to be folded in here so that "hinge" and "lengthened"
+            # were searchable without new columns. An alias list is the search
+            # index, so every one of these rows then answered to a
+            # classification token: "mid" returned 58 unrelated movements, and
+            # alias search is the one thing the exercise/station split depends
+            # on being precise.
             #
-            # They stay in the tuple above -- this file remains the source of
-            # truth for both -- and land in `exercise_attributes` once that
-            # table has a resistance-profile column and a movement-pattern
-            # vocabulary wide enough for all 19 values used here.
+            # They now live in `data/movement_attributes.py` and are written to
+            # `exercise_attributes` by `seed_exercise_attributes.py`.
             "aliases": sorted(set(aliases)),
         }
-        for (name, muscle, sec, equip, comp, pat, profile, uni, aliases) in selected
+        for (name, muscle, sec, equip, comp, aliases) in selected
     ]
 
     log.info(
@@ -394,7 +414,16 @@ async def run(dry_run: bool, pattern: str | None) -> None:
         sum(1 for r in rows if r["is_compound"]),
         sum(len(r["aliases"]) for r in rows),
     )
-    log.info("patterns: %s", dict(Counter(e[5] for e in selected).most_common(6)))
+    log.info(
+        "patterns: %s",
+        dict(
+            Counter(
+                MOVEMENT_ATTRIBUTES[e[0]][0]
+                for e in selected
+                if e[0] in MOVEMENT_ATTRIBUTES
+            ).most_common(6)
+        ),
+    )
 
     if dry_run:
         log.info("--dry-run: nothing written")

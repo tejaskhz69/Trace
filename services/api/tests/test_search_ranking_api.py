@@ -386,3 +386,310 @@ async def test_no_internal_fields_leak_into_the_response(client, db_session):
     for banned in ("search_text", "name_normalized", "gtin14", "log_count",
                    "created_by_user_id", "moderation_status"):
         assert banned not in r, banned
+
+
+# ------------------------------------------- server-composed attribution
+#
+# `source_name` and `attribution` are composed by services/licensing.py and
+# sent down with every result. They exist because the client used to hold its
+# own copy of the source->wording mapping and the copy drifted: `nutritionix`
+# reached the API and never reached the client, so metered rows rendered
+# "SOURCE UNKNOWN" -- dropping a credit owed by contract, silently, in a way
+# no user could detect. These tests are the guard on the replacement.
+
+
+async def test_off_row_carries_open_food_facts_attribution(client, db_session):
+    headers = await _register(client)
+    await _food(db_session, "Attrib off", search_text="attribone thing",
+                source="openfoodfacts", licence="odbl", tier=6)
+    await db_session.commit()
+
+    r = (await _search(client, headers, "attribone thing"))[0]
+    assert r["source_name"] == "Open Food Facts"
+    assert "Open Food Facts" in r["attribution"]
+    assert "Open Database License (ODbL)" in r["attribution"]
+
+
+async def test_usda_row_is_credited_public_domain_not_odbl(client, db_session):
+    headers = await _register(client)
+    await _food(db_session, "Attrib usda", search_text="attribtwo thing",
+                source="usda_fdc", licence="public-domain", tier=2)
+    await db_session.commit()
+
+    r = (await _search(client, headers, "attribtwo thing"))[0]
+    assert r["source_name"] == "USDA FoodData Central"
+    assert "public domain" in r["attribution"]
+    assert "ODbL" not in r["attribution"]
+    assert "Open Food Facts" not in r["attribution"]
+
+
+@pytest.mark.parametrize("source,licence", [
+    ("curated", "user"),
+    ("user", "user"),
+    ("ai_estimated", "user"),
+])
+async def test_our_own_rows_carry_no_attribution(
+    client, db_session, source, licence
+):
+    """`attribution: null` is the signal to render nothing.
+
+    An empty string would render an empty notice with a divider above it, and
+    labelling our own dish as somebody else's data is the error this whole
+    feature exists to prevent.
+    """
+    headers = await _register(client)
+    await _food(db_session, "Ours", search_text=f"ourrow {source}",
+                source=source, licence=licence, tier=5)
+    await db_session.commit()
+
+    r = (await _search(client, headers, f"ourrow {source}"))[0]
+    assert r["attribution"] is None
+    assert r["source_name"] is not None       # we still know WHAT it is
+    assert "Open Food Facts" not in (r["source_name"] or "")
+
+
+async def test_metered_source_is_credited_rather_than_called_unknown(
+    client, db_session
+):
+    """The regression that motivated moving this to the server."""
+    headers = await _register(client)
+    await _food(db_session, "Metered", search_text="meteredrow thing",
+                source="nutritionix", licence="proprietary", tier=3)
+    await db_session.commit()
+
+    r = (await _search(client, headers, "meteredrow thing"))[0]
+    assert r["source_name"] == "Nutritionix"
+    assert "Nutritionix" in r["attribution"]
+    assert "unknown" not in r["attribution"].lower()
+
+
+async def test_a_row_with_an_unrecorded_licence_says_so(client, db_session):
+    """Must not inherit ODbL from the source table.
+
+    The row's own column is the authority; the mapping is only a fallback.
+    """
+    headers = await _register(client)
+    await _food(db_session, "No licence", search_text="nolicrow thing",
+                source="openfoodfacts", licence="unknown", tier=6)
+    await db_session.commit()
+
+    r = (await _search(client, headers, "nolicrow thing"))[0]
+    assert "Open Food Facts" in r["attribution"]
+    assert "licence not recorded" in r["attribution"]
+    assert "ODbL" not in r["attribution"]
+
+
+async def test_an_unparseable_licence_degrades_instead_of_500ing(
+    client, db_session
+):
+    """`source_licence` is a plain text column, so a hand-edited or
+    future value must not take search down."""
+    headers = await _register(client)
+    await _food(db_session, "Odd licence", search_text="oddlicrow thing",
+                source="openfoodfacts", licence="cc-by-sa-9.9", tier=6)
+    await db_session.commit()
+
+    r = (await _search(client, headers, "oddlicrow thing"))[0]
+    assert r["source_name"] == "Open Food Facts"
+    assert "licence not recorded" in r["attribution"]
+    # The stored value is still reported verbatim -- we do not rewrite data.
+    assert r["source_licence"] == "cc-by-sa-9.9"
+
+
+async def test_mixed_source_results_are_attributed_per_row(client, db_session):
+    """The whole reason attribution is per row and not a blanket notice."""
+    headers = await _register(client)
+    await _food(db_session, "Mix off", search_text="mixattrib thing",
+                source="openfoodfacts", licence="odbl")
+    await _food(db_session, "Mix usda", search_text="mixattrib thing",
+                source="usda_fdc", licence="public-domain")
+    await _food(db_session, "Mix ours", search_text="mixattrib thing",
+                source="curated", licence="user")
+    await db_session.commit()
+
+    rows = await _search(client, headers, "mixattrib thing")
+    by_name = {r["source_name"]: r["attribution"] for r in rows}
+    assert len(rows) == 3
+    assert "Open Database License (ODbL)" in by_name["Open Food Facts"]
+    assert "public domain" in by_name["USDA FoodData Central"]
+    assert by_name["Trace"] is None
+    # No row borrows another row's credit.
+    assert "Open Food Facts" not in (by_name["USDA FoodData Central"] or "")
+
+
+async def test_attribution_never_leaks_ids_urls_or_credentials(
+    client, db_session
+):
+    headers = await _register(client)
+    await _food(db_session, "Leak check", search_text="leakattrib thing",
+                source="openfoodfacts", licence="odbl")
+    await db_session.commit()
+
+    r = (await _search(client, headers, "leakattrib thing"))[0]
+    text_shown = f"{r['source_name']} {r['attribution']}"
+    for banned in ("http://", "https://", "postgres", "@", "key", "token",
+                   "password", r["id"]):
+        assert banned not in text_shown.lower(), banned
+
+
+async def test_attribution_fields_are_optional_for_older_clients(
+    client, db_session
+):
+    """Additive and nullable: a client that has never heard of these fields
+    keeps working, which is why they were added rather than replacing
+    `source` and `source_licence`."""
+    headers = await _register(client)
+    await _food(db_session, "Back compat", search_text="backcompat thing",
+                source="openfoodfacts", licence="odbl")
+    await db_session.commit()
+
+    r = (await _search(client, headers, "backcompat thing"))[0]
+    for legacy in ("source", "source_licence", "verification_tier",
+                   "matched_via", "matched_alias"):
+        assert legacy in r, legacy
+
+
+# ------------------------------------- attribution on every food-bearing route
+#
+# `/search` was the only endpoint that attributed anything. The other five
+# built a FoodItemPublic directly and returned no credit at all -- including
+# `/barcode/{barcode}`, which is the most Open-Food-Facts-heavy route there is:
+# scanning a packaged product is precisely how an ODbL row reaches a screen.
+# A credit that is correct on one route and missing on another is worse than
+# one that is consistently wrong, because nobody notices.
+
+
+async def test_barcode_lookup_carries_attribution(client, db_session):
+    """The route where ODbL data most often surfaces."""
+    headers = await _register(client)
+    code = "5000112552126"
+    await db_session.execute(text("""
+        INSERT INTO food_items
+            (id, source, name, barcode, calories, protein_g, carbs_g, fat_g,
+             fiber_g, sugar_g, sodium_mg, saturated_fat_g, is_liquid,
+             serving_sizes, countries, micronutrients, names_i18n,
+             data_quality, is_verified, moderation_status, search_text,
+             log_count, source_licence, verification_tier, name_normalized,
+             created_at, updated_at)
+        VALUES
+            (:id, 'openfoodfacts', 'Scanned cola', :code, 42, 0, 10, 0,
+             0, 10, 0, 0, true,
+             '[]'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb,
+             0.5, false, 'approved', 'scanned cola',
+             0, 'odbl', 6, 'scanned cola', now(), now())
+    """), {"id": str(uuid.uuid4()), "code": code})
+    await db_session.commit()
+
+    res = await client.get(f"/api/foods/barcode/{code}", headers=headers)
+    assert res.status_code == 200, res.text
+    item = res.json()["item"]
+    assert item["source_name"] == "Open Food Facts"
+    assert "Open Database License (ODbL)" in item["attribution"]
+    assert item["source_licence"] == "odbl"
+
+
+async def test_recent_foods_carry_attribution(client, db_session):
+    """A re-logged food is displayed exactly like a searched one.
+
+    Logged through the real endpoint rather than a hand-written INSERT: the
+    snapshot columns on `meal_logs` are the router's business, and a fixture
+    that guesses at them tests the fixture.
+    """
+    headers = await _register(client)
+    fid = await _food(db_session, "Recent off", search_text="recentoff thing",
+                      source="openfoodfacts", licence="odbl", tier=6)
+    await db_session.commit()
+
+    logged = await client.post("/api/meals/log", headers=headers,
+                               json={"food_item_id": fid, "grams": 100})
+    assert logged.status_code == 201, logged.text
+
+    res = await client.get("/api/foods/recent", headers=headers)
+    assert res.status_code == 200, res.text
+    rows = [r for r in res.json() if r["id"] == fid]
+    assert rows, "the logged food did not come back from /recent"
+    assert rows[0]["source_name"] == "Open Food Facts"
+    assert "ODbL" in rows[0]["attribution"]
+
+
+async def test_a_custom_food_is_not_labelled_as_third_party_data(
+    client, db_session
+):
+    headers = await _register(client)
+    res = await client.post("/api/foods/custom", headers=headers, json={
+        "name": "My own protein shake",
+        "calories": 180, "protein_g": 30, "carbs_g": 5, "fat_g": 3,
+    })
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["source"] == "user"
+    assert body["attribution"] is None
+    assert body["source_name"] == "You"
+
+
+def test_every_food_bearing_route_uses_the_same_serialiser():
+    """Structural: nothing may build a FoodItemPublic by hand again.
+
+    Asserted on the module rather than by exercising all six routes, because
+    the failure mode is a NEW route added later that forgets -- and no test of
+    the existing five would catch that.
+
+    OVER THE AST, NOT OVER THE TEXT. A `src.count(...)` version of this test
+    matched the phrase inside `_public`'s own docstring and failed on prose
+    while the code was correct. A structural test that greps is a structural
+    test that lies.
+    """
+    import ast
+    import inspect
+
+    from app.routers import foods as foods_module
+
+    tree = ast.parse(inspect.getsource(foods_module))
+
+    def calls_in(node) -> int:
+        return sum(
+            1
+            for n in ast.walk(node)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "model_validate"
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "FoodItemPublic"
+        )
+
+    total = calls_in(tree)
+    inside = sum(
+        calls_in(fn)
+        for fn in ast.walk(tree)
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and fn.name == "_public"
+    )
+    assert total == inside == 1, (
+        f"{total - inside} food(s) are serialised outside _public(), so they "
+        "will be returned without attribution"
+    )
+
+
+def test_an_unmapped_source_sends_no_composed_attribution():
+    """The handoff contract, at its one dangerous edge.
+
+    The client reads `source_name` as "this response carries composed
+    attribution" and `attribution: null` as "nothing to credit". A placeholder
+    name plus a null sentence would therefore make an UNKNOWN source render as
+    SILENTLY OURS. Sending neither field makes the client fall back to its own
+    table, which says SOURCE UNKNOWN.
+
+    `test_every_source_is_mapped` means production cannot reach this. It is
+    tested because "unreachable" and "safe when reached" are different claims.
+    """
+    from app.services.licensing import (
+        DISPLAY_NAMES,
+        attribution_line,
+        display_name_for,
+    )
+
+    unmapped = "some_feed_added_next_year"
+    assert unmapped not in DISPLAY_NAMES
+    # What _public() sends for it:
+    assert (display_name_for(unmapped) if unmapped in DISPLAY_NAMES else None) is None
+    assert attribution_line(unmapped) is None

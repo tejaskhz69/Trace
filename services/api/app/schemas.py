@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from .models import FoodSource, GoalType, MealType, RecipeVisibility, Verdict
-
 
 # ---------------------------------------------------------------------------
 # Auth
@@ -18,14 +17,14 @@ from .models import FoodSource, GoalType, MealType, RecipeVisibility, Verdict
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=256)
-    display_name: Optional[str] = None
-    sex: Optional[str] = None
-    height_cm: Optional[float] = Field(default=None, gt=50, lt=280)
-    weight_kg: Optional[float] = Field(default=None, gt=20, lt=400)
-    goal_weight_kg: Optional[float] = Field(default=None, gt=20, lt=400)
+    display_name: str | None = None
+    sex: str | None = None
+    height_cm: float | None = Field(default=None, gt=50, lt=280)
+    weight_kg: float | None = Field(default=None, gt=20, lt=400)
+    goal_weight_kg: float | None = Field(default=None, gt=20, lt=400)
     goal_type: GoalType = GoalType.maintain
-    lifting_experience_months: Optional[int] = Field(default=0, ge=0, le=1200)
-    device_label: Optional[str] = None
+    lifting_experience_months: int | None = Field(default=0, ge=0, le=1200)
+    device_label: str | None = None
 
     @field_validator("password")
     @classmethod
@@ -38,7 +37,7 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    device_label: Optional[str] = None
+    device_label: str | None = None
 
 
 class RefreshRequest(BaseModel):
@@ -48,9 +47,9 @@ class RefreshRequest(BaseModel):
 class UserPublic(BaseModel):
     id: str
     email: str
-    display_name: Optional[str] = None
-    sex: Optional[str] = None
-    height_cm: Optional[float] = None
+    display_name: str | None = None
+    sex: str | None = None
+    height_cm: float | None = None
     goal_type: GoalType
     is_pro: bool
     lifting_experience_months: int
@@ -59,7 +58,7 @@ class UserPublic(BaseModel):
     # not been completed, so the app sends them to onboarding instead of the
     # tabs. It lives on the user rather than in local storage so a reinstall
     # or a second device doesn't re-ask questions they already answered.
-    onboarded_at: Optional[datetime] = None
+    onboarded_at: datetime | None = None
 
 
 class AuthResponse(BaseModel):
@@ -84,8 +83,8 @@ class ServingSize(BaseModel):
 class FoodItemPublic(BaseModel):
     id: str
     name: str
-    brand: Optional[str] = None
-    barcode: Optional[str] = None
+    brand: str | None = None
+    barcode: str | None = None
     source: FoodSource
     calories: float
     protein_g: float
@@ -95,7 +94,7 @@ class FoodItemPublic(BaseModel):
     sugar_g: float
     is_liquid: bool
     serving_sizes: list[dict[str, Any]] = []
-    cuisine: Optional[str] = None
+    cuisine: str | None = None
     data_quality: float
     is_verified: bool
 
@@ -103,17 +102,25 @@ class FoodItemPublic(BaseModel):
     #: Licence of THIS row's nutrition data. Per-row, never global: the
     #: catalogue mixes ODbL (Open Food Facts), public-domain (USDA) and
     #: user-curated data, and labelling them alike would be wrong.
-    source_licence: Optional[str] = None
+    source_licence: str | None = None
     #: 1..7, lower is better evidence. See services/licensing.py.
-    verification_tier: Optional[int] = None
+    verification_tier: int | None = None
     #: Deterministic upstream URL where one exists, else None. Never invented.
-    source_url: Optional[str] = None
+    source_url: str | None = None
     #: How this row was reached: 'direct' or 'alias'. Provenance for the
     #: result, not a ranking input.
-    matched_via: Optional[str] = None
+    matched_via: str | None = None
     #: The alias text that matched, when matched_via == 'alias'. Without this
     #: the UI cannot say WHY a search for 'avalakki' returned Poha.
-    matched_alias: Optional[str] = None
+    matched_alias: str | None = None
+    #: What to CALL this row's source in front of a user, e.g. 'Open Food
+    #: Facts'. Server-owned because the client used to keep its own copy of
+    #: this mapping and it drifted -- see services/licensing.DISPLAY_NAMES.
+    source_name: str | None = None
+    #: The credit sentence to display, or None when no third party is owed
+    #: one. None is meaningful: it is how a curated or user-created row says
+    #: "do not label me as somebody else's data".
+    attribution: str | None = None
 
 
 class FoodSearchResponse(BaseModel):
@@ -126,15 +133,34 @@ class FoodSearchResponse(BaseModel):
 class BarcodeResolveResponse(BaseModel):
     found: bool
     barcode: str
-    item: Optional[FoodItemPublic] = None
-    resolved_from: Optional[str] = None  # local | openfoodfacts | usda
-    message: Optional[str] = None
+    item: FoodItemPublic | None = None
+    resolved_from: str | None = None  # local | openfoodfacts | usda | cache
+    message: str | None = None
+
+    # --- additive, all optional: existing clients keep working -------------
+    #: WHY the lookup ended the way it did. `found: false` used to cover
+    #: not-found, a mistyped code, a damaged symbol, an in-store sticker and
+    #: an upstream outage alike -- so the client could only ever offer one
+    #: recovery, "try again", which is the wrong advice for three of those
+    #: five. One of: ok | not_numeric | invalid_length | bad_check_digit |
+    #: restricted | not_found | upstream_error.
+    status: str | None = None
+    #: The scanned code folded to GTIN-14, when it was a valid GTIN. This is
+    #: the key the catalogue is indexed on and the key a client should cache
+    #: under -- caching under the raw scan would store one product several
+    #: times over, once per encoding.
+    gtin14: str | None = None
+    #: True when re-scanning could plausibly succeed. False for a restricted
+    #: code, which is a real barcode that is simply not a product identifier:
+    #: pointing the camera at it again will never help, and telling the user
+    #: to try again is how they end up rescanning a deli sticker forever.
+    retryable: bool | None = None
 
 
 class CustomFoodRequest(BaseModel):
     name: str
-    brand: Optional[str] = None
-    barcode: Optional[str] = None
+    brand: str | None = None
+    barcode: str | None = None
     calories: float = Field(ge=0, le=900)  # per 100 g; 900 = pure fat ceiling
     protein_g: float = Field(default=0, ge=0, le=100)
     carbs_g: float = Field(default=0, ge=0, le=100)
@@ -150,25 +176,25 @@ class CustomFoodRequest(BaseModel):
 
 
 class MealLogRequest(BaseModel):
-    food_item_id: Optional[str] = None
-    display_name: Optional[str] = None
+    food_item_id: str | None = None
+    display_name: str | None = None
     grams: float = Field(gt=0, le=5000)
-    serving_label: Optional[str] = None
+    serving_label: str | None = None
     meal_type: MealType = MealType.snack
-    logged_at: Optional[datetime] = None
-    recognition_id: Optional[str] = None
+    logged_at: datetime | None = None
+    recognition_id: str | None = None
     # Only used when logging a free-form / AI item with no food_item_id
-    calories: Optional[float] = None
-    protein_g: Optional[float] = None
-    carbs_g: Optional[float] = None
-    fat_g: Optional[float] = None
+    calories: float | None = None
+    protein_g: float | None = None
+    carbs_g: float | None = None
+    fat_g: float | None = None
 
 
 class MealLogPublic(BaseModel):
     id: str
     display_name: str
     grams: float
-    serving_label: Optional[str]
+    serving_label: str | None
     calories: float
     protein_g: float
     carbs_g: float
@@ -176,8 +202,8 @@ class MealLogPublic(BaseModel):
     fiber_g: float
     meal_type: MealType
     logged_at: datetime
-    kcal_low: Optional[float] = None
-    kcal_high: Optional[float] = None
+    kcal_low: float | None = None
+    kcal_high: float | None = None
 
 
 class DailySummary(BaseModel):
@@ -187,19 +213,19 @@ class DailySummary(BaseModel):
     carbs_g: float
     fat_g: float
     fiber_g: float
-    calorie_target: Optional[float] = None
-    protein_target_g: Optional[float] = None
-    carb_target_g: Optional[float] = None
-    fat_target_g: Optional[float] = None
-    fiber_target_g: Optional[float] = None
+    calorie_target: float | None = None
+    protein_target_g: float | None = None
+    carb_target_g: float | None = None
+    fat_target_g: float | None = None
+    fiber_target_g: float | None = None
 
     # --- The Home screen's "worth watching" ledger --------------------------
     # None means "not known for today's foods", which is NOT the same as zero.
     # A day whose foods carry no sodium data must render as unknown rather than
     # as a reassuring empty bar.
-    sodium_mg: Optional[float] = None
-    potassium_mg: Optional[float] = None
-    sugars_g: Optional[float] = None
+    sodium_mg: float | None = None
+    potassium_mg: float | None = None
+    sugars_g: float | None = None
     sodium_limit_mg: float = 2300.0
     potassium_target_mg: float = 3400.0
     sugars_limit_g: float = 50.0
@@ -220,7 +246,7 @@ class ClarifyingQuestion(BaseModel):
 
 class RecognizedItem(BaseModel):
     name: str
-    name_local: Optional[str] = None
+    name_local: str | None = None
     portion_unit: str
     portion_count: float
     grams_est: float
@@ -232,8 +258,23 @@ class RecognizedItem(BaseModel):
     carbs_g: float
     fat_g: float
     confidence: float
-    matched_food_item_id: Optional[str] = None
-    clarifying_question: Optional[ClarifyingQuestion] = None
+    matched_food_item_id: str | None = None
+    clarifying_question: ClarifyingQuestion | None = None
+
+    # --- additive, all optional: existing clients keep working -------------
+    #: Always True for a photo estimate. Stated rather than left for the
+    #: client to infer from the absence of a flag -- an estimate that reaches
+    #: a UI without this is one refactor away from being rendered as fact.
+    is_estimated: bool = True
+    #: Field names whose values do not hold together: 'kcal_point' when the
+    #: macros cannot account for the calories, 'grams_est' when the macro mass
+    #: exceeds the portion mass, 'kcal_range' for an incoherent band,
+    #: 'duplicate_merged' when the model listed one food twice.
+    uncertain_fields: list[str] = []
+    #: True when this item needs a human look before it is saved. The client
+    #: uses it to pick "Review and save" over "Save"; nothing is ever repaired
+    #: silently to clear it.
+    review_required: bool = False
 
 
 class RecognitionResponse(BaseModel):
@@ -244,12 +285,15 @@ class RecognitionResponse(BaseModel):
     model_used: str
     latency_ms: int
     cached: bool = False
+    #: True when ANY item needs review. Additive and defaulted so an older
+    #: client that ignores it behaves exactly as before.
+    review_required: bool = False
 
 
 class RecognitionCorrection(BaseModel):
     correction_type: str = "edit"
     corrected_items: list[dict[str, Any]] = []
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -259,12 +303,12 @@ class RecognitionCorrection(BaseModel):
 
 class WeightLogRequest(BaseModel):
     weight_kg: float = Field(gt=20, lt=400)
-    measured_on: Optional[date] = None
+    measured_on: date | None = None
 
 
 class WeightTrendPoint(BaseModel):
     date: date
-    raw_kg: Optional[float]
+    raw_kg: float | None
     trend_kg: float
 
 
@@ -275,13 +319,13 @@ class SetLogRequest(BaseModel):
     # WHICH MACHINE. Both optional and both staying optional -- a barbell
     # squat has no station, and a lifter who cannot say what they used must
     # still be able to log the set.
-    station_id: Optional[str] = None
-    station_profile: Optional[str] = Field(default=None, max_length=32)
+    station_id: str | None = None
+    station_profile: str | None = Field(default=None, max_length=32)
     # Ask for RIR, not RPE. "How many more could you have done" is a question
     # a beginner can answer honestly; "rate this 1-10" is jargon. RPE is
     # derived for display. Either may be sent; RIR wins if both are.
-    rir: Optional[float] = Field(default=None, ge=0, le=10)
-    rpe: Optional[float] = Field(default=None, ge=1, le=10)
+    rir: float | None = Field(default=None, ge=0, le=10)
+    rpe: float | None = Field(default=None, ge=1, le=10)
     is_warmup: bool = False
 
 
@@ -290,7 +334,7 @@ class VoiceSetInput(BaseModel):
 
     reps: int = Field(ge=1, le=100)
     weight_kg: float = Field(default=0.0, ge=0, le=700)
-    rir: Optional[float] = Field(default=None, ge=0, le=10)
+    rir: float | None = Field(default=None, ge=0, le=10)
     is_warmup: bool = False
 
 
@@ -309,17 +353,17 @@ class VoiceCommitRequest(BaseModel):
     """
 
     entries: list[VoiceEntryInput] = Field(min_length=1, max_length=40)
-    routine_name: Optional[str] = Field(default=None, max_length=80)
-    duration_min: Optional[int] = Field(default=None, ge=1, le=600)
-    started_at: Optional[datetime] = None
+    routine_name: str | None = Field(default=None, max_length=80)
+    duration_min: int | None = Field(default=None, ge=1, le=600)
+    started_at: datetime | None = None
     # Kept as the session note. When a number is ever disputed, the words that
     # produced it are the only way to work out what happened.
-    transcript: Optional[str] = Field(default=None, max_length=8000)
+    transcript: str | None = Field(default=None, max_length=8000)
 
 
 class PhoneStartRequest(BaseModel):
     phone: str = Field(min_length=6, max_length=24)
-    country_code: Optional[str] = Field(default=None, max_length=5)
+    country_code: str | None = Field(default=None, max_length=5)
 
 
 class PhoneVerifyRequest(BaseModel):
@@ -331,9 +375,9 @@ class PhoneVerifyRequest(BaseModel):
 
     phone: str = Field(min_length=6, max_length=24)
     code: str = Field(min_length=4, max_length=8)
-    country_code: Optional[str] = Field(default=None, max_length=5)
-    display_name: Optional[str] = Field(default=None, max_length=120)
-    device_label: Optional[str] = Field(default=None, max_length=80)
+    country_code: str | None = Field(default=None, max_length=5)
+    display_name: str | None = Field(default=None, max_length=120)
+    device_label: str | None = Field(default=None, max_length=80)
 
 
 class SocialSignInRequest(BaseModel):
@@ -347,14 +391,14 @@ class SocialSignInRequest(BaseModel):
 
     provider: str = Field(pattern="^(google|apple)$")
     id_token: str = Field(min_length=20, max_length=8192)
-    display_name: Optional[str] = Field(default=None, max_length=120)
-    device_label: Optional[str] = Field(default=None, max_length=80)
+    display_name: str | None = Field(default=None, max_length=120)
+    device_label: str | None = Field(default=None, max_length=80)
 
 
 class WorkoutSessionRequest(BaseModel):
-    routine_name: Optional[str] = None
-    started_at: Optional[datetime] = None
-    notes: Optional[str] = None
+    routine_name: str | None = None
+    started_at: datetime | None = None
+    notes: str | None = None
 
 
 class StrengthPoint(BaseModel):
@@ -372,8 +416,8 @@ class StrengthSeries(BaseModel):
     their loads says nothing about the lifter -- see the note on Station.
     """
 
-    station_id: Optional[str] = None
-    station_profile: Optional[str] = None
+    station_id: str | None = None
+    station_profile: str | None = None
     #: "Not recorded" when the sets carry no station. Named, not blank, so the
     #: chart legend never has an anonymous line on it.
     station_name: str
@@ -386,8 +430,8 @@ class PlateauPerformance(BaseModel):
     performed_on: date
     top_set_weight_kg: float
     top_set_reps: int
-    top_set_e1rm: Optional[float] = None
-    top_set_rir: Optional[float] = None
+    top_set_e1rm: float | None = None
+    top_set_rir: float | None = None
     volume_load: float
 
 
@@ -406,16 +450,16 @@ class PlateauAssessmentPublic(BaseModel):
     status: str
     exercise_id: str
     exercise_name: str
-    station_id: Optional[str] = None
-    station_profile: Optional[str] = None
+    station_id: str | None = None
+    station_profile: str | None = None
     station_name: str = "Not recorded"
     reason: str
     recommendation: str
     confidence: float = Field(ge=0.0, le=1.0)
     evidence_sessions: list[date] = Field(default_factory=list)
-    baseline: Optional[PlateauPerformance] = None
-    current: Optional[PlateauPerformance] = None
-    stalled_metric: Optional[str] = None
+    baseline: PlateauPerformance | None = None
+    current: PlateauPerformance | None = None
+    stalled_metric: str | None = None
     improving_metrics: list[str] = Field(default_factory=list)
     requires_confirmation: bool = False
 
@@ -438,16 +482,16 @@ class StationCreate(BaseModel):
 
     exercise_id: str
     name: str = Field(min_length=1, max_length=120)
-    gym_id: Optional[str] = None
-    brand: Optional[str] = Field(default=None, max_length=80)
-    model: Optional[str] = Field(default=None, max_length=80)
-    loading: Optional[Literal["plate", "pin", "dial", "cable", "bodyweight", "free_weight"]] = None
+    gym_id: str | None = None
+    brand: str | None = Field(default=None, max_length=80)
+    model: str | None = Field(default=None, max_length=80)
+    loading: Literal["plate", "pin", "dial", "cable", "bodyweight", "free_weight"] | None = None
     has_adjustable_profile: bool = False
     profile_settings: list[str] = Field(default_factory=list, max_length=12)
     stack_ranges: list[StackRange] = Field(default_factory=list, max_length=12)
     unit: Literal["kg", "lb"] = "kg"
-    micro_adjust_kg: Optional[float] = Field(default=None, ge=0, le=50)
-    carriage_weight_kg: Optional[float] = Field(default=None, ge=0, le=200)
+    micro_adjust_kg: float | None = Field(default=None, ge=0, le=50)
+    carriage_weight_kg: float | None = Field(default=None, ge=0, le=200)
     is_public: bool = True
 
 
@@ -455,16 +499,16 @@ class StationPublic(BaseModel):
     id: str
     exercise_id: str
     name: str
-    gym_id: Optional[str]
-    brand: Optional[str]
-    model: Optional[str]
-    loading: Optional[str]
+    gym_id: str | None
+    brand: str | None
+    model: str | None
+    loading: str | None
     has_adjustable_profile: bool
     profile_settings: list[str]
     stack_ranges: list[dict]
     unit: str
-    micro_adjust_kg: Optional[float]
-    carriage_weight_kg: Optional[float]
+    micro_adjust_kg: float | None
+    carriage_weight_kg: float | None
     is_public: bool
     verified: bool
     log_count: int
@@ -477,16 +521,16 @@ class AdjudicationPublic(BaseModel):
     verdict: Verdict
     headline: str
     explanation: str
-    strength_index_delta_pct: Optional[float]
-    weight_delta_pct_per_week: Optional[float]
-    protein_g_per_kg: Optional[float]
-    logging_adherence: Optional[float]
-    previous_target: Optional[float]
-    recommended_target: Optional[float]
-    recommended_protein_g: Optional[float]
+    strength_index_delta_pct: float | None
+    weight_delta_pct_per_week: float | None
+    protein_g_per_kg: float | None
+    logging_adherence: float | None
+    previous_target: float | None
+    recommended_target: float | None
+    recommended_protein_g: float | None
     math_breakdown: dict[str, Any]
     guardrails_triggered: list[str]
-    user_accepted: Optional[bool]
+    user_accepted: bool | None
 
 
 # ---------------------------------------------------------------------------
@@ -515,15 +559,15 @@ class OnboardingRequest(BaseModel):
     outside them is a data-entry error, not an unusual user.
     """
 
-    sex: Optional[str] = None
-    date_of_birth: Optional[date] = None
-    age_years: Optional[float] = Field(default=None, ge=13, le=100)
+    sex: str | None = None
+    date_of_birth: date | None = None
+    age_years: float | None = Field(default=None, ge=13, le=100)
     height_cm: float = Field(gt=100, lt=250)
     weight_kg: float = Field(gt=25, lt=350)
 
     # The "have you ever weighed 200 lbs?" question. Optional, and None means
     # "didn't say" rather than "no" -- the service treats those differently.
-    highest_weight_kg: Optional[float] = Field(default=None, gt=25, lt=400)
+    highest_weight_kg: float | None = Field(default=None, gt=25, lt=400)
 
     lifting_experience_months: int = Field(ge=0, le=720)
     lifting_sessions_per_week: int = Field(ge=0, le=14)
@@ -531,12 +575,12 @@ class OnboardingRequest(BaseModel):
     daily_steps: int = Field(ge=0, le=60_000)
 
     goal_type: GoalType
-    goal_weight_kg: Optional[float] = Field(default=None, gt=25, lt=350)
-    training_day_indices: Optional[list[int]] = None
+    goal_weight_kg: float | None = Field(default=None, gt=25, lt=350)
+    training_day_indices: list[int] | None = None
 
     @field_validator("training_day_indices")
     @classmethod
-    def _valid_days(cls, v: Optional[list[int]]) -> Optional[list[int]]:
+    def _valid_days(cls, v: list[int] | None) -> list[int] | None:
         if v is not None and any(d < 0 or d > 6 for d in v):
             raise ValueError("training_day_indices must be 0 (Mon) to 6 (Sun)")
         return v
@@ -592,11 +636,11 @@ class RecipeIngredientInput(BaseModel):
     cannot invent nutrition for a real food.
     """
 
-    food_item_id: Optional[str] = None
+    food_item_id: str | None = None
     display_name: str = Field(min_length=1, max_length=120)
     grams: float = Field(gt=0, le=20_000)
-    quantity_label: Optional[str] = Field(default=None, max_length=60)
-    note: Optional[str] = Field(default=None, max_length=200)
+    quantity_label: str | None = Field(default=None, max_length=60)
+    note: str | None = Field(default=None, max_length=200)
 
     # Used only when food_item_id is None. Same per-100 g ceilings as
     # CustomFoodRequest -- 900 kcal is pure fat and nothing exceeds it.
@@ -612,11 +656,11 @@ class RecipeIngredientInput(BaseModel):
 
 class RecipeIngredientPublic(BaseModel):
     id: str
-    food_item_id: Optional[str] = None
+    food_item_id: str | None = None
     display_name: str
     grams: float
-    quantity_label: Optional[str] = None
-    note: Optional[str] = None
+    quantity_label: str | None = None
+    note: str | None = None
     sort_order: int
     calories: float
     protein_g: float
@@ -627,16 +671,16 @@ class RecipeIngredientPublic(BaseModel):
 
 class RecipeRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    description: Optional[str] = Field(default=None, max_length=2000)
-    cuisine: Optional[str] = Field(default=None, max_length=60)
-    photo_url: Optional[str] = None
+    description: str | None = Field(default=None, max_length=2000)
+    cuisine: str | None = Field(default=None, max_length=60)
+    photo_url: str | None = None
     servings: float = Field(default=1, ge=0.25, le=100)
     #: What the FINISHED dish weighed. Omit it and the recipe logs by serving
     #: only -- see services/recipes.py for why we will not derive this from
     #: the raw ingredient sum.
-    cooked_weight_g: Optional[float] = Field(default=None, gt=0, le=50_000)
-    prep_minutes: Optional[int] = Field(default=None, ge=0, le=2880)
-    cook_minutes: Optional[int] = Field(default=None, ge=0, le=2880)
+    cooked_weight_g: float | None = Field(default=None, gt=0, le=50_000)
+    prep_minutes: int | None = Field(default=None, ge=0, le=2880)
+    cook_minutes: int | None = Field(default=None, ge=0, le=2880)
     steps: list[str] = []
     tags: list[str] = []
     visibility: RecipeVisibility = RecipeVisibility.private
@@ -657,21 +701,21 @@ class NutritionPanel(BaseModel):
 class RecipePublic(BaseModel):
     id: str
     name: str
-    description: Optional[str] = None
-    cuisine: Optional[str] = None
-    photo_url: Optional[str] = None
+    description: str | None = None
+    cuisine: str | None = None
+    photo_url: str | None = None
     visibility: RecipeVisibility
-    published_at: Optional[datetime] = None
+    published_at: datetime | None = None
 
     servings: float
-    cooked_weight_g: Optional[float] = None
+    cooked_weight_g: float | None = None
     #: True when nobody weighed the finished dish. The client MUST NOT offer
     #: gram-based logging in that case -- the server refuses it anyway.
     yield_estimated: bool
-    serving_grams: Optional[float] = None
+    serving_grams: float | None = None
 
-    prep_minutes: Optional[int] = None
-    cook_minutes: Optional[int] = None
+    prep_minutes: int | None = None
+    cook_minutes: int | None = None
     steps: list[str] = []
     tags: list[str] = []
 
@@ -679,7 +723,7 @@ class RecipePublic(BaseModel):
     per_serving: NutritionPanel
     #: None when the finished weight is unknown. Rendering a per-100 g panel
     #: from the raw ingredient sum would understate every simmered dish.
-    per_100g: Optional[NutritionPanel] = None
+    per_100g: NutritionPanel | None = None
     ingredient_grams: float
     sourced_fraction: float
     warnings: list[str] = []
@@ -689,8 +733,8 @@ class RecipePublic(BaseModel):
     #: True when the caller owns this recipe. Drives edit/publish affordances.
     is_owner: bool = False
     is_saved: bool = False
-    author_name: Optional[str] = None
-    forked_from_id: Optional[str] = None
+    author_name: str | None = None
+    forked_from_id: str | None = None
     save_count: int = 0
     log_count: int = 0
     created_at: datetime
@@ -703,15 +747,15 @@ class RecipeSummary(BaseModel):
 
     id: str
     name: str
-    cuisine: Optional[str] = None
-    photo_url: Optional[str] = None
+    cuisine: str | None = None
+    photo_url: str | None = None
     visibility: RecipeVisibility
     servings: float
     calories_per_serving: float
     protein_per_serving_g: float
     ingredient_count: int
     yield_estimated: bool
-    author_name: Optional[str] = None
+    author_name: str | None = None
     is_owner: bool = False
     is_saved: bool = False
     save_count: int = 0
@@ -752,10 +796,10 @@ class RecipeLogRequest(BaseModel):
     been measured.
     """
 
-    servings: Optional[float] = Field(default=None, gt=0, le=100)
-    grams: Optional[float] = Field(default=None, gt=0, le=20_000)
+    servings: float | None = Field(default=None, gt=0, le=100)
+    grams: float | None = Field(default=None, gt=0, le=20_000)
     meal_type: MealType = MealType.snack
-    logged_at: Optional[datetime] = None
+    logged_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +822,7 @@ class TrainingProfileRequest(BaseModel):
     disliked_exercise_ids: list[str] = Field(default_factory=list)
     #: Free text. HEALTH-SENSITIVE -- never logged, never echoed into an
     #: error message. See WORKOUT_SCHEMA_DESIGN.md 10.8.
-    limitations: Optional[str] = Field(default=None, max_length=2000)
+    limitations: str | None = Field(default=None, max_length=2000)
     #: Opt-in for AI-generated programming. Separate from users.program_type,
     #: and the stricter of the two: false disables AI generation whatever
     #: program_type says. Unused in the deterministic MVP.
@@ -794,13 +838,13 @@ class TrainingProfilePatch(BaseModel):
     real thing a user may want to do.
     """
 
-    days_per_week: Optional[int] = Field(default=None, ge=1, le=7)
-    available_days: Optional[list[str]] = None
-    preferred_minutes: Optional[int] = Field(default=None, ge=15, le=180)
-    equipment: Optional[list[str]] = None
-    disliked_exercise_ids: Optional[list[str]] = None
-    limitations: Optional[str] = Field(default=None, max_length=2000)
-    ai_enabled: Optional[bool] = None
+    days_per_week: int | None = Field(default=None, ge=1, le=7)
+    available_days: list[str] | None = None
+    preferred_minutes: int | None = Field(default=None, ge=15, le=180)
+    equipment: list[str] | None = None
+    disliked_exercise_ids: list[str] | None = None
+    limitations: str | None = Field(default=None, max_length=2000)
+    ai_enabled: bool | None = None
 
 
 class TrainingProfilePublic(BaseModel):
@@ -810,7 +854,7 @@ class TrainingProfilePublic(BaseModel):
     preferred_minutes: int
     equipment: list[str]
     disliked_exercise_ids: list[str]
-    limitations: Optional[str]
+    limitations: str | None
     ai_enabled: bool
     created_at: datetime
     updated_at: datetime
@@ -819,7 +863,7 @@ class TrainingProfilePublic(BaseModel):
 class ProgrammeRequest(BaseModel):
     """Generate a programme. Omitted fields fall back to the profile."""
 
-    days_per_week: Optional[int] = Field(default=None, ge=1, le=7)
+    days_per_week: int | None = Field(default=None, ge=1, le=7)
 
 
 class ProgrammeDayPublic(BaseModel):
@@ -827,7 +871,7 @@ class ProgrammeDayPublic(BaseModel):
     day_index: int
     label: str
     focus: list[str]
-    target_minutes: Optional[int]
+    target_minutes: int | None
 
 
 class ProgrammePublic(BaseModel):
@@ -838,7 +882,7 @@ class ProgrammePublic(BaseModel):
     status: str
     generated_by: str
     started_at: datetime
-    archived_at: Optional[datetime]
+    archived_at: datetime | None
     days: list[ProgrammeDayPublic]
 
 
@@ -849,8 +893,8 @@ class PlannedSessionRequest(BaseModel):
     rotation", which is what the client actually wants on the home screen.
     """
 
-    scheduled_for: Optional[date] = None
-    programme_day_id: Optional[str] = None
+    scheduled_for: date | None = None
+    programme_day_id: str | None = None
 
 
 class ExerciseEducationPublic(BaseModel):
@@ -862,7 +906,10 @@ class ExerciseEducationPublic(BaseModel):
 
     primary_muscle: str
     secondary_muscles: list[str]
-    movement_pattern: str
+    #: NULL for isolation work. An eight-pattern vocabulary describes
+    #: compounds; a bicep curl satisfies none of them, and saying so beats
+    #: inventing a pattern for the client to display.
+    movement_pattern: str | None
     form_cue: str
 
 
@@ -879,12 +926,12 @@ class PrescribedExercisePublic(BaseModel):
     rest_seconds: int
     #: NULL until there is logged history to base it on. The client renders
     #: that as an em dash -- never as a number, and never as a guess.
-    suggested_weight_kg: Optional[float]
+    suggested_weight_kg: float | None
     progression_rule: str
     status: str
-    replaced_with_exercise_id: Optional[str]
+    replaced_with_exercise_id: str | None
     substitution_ids: list[str]
-    education: Optional[ExerciseEducationPublic] = None
+    education: ExerciseEducationPublic | None = None
 
 
 class PrescribedExercisePatch(BaseModel):
@@ -896,17 +943,17 @@ class PrescribedExercisePatch(BaseModel):
     """
 
     status: str = Field(pattern="^(skipped|replaced|prescribed)$")
-    replaced_with_exercise_id: Optional[str] = None
+    replaced_with_exercise_id: str | None = None
 
 
 class PlannedSessionPublic(BaseModel):
     id: str
-    programme_day_id: Optional[str]
-    programme_day_label: Optional[str]
-    session_id: Optional[str]
+    programme_day_id: str | None
+    programme_day_label: str | None
+    session_id: str | None
     scheduled_for: date
     status: str
-    estimated_minutes: Optional[int]
+    estimated_minutes: int | None
     generated_by: str
     notes: list[str]
     exercises: list[PrescribedExercisePublic]

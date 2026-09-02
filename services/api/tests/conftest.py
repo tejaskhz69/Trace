@@ -41,6 +41,7 @@ from sqlmodel import SQLModel
 from app import models  # noqa: F401  -- registers every table on SQLModel.metadata
 from app.config import get_settings
 from app.db import get_session
+from app.models import PROGRAMMABLE_EXERCISES_VIEW
 from app.main import app as fastapi_app
 
 settings = get_settings()
@@ -55,6 +56,47 @@ def _fail_fast_if_not_test_db() -> None:
         )
 
 
+async def _refuse_if_the_test_schema_has_drifted(conn) -> None:
+    """`create_all` builds missing tables. It never alters existing ones.
+
+    So a trace_test database that predates a model change keeps the old
+    columns forever, and nothing says so. That stayed invisible while every
+    query happened to use the old columns; the moment something read a new
+    one it surfaced as `column a.movement_detail does not exist`, raised
+    inside this session-scoped fixture, i.e. as 282 errors naming a column
+    rather than one error naming the cause.
+
+    A dropped-and-rebuilt test database is the fix, which is destructive and
+    therefore a human's call. This refuses and says which columns are
+    missing, in the spirit of the backfill's EXPECTED_REVISIONS guard: a
+    cheap refusal that forces someone to look beats a clever repair.
+    """
+    live: dict[str, set[str]] = {}
+    rows = await conn.execute(text(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public'"
+    ))
+    for table, column in rows:
+        live.setdefault(table, set()).add(column)
+
+    drift = []
+    for name, table in SQLModel.metadata.tables.items():
+        if name not in live:
+            continue  # create_all has it covered
+        missing = {c.name for c in table.columns} - live[name]
+        if missing:
+            drift.append(f"{name}: missing {sorted(missing)}")
+
+    if drift:
+        raise RuntimeError(
+            "The trace_test schema has drifted from models.py:\n  "
+            + "\n  ".join(drift)
+            + "\n\ncreate_all cannot repair this -- it only creates tables "
+            "that are absent. Drop the affected tables (or the whole "
+            "trace_test database) and let the next run rebuild them."
+        )
+
+
 @pytest.fixture(scope="session")
 async def db_engine():
     _fail_fast_if_not_test_db()
@@ -66,6 +108,11 @@ async def db_engine():
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS unaccent"))
         await conn.run_sync(SQLModel.metadata.create_all)
+        await _refuse_if_the_test_schema_has_drifted(conn)
+        # Views are not in SQLModel.metadata, so create_all cannot make
+        # this one. Generation reads it instead of joining by hand.
+        await conn.execute(text("DROP VIEW IF EXISTS programmable_exercises"))
+        await conn.execute(text(PROGRAMMABLE_EXERCISES_VIEW))
     yield engine
     await engine.dispose()
 

@@ -13,36 +13,47 @@ The search strategy is "local first, remote on miss, always write back":
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
-from datetime import datetime, timezone
-from typing import Annotated, Optional
+from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from sqlalchemy import func, select as sa_select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, or_, text
+from sqlalchemy import select as sa_select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from ..config import get_settings
 from ..db import get_session
 from ..models import FoodItem, FoodSource, User
-from ..services.search_rank import (
-    ARM_ALIAS,
-    alias_candidate,
-    direct_candidate,
-    rank,
-)
 from ..schemas import (
     BarcodeResolveResponse,
     CustomFoodRequest,
     FoodItemPublic,
     FoodSearchResponse,
 )
-from ..services.licensing import licence_for
+from ..services import gtin
 from ..services.food_sources import ResolvedFood, resolve_barcode_remote, search_remote
+from ..services.licensing import (
+    DISPLAY_NAMES,
+    Licence,
+    attribution_line,
+    display_name_for,
+    licence_for,
+)
+from ..services.search_rank import (
+    ARM_ALIAS,
+    alias_candidate,
+    direct_candidate,
+    rank,
+)
 from .auth import current_user
 
 settings = get_settings()
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/foods", tags=["foods"])
 
@@ -74,6 +85,214 @@ MAX_ARM_FETCH = 200
 # `<%` operator use the GIN index. Postgres's own default for this GUC is 0.6,
 # so a value that fails to apply makes search stricter rather than erroring.
 WORD_SIMILARITY_FLOOR = 0.45
+
+
+# THE DIRECT ARM IS A CASCADE, AND THAT IS THE WHOLE PERFORMANCE STORY.
+#
+# It used to be one scan over `contains OR fuzzy`, ordered by
+#   (prefix DESC, contains DESC, sim DESC, log_count DESC, data_quality DESC).
+#
+# Read that sort key again: the first two components are BOOLEANS, and they
+# outrank `sim`. So every prefix match sorts above every non-prefix match, and
+# every substring match above every fuzzy-only one -- unconditionally. Which
+# means that once the prefix set alone contains `fetch` rows, NOTHING in the
+# substring or fuzzy sets can reach the returned page. The old query computed
+# them anyway.
+#
+# Measured on the live catalogue (578,773 rows), for 'mix':
+#
+#   prefix    ILIKE 'mix%'      1,576 rows
+#   substring ILIKE '%mix%'    18,645 rows
+#   fuzzy     'mix' <% ...     77,095 rows
+#
+# The old plan bitmap-OR'd the last two into ~123,000 candidate rows, visited
+# every one in the heap (268 MB of buffer reads) and evaluated
+# `word_similarity` on all of them -- to return 100 rows that were all drawn
+# from the first 1,576.
+#
+# So: evaluate the stages in order and stop as soon as one fills the quota.
+# Each later stage carries `(SELECT count(*) FROM <earlier>) < :fetch`, which
+# Postgres plans as a one-time InitPlan filter -- when it is false the scan
+# beneath it reports "never executed" and costs nothing.
+#
+# MEASURED on the live catalogue, interleaved A/B, median of 7 runs each
+# (interleaved because measuring all of A then all of B lets cache state
+# invert a 30% difference on the wide queries):
+#
+#   query             before      after
+#   dosa               47 ms      47 ms
+#   panir           1,540 ms   1,263 ms
+#   mix             8,319 ms   1,153 ms     <- 7.2x
+#   plain dosa        697 ms     707 ms
+#   chick           1,593 ms     901 ms     <- 1.8x
+#   tikka              69 ms      48 ms
+#   zzzqqxnotafood     37 ms      30 ms
+#   TOTAL          12,302 ms   4,148 ms     <- 3.0x
+#
+# Nothing regressed: the narrow queries, where all three stages have to run
+# and this does three scans where the old plan did one, come out level.
+#
+# `panir` and `plain dosa` barely move, and that is expected rather than a
+# failure: both have almost no substring matches (2 and 1), so the fuzzy stage
+# has to run, and its cost is the heap visit it forces -- a GIN trigram bitmap
+# is lossy, so every candidate row must be fetched to recheck `<%` against
+# `search_text`, and food_items is 641 MB. Fixing THOSE two needs an ordered
+# (GiST k-NN) trigram index so the top matches can be walked in similarity
+# order without visiting the rest. That is a migration, not a query rewrite,
+# and is deliberately out of scope here.
+#
+# WHY THIS RETURNS THE SAME RESULTS
+# The stages partition the old WHERE clause -- `NOT ILIKE :prefix` and
+# `NOT ILIKE :contains` make them disjoint -- and the final ORDER BY re-applies
+# the original key over their union. Verified against the old statement on the
+# live catalogue by comparing the MULTISET OF SORT KEYS, not ids: identical for
+# every query measured. Ids differ for some queries only where rows tie on
+# every component of the key, which the old statement broke arbitrarily and
+# this one breaks by `f.id` -- see the note on determinism below.
+#
+# ILIKE IS KEPT DELIBERATELY. `search_text` is lowercase in all 578,773 rows
+# today, so plain LIKE would return the same rows and measured ~12% faster.
+# That 12% is inside this machine's run-to-run noise, and nothing in the schema
+# ENFORCES the lowercase invariant -- one ingestion script writing mixed case
+# would make LIKE silently miss rows, with no error. Not worth it.
+#
+# `f.id` IS A TIEBREAK, AND IT FIXES A REAL BUG. Without a total order, rows
+# tied on every sort component are returned in whatever order the executor
+# produced them, and under a parallel plan that varies BETWEEN RUNS: the old
+# statement returns a different result set for 'mix' on three consecutive
+# executions of the same query. `services/search_rank.rank()` was already
+# total; the SQL that chooses which candidates it even sees was not.
+#
+# TWO ARMS, STILL ONE ROUND TRIP.
+#
+# The alias arm joins `food_aliases`, which is what lets 'panir' and 'sambhar'
+# find the right food -- before it existed they returned confidently wrong
+# results, because no row in the catalogue carried a regional name.
+#
+# UNION ALL, not two round trips and not a correlated subquery: one statement,
+# no N+1. The alias arm still seq-scans `food_aliases` and that is CORRECT --
+# the table is 1,520 kB, so the planner reads all of it for less than the index
+# would cost, and `ix_alias_normalized_trgm` is verified usable (forcing
+# enable_seqscan=off produces a Bitmap Index Scan on it), so the plan flips on
+# its own as the table grows. It costs 15-20 ms and is not the bottleneck.
+#
+# EACH ARM IS BOUNDED SEPARATELY. A shared LIMIT would let one arm starve the
+# other -- a query matching 5,000 aliases would crowd out every direct hit
+# before ranking ever ran.
+#
+# Module-level so the benchmark script measures THIS statement rather than a
+# copy that can drift from it. See app/scripts/bench_search.py.
+
+SEARCH_SQL = text(
+    """
+    WITH prefix_hits AS MATERIALIZED (
+        SELECT f.*, word_similarity(:q, f.search_text) AS sim
+        FROM food_items f
+        WHERE (
+            f.moderation_status = 'approved'
+            -- ...OR it is the caller's own. `create_custom_food` files a
+            -- user's food as 'pending' and calls it "private to its
+            -- author", but this clause used to filter on 'approved' alone
+            -- -- so the author could not find their own food either, and a
+            -- private library that nobody can search is not a library.
+            -- Scoped to the caller, so one person's pending row stays
+            -- invisible to everyone else exactly as before.
+            OR f.created_by_user_id = :uid
+          )
+          AND f.search_text ILIKE :prefix
+        ORDER BY sim DESC, f.log_count DESC, f.data_quality DESC, f.id
+        LIMIT :fetch
+    ),
+    substring_hits AS MATERIALIZED (
+        SELECT f.*, word_similarity(:q, f.search_text) AS sim
+        FROM food_items f
+        -- The gate. False => the scan below is never executed.
+        WHERE (SELECT count(*) FROM prefix_hits) < :fetch
+          AND (
+            f.moderation_status = 'approved'
+            OR f.created_by_user_id = :uid
+          )
+          AND f.search_text ILIKE :contains
+          -- Disjoint from the stage above, so the union cannot spend two of
+          -- its `fetch` slots on one row.
+          AND f.search_text NOT ILIKE :prefix
+        ORDER BY sim DESC, f.log_count DESC, f.data_quality DESC, f.id
+        LIMIT :fetch
+    ),
+    fuzzy_hits AS MATERIALIZED (
+        SELECT f.*, word_similarity(:q, f.search_text) AS sim
+        FROM food_items f
+        WHERE (SELECT count(*) FROM prefix_hits)
+              + (SELECT count(*) FROM substring_hits) < :fetch
+          AND (
+            f.moderation_status = 'approved'
+            OR f.created_by_user_id = :uid
+          )
+          AND CAST(:q AS text) <% f.search_text
+          AND f.search_text NOT ILIKE :contains
+        ORDER BY sim DESC, f.log_count DESC, f.data_quality DESC, f.id
+        LIMIT :fetch
+    ),
+    direct AS (
+        SELECT u.*,
+               'direct'      AS arm,
+               NULL::text    AS normalized,
+               NULL::text    AS alias_type,
+               1.0::float8   AS confidence
+        FROM (
+            SELECT * FROM prefix_hits
+            UNION ALL
+            SELECT * FROM substring_hits
+            UNION ALL
+            SELECT * FROM fuzzy_hits
+        ) u
+        -- The ORIGINAL sort key, re-applied over the union. Recomputing the
+        -- two booleans here costs nothing (at most 3 x :fetch rows reach this
+        -- point) and avoids carrying a stage marker through to the wire,
+        -- where the row adapters would have to know to ignore it.
+        ORDER BY
+          (u.search_text ILIKE :prefix) DESC,
+          (u.search_text ILIKE :contains) DESC,
+          u.sim DESC,
+          u.log_count DESC,
+          u.data_quality DESC,
+          u.id
+        LIMIT :fetch
+    ),
+    aliased AS (
+        SELECT f.*,
+               word_similarity(:q, a.normalized) AS sim,
+               'alias'    AS arm,
+               a.normalized AS normalized,
+               a.alias_type AS alias_type,
+               a.confidence AS confidence
+        FROM food_aliases a
+        JOIN food_items f ON f.id = a.food_item_id
+        -- Retired aliases must never resurface. `is_active` is the
+        -- moderation switch; a row is deactivated rather than deleted so
+        -- the correction history survives.
+        WHERE a.is_active
+          AND (
+            f.moderation_status = 'approved'
+            OR f.created_by_user_id = :uid
+          )
+          AND (
+            a.normalized ILIKE :contains
+            OR CAST(:q AS text) <% a.normalized
+          )
+        ORDER BY
+          (a.normalized ILIKE :prefix) DESC,
+          sim DESC,
+          a.confidence DESC,
+          f.log_count DESC,
+          f.id
+        LIMIT :fetch
+    )
+    SELECT * FROM direct
+    UNION ALL
+    SELECT * FROM aliased
+    """
+)
 
 
 def build_search_text(
@@ -120,7 +339,7 @@ async def persist_resolved(
         "data_quality": resolved.data_quality,
         "is_verified": resolved.source == FoodSource.usda,
         "search_text": build_search_text(resolved.name, resolved.brand, None, None),
-        "updated_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(UTC),
     }
 
     stmt = (
@@ -142,8 +361,8 @@ async def persist_resolved(
 
 
 def _public(item: FoodItem,
-            prov: tuple[str, Optional[str]]) -> FoodItemPublic:
-    """Serialise one result, attaching provenance and per-row licensing.
+            prov: tuple[str, str | None] = ("direct", None)) -> FoodItemPublic:
+    """Serialise one food. THE ONLY WAY a FoodItem becomes a FoodItemPublic.
 
     LICENCE IS PER ROW, NEVER GLOBAL. The catalogue mixes ODbL (Open Food
     Facts), public-domain (USDA) and user-curated data. A single blanket
@@ -152,17 +371,59 @@ def _public(item: FoodItem,
 
     Falls back to `licensing.licence_for(source)` only when the column is
     unset -- which is fail-closed ('unknown'), not a guess.
+
+    WHY EVERY ENDPOINT MUST COME THROUGH HERE
+    It used to be only /search. The other five paths called
+    `FoodItemPublic.model_validate(...)` directly and therefore returned no
+    attribution at all -- including `/barcode/{barcode}`, which is the single
+    most Open-Food-Facts-heavy route in the app: scanning a packaged product
+    is exactly how an ODbL row reaches a screen. The credit was correct
+    wherever it appeared and absent wherever somebody had forgotten it, which
+    is the worst of both. `prov` defaults so there is no reason left to
+    bypass this function.
     """
     arm, alias_text = prov
     out = FoodItemPublic.model_validate(item, from_attributes=True)
-    licence = getattr(item, "source_licence", None) or licence_for(
-        getattr(item.source, "value", item.source)
-    )
+    source = getattr(item.source, "value", item.source)
+    licence = getattr(item, "source_licence", None) or licence_for(source)
     out.source_licence = licence if isinstance(licence, str) else licence.value
     out.verification_tier = getattr(item, "verification_tier", None)
     out.source_url = getattr(item, "source_url", None)
     out.matched_via = arm
     out.matched_alias = alias_text
+
+    # ATTRIBUTION TEXT IS COMPOSED HERE, NOT IN THE CLIENT.
+    #
+    # The wording and the source->licence mapping that produces it now travel
+    # together, so a source added to the API can never render as "SOURCE
+    # UNKNOWN" on a client that has not shipped yet. `attribution` is None --
+    # not an empty string -- for our own curated and user rows, which is how
+    # the UI knows to render nothing at all rather than an empty notice.
+    #
+    # The stored licence is passed through: a row whose `source_licence` says
+    # 'unknown' must SAY 'licence not recorded' rather than inherit ODbL from
+    # the source table.
+    #
+    # The Licence() coercion is guarded: `source_licence` is a plain text
+    # column, so a hand-edited or future value that is not a Licence member
+    # must degrade to "we do not know" rather than 500 a search.
+    try:
+        parsed = Licence(out.source_licence)
+    except ValueError:
+        parsed = Licence.unknown
+
+    # AN UNMAPPED SOURCE SENDS NEITHER FIELD, ON PURPOSE.
+    #
+    # The client reads `source_name` as "this response carries composed
+    # attribution" and `attribution: null` as "nothing to credit". Sending a
+    # placeholder name with a null sentence would therefore make an unknown
+    # source render as SILENTLY OURS -- the one reading that is definitely
+    # wrong. Sending nothing makes the client fall back to its own table,
+    # which reports "SOURCE UNKNOWN". `test_every_source_is_mapped` means this
+    # branch should be unreachable; it is here because "unreachable" and
+    # "safe when reached" are different properties.
+    out.source_name = display_name_for(source) if source in DISPLAY_NAMES else None
+    out.attribution = attribution_line(source, parsed)
     return out
 
 
@@ -172,7 +433,7 @@ async def search_foods(
     user: Annotated[User, Depends(current_user)],
     q: str = Query(min_length=1, max_length=120),
     limit: int = Query(default=25, le=50),
-    country: Optional[str] = Query(default=None, description="e.g. 'india'"),
+    country: str | None = Query(default=None, description="e.g. 'india'"),
     remote: bool = Query(default=True, description="Fan out on a weak local result"),
 ) -> FoodSearchResponse:
     started = time.perf_counter()
@@ -239,105 +500,11 @@ async def search_foods(
         {"floor": str(WORD_SIMILARITY_FLOOR)},
     )
 
-    # TWO ARMS IN ONE ROUND TRIP.
-    #
-    # The direct arm is the original query, unchanged in its WHERE and in what
-    # it can match. The alias arm joins `food_aliases`, which is what finally
-    # lets 'avalakki' and 'sambhar' find the right food -- before it existed
-    # they returned confidently wrong results, because no row in the catalogue
-    # carried a regional name.
-    #
-    # UNION ALL, not two round trips and not a correlated subquery: one
-    # statement, no N+1.
-    #
-    # MEASURED PLANS (578,773 food_items, 1,353 food_aliases):
-    #   direct 'dosa'  -> Bitmap Index Scan ix_food_search_trgm     132 ms
-    #   alias  'panir' -> Seq Scan on food_aliases                   18 ms
-    #   alias  'mix'   -> Seq Scan on food_aliases                   53 ms
-    #
-    # The alias arm currently seq-scans, and that is CORRECT: food_aliases is
-    # 1,520 kB, so the planner reads the whole thing for less than the index
-    # would cost. `ix_alias_normalized_trgm` is verified usable -- forcing
-    # enable_seqscan=off produces a Bitmap Index Scan on it -- so the plan
-    # flips on its own as the table grows. Neither arm ever seq-scans
-    # food_items, which is the scan that actually matters.
-    #
-    # EACH ARM IS BOUNDED SEPARATELY. A shared LIMIT would let one arm starve
-    # the other -- a query matching 5,000 aliases would crowd out every direct
-    # hit before ranking ever ran. Overfetching per arm and then ranking in
-    # Python is what makes the merge correct; the factor is small and capped so
-    # the work stays bounded regardless of how popular a term is.
+    # The two-arm statement itself is `SEARCH_SQL`, defined above.
     fetch = min(MAX_ARM_FETCH, max(limit * ARM_OVERFETCH, ARM_OVERFETCH))
-
-    sql = text(
-        """
-        WITH direct AS (
-            SELECT f.*,
-                   word_similarity(:q, f.search_text) AS sim,
-                   'direct'      AS arm,
-                   NULL::text    AS normalized,
-                   NULL::text    AS alias_type,
-                   1.0::float8   AS confidence
-            FROM food_items f
-            WHERE (
-                f.moderation_status = 'approved'
-                -- ...OR it is the caller's own. `create_custom_food` files a
-                -- user's food as 'pending' and calls it "private to its
-                -- author", but this clause used to filter on 'approved' alone
-                -- -- so the author could not find their own food either, and a
-                -- private library that nobody can search is not a library.
-                -- Scoped to the caller, so one person's pending row stays
-                -- invisible to everyone else exactly as before.
-                OR f.created_by_user_id = :uid
-              )
-              AND (
-                f.search_text ILIKE :contains
-                OR CAST(:q AS text) <% f.search_text
-              )
-            ORDER BY
-              (f.search_text ILIKE :prefix) DESC,
-              (f.search_text ILIKE :contains) DESC,
-              sim DESC,
-              f.log_count DESC,
-              f.data_quality DESC
-            LIMIT :fetch
-        ),
-        aliased AS (
-            SELECT f.*,
-                   word_similarity(:q, a.normalized) AS sim,
-                   'alias'    AS arm,
-                   a.normalized AS normalized,
-                   a.alias_type AS alias_type,
-                   a.confidence AS confidence
-            FROM food_aliases a
-            JOIN food_items f ON f.id = a.food_item_id
-            -- Retired aliases must never resurface. `is_active` is the
-            -- moderation switch; a row is deactivated rather than deleted so
-            -- the correction history survives.
-            WHERE a.is_active
-              AND (
-                f.moderation_status = 'approved'
-                OR f.created_by_user_id = :uid
-              )
-              AND (
-                a.normalized ILIKE :contains
-                OR CAST(:q AS text) <% a.normalized
-              )
-            ORDER BY
-              (a.normalized ILIKE :prefix) DESC,
-              sim DESC,
-              a.confidence DESC,
-              f.log_count DESC
-            LIMIT :fetch
-        )
-        SELECT * FROM direct
-        UNION ALL
-        SELECT * FROM aliased
-        """
-    )
     rows = (
         await session.execute(
-            sql,
+            SEARCH_SQL,
             {
                 "q": needle,
                 "uid": user.id,
@@ -371,7 +538,7 @@ async def search_foods(
     # the FoodItem constructor.
     _COMPUTED = {"sim", "arm", "normalized", "alias_type", "confidence"}
     items: list[FoodItem] = []
-    provenance: dict[str, tuple[str, Optional[str]]] = {}
+    provenance: dict[str, tuple[str, str | None]] = {}
     for hit in ranked:
         row = by_id[hit.food_item_id]
         items.append(FoodItem(**{k: v for k, v in row.items()
@@ -389,7 +556,7 @@ async def search_foods(
                 continue
             try:
                 items.append(await persist_resolved(session, hit))
-            except Exception:  # noqa: BLE001 - never fail search on a write error
+            except Exception:
                 await session.rollback()
         source_label = "local+remote"
 
@@ -402,41 +569,246 @@ async def search_foods(
     )
 
 
+#: How long a "this barcode is not in any source" answer stays believed.
+#:
+#: WITHOUT THIS, EVERY MISS IS PERMANENTLY EXPENSIVE. A barcode nobody has
+#: catalogued -- a regional snack, an own-label, anything Open Food Facts
+#: covers thinly -- costs two upstream HTTP calls and, once both miss, a
+#: metered Nutritionix call. The same shopper scanning the same shelf twice
+#: pays that twice. Misses are also the COMMON case for exactly the products
+#: this app cares about most.
+#:
+#: Ten minutes, not a day: Open Food Facts is crowd-sourced and a product can
+#: appear minutes after somebody adds it -- often the same user who just
+#: failed to find it. Long enough to cover a shopping trip, short enough that
+#: "I added it, why can't I see it" never happens.
+#:
+#: DELIBERATELY IN-PROCESS AND NEGATIVE-ONLY. Positive results are already
+#: persisted as `food_items` rows by `persist_resolved`, so caching those here
+#: would be a second, staler copy of a thing the database already owns. And an
+#: in-process dict needs no schema change, no eviction daemon, and cannot
+#: outlive a deploy -- a cache that survives a bad deploy is a liability.
+NEGATIVE_CACHE_TTL_S = 600
+#: Bounded so a scan-happy client cannot grow this without limit.
+NEGATIVE_CACHE_MAX = 4096
+
+#: gtin14 -> monotonic timestamp of the miss. Keyed on the NORMALISED code,
+#: never the raw scan: UPC-A and EAN-13 of one product must share one entry.
+_barcode_misses: dict[str, float] = {}
+
+
+def _miss_is_fresh(gtin14: str) -> bool:
+    seen = _barcode_misses.get(gtin14)
+    if seen is None:
+        return False
+    if time.monotonic() - seen > NEGATIVE_CACHE_TTL_S:
+        _barcode_misses.pop(gtin14, None)
+        return False
+    return True
+
+
+def _record_miss(gtin14: str) -> None:
+    if len(_barcode_misses) >= NEGATIVE_CACHE_MAX:
+        # Drop the oldest quarter rather than clearing everything: a full
+        # flush would re-expose the whole shelf a user just scanned.
+        for stale in sorted(_barcode_misses, key=_barcode_misses.get)[
+            : NEGATIVE_CACHE_MAX // 4
+        ]:
+            _barcode_misses.pop(stale, None)
+    _barcode_misses[gtin14] = time.monotonic()
+
+
+#: What to tell the user for each way a scan can fail to identify a product.
+#: Every one of these names a DIFFERENT next action, which is the entire point
+#: of distinguishing them.
+_REFUSAL_MESSAGES = {
+    gtin.STATUS_NOT_NUMERIC: (
+        "That doesn't look like a product barcode. Try searching by name.",
+    ),
+    gtin.STATUS_BAD_LENGTH: (
+        "That scan came out incomplete. Hold steady and try again, or search "
+        "by name.",
+    ),
+    gtin.STATUS_BAD_CHECK_DIGIT: (
+        "That barcode didn't scan cleanly — it may be damaged or curved. Try "
+        "again, or search by name.",
+    ),
+    gtin.STATUS_RESTRICTED: (
+        "That's an in-store label, not a product barcode — it only means "
+        "something inside that shop. Search by name, or snap the nutrition "
+        "label instead.",
+    ),
+}
+
+
 @router.get("/barcode/{barcode}", response_model=BarcodeResolveResponse)
 async def resolve_barcode(
     barcode: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(current_user)],
+    symbology: str | None = Query(
+        default=None,
+        description="What the scanner decoded, e.g. 'upc_e'. Disambiguates "
+        "UPC-E from EAN-8, which share a length but not a meaning.",
+    ),
 ) -> BarcodeResolveResponse:
-    """Resolve a scanned barcode. Local -> Open Food Facts -> USDA -> miss.
+    """Resolve a scanned barcode. Validate -> local -> Open Food Facts -> USDA.
 
     Try it with 8906136651951 (Pintola High Protein Oats Dark Chocolate) --
     a local-only implementation returns nothing; this chain returns the
     product with 25 g protein / 100 g and a 50 g serving size.
+
+    VALIDATION HAPPENS BEFORE ANY I/O, AND IT DID NOT USED TO.
+    This endpoint accepted any 6-to-14-digit string and sent it straight to
+    two external APIs. `services/gtin.py` -- GS1 mod-10, the restricted and
+    coupon prefix ranges, the length gate -- has existed and been tested all
+    along, and the scan path simply never called it. The consequences were
+    not theoretical:
+
+      * an in-store deli sticker ('02...') is not globally unique, so two
+        supermarkets issue the same number for different things. Looking one
+        up invites a confident match on somebody else's product, which is the
+        one failure a food database must not have.
+      * a 6, 9, 10 or 11-digit string is a truncated or mistyped scan. There
+        is no such GTIN. It was still worth two HTTP round trips.
+      * a bad check digit means the symbol was misread. Same.
+
+    LOOKUP IS BY `gtin14`, NOT BY THE RAW STRING.
+    The old query matched `barcode IN {code, code.lstrip('0'), code.zfill(13)}`
+    -- string juggling that folds UPC-A onto EAN-13 and nothing else, against
+    a column holding whatever each source happened to send. `gtin14` is the
+    normalised form, is populated for 504,850 of the 565,839 rows that carry a
+    barcode, and is indexed (`ix_food_gtin14`). The legacy variant match is
+    kept as a fallback for the rows the backfill could not normalise, so this
+    strictly widens what resolves.
     """
-    code = barcode.strip()
-    if not code.isdigit() or not (6 <= len(code) <= 14):
-        raise HTTPException(status_code=400, detail="Not a valid barcode.")
+    raw = barcode.strip()
+    status, gtin14 = gtin.classify(raw, symbology)
 
-    # EAN-13 vs UPC-A: the same product is '0' + UPC in EAN-13 form. Check both.
-    variants = {code, code.lstrip("0"), code.zfill(13)}
+    if gtin14 is None:
+        # Malformed: not numeric, wrong length, or a failed check digit.
+        # 200, not 400. This is a well-formed request about a barcode that
+        # turned out not to be a product identifier -- the client needs to
+        # render an explanation, not catch an exception. A 4xx here would also
+        # be indistinguishable, at the client, from an expired token.
+        return BarcodeResolveResponse(
+            found=False,
+            barcode=raw,
+            status=status,
+            gtin14=None,
+            retryable=True,
+            resolved_from=None,
+            message=_REFUSAL_MESSAGES[status][0],
+        )
 
+    # RESTRICTED CODES ARE LOCAL-ONLY, NOT REFUSED.
+    #
+    # A number-system-2 or -4 code is retailer-scoped: the same digits mean
+    # different products in different chains. Sending one to Open Food Facts
+    # is how a user gets confidently shown somebody else's product, which is
+    # the failure this whole module exists to prevent.
+    #
+    # But refusing it outright is also wrong, and measurably so: 1,079 rows
+    # already in the catalogue carry one, and they are real own-label groceries
+    # somebody took the trouble to record. Answering from OUR catalogue is not
+    # a guess about a global identifier -- it is returning the row we hold.
+    #
+    # So: look locally, never remotely, and say plainly what the identity is
+    # worth if nothing matches.
+    local_only = status == gtin.STATUS_RESTRICTED
+
+    # Normalised first, raw variants second. The variant set is what the old
+    # implementation matched on and exists only for rows without a gtin14.
+    legacy_variants = {raw, raw.lstrip("0"), raw.zfill(13)}
     local = await session.scalar(
-        select(FoodItem).where(FoodItem.barcode.in_(list(variants)))  # type: ignore[union-attr]
+        select(FoodItem).where(
+            or_(
+                FoodItem.gtin14 == gtin14,  # type: ignore[arg-type]
+                FoodItem.barcode.in_(list(legacy_variants)),  # type: ignore[union-attr]
+            )
+        )
     )
     if local:
         return BarcodeResolveResponse(
             found=True,
-            barcode=code,
-            item=FoodItemPublic.model_validate(local, from_attributes=True),
+            barcode=raw,
+            # The status still says `restricted` on a hit. The client shows the
+            # product, but the identity is retailer-scoped and the response
+            # does not pretend otherwise.
+            status=status,
+            gtin14=gtin14,
+            retryable=False,
+            item=_public(local),
             resolved_from="local",
         )
 
-    resolved, label = await resolve_barcode_remote(code)
-    if resolved is None:
+    if local_only:
         return BarcodeResolveResponse(
             found=False,
-            barcode=code,
+            barcode=raw,
+            status=gtin.STATUS_RESTRICTED,
+            gtin14=gtin14,
+            # Re-scanning an in-store label is not a recovery, it is a loop.
+            # Nothing about pointing the camera at it again will change the
+            # fact that no global source can answer for it.
+            retryable=False,
+            resolved_from=None,
+            message=_REFUSAL_MESSAGES[gtin.STATUS_RESTRICTED][0],
+        )
+
+    if _miss_is_fresh(gtin14):
+        return BarcodeResolveResponse(
+            found=False,
+            barcode=raw,
+            status="not_found",
+            gtin14=gtin14,
+            retryable=True,
+            resolved_from="cache",
+            message=(
+                "We couldn't find this product. Snap the nutrition label and "
+                "we'll read it for you, or add it manually -- it'll be "
+                "available to everyone next time."
+            ),
+        )
+
+    try:
+        resolved, label = await resolve_barcode_remote(raw)
+    except asyncio.CancelledError:
+        # The client hung up. Never swallow this -- doing so breaks task
+        # cancellation and leaves the request handler running for nobody.
+        raise
+    except Exception as exc:
+        # AN OUTAGE IS NOT A MISSING PRODUCT, and must never be cached as one.
+        # Reporting "we couldn't find it" during an Open Food Facts outage
+        # teaches the user their product does not exist and sends them off to
+        # type eleven numbers by hand.
+        #
+        # LOGGED WITH A TRACEBACK, deliberately. The catch has to be broad --
+        # a scan must degrade rather than 500 -- but a broad catch also
+        # swallows OUR bugs and presents them to the user as somebody else's
+        # outage. `log.exception` is what makes the difference visible in the
+        # logs: a TypeError here is a defect, not a provider being down. This
+        # is not hypothetical; it caught a malformed test fixture during
+        # development, reported as `upstream_error` with a cheerful message.
+        log.exception("Barcode lookup failed upstream for %s: %s", gtin14, exc)
+        return BarcodeResolveResponse(
+            found=False,
+            barcode=raw,
+            status="upstream_error",
+            gtin14=gtin14,
+            retryable=True,
+            resolved_from=None,
+            message="Couldn't reach the product database. Try again in a moment.",
+        )
+
+    if resolved is None:
+        _record_miss(gtin14)
+        return BarcodeResolveResponse(
+            found=False,
+            barcode=raw,
+            status="not_found",
+            gtin14=gtin14,
+            retryable=True,
             resolved_from=None,
             message=(
                 "We couldn't find this product. Snap the nutrition label and "
@@ -446,10 +818,15 @@ async def resolve_barcode(
         )
 
     item = await persist_resolved(session, resolved)
+    # A product that has just been catalogued is no longer a miss.
+    _barcode_misses.pop(gtin14, None)
     return BarcodeResolveResponse(
         found=True,
-        barcode=code,
-        item=FoodItemPublic.model_validate(item, from_attributes=True),
+        barcode=raw,
+        status=gtin.STATUS_OK,
+        gtin14=gtin14,
+        retryable=False,
+        item=_public(item),
         resolved_from=label,
     )
 
@@ -502,7 +879,7 @@ async def create_custom_food(
     session.add(item)
     await session.commit()
     await session.refresh(item)
-    return FoodItemPublic.model_validate(item, from_attributes=True)
+    return _public(item)
 
 
 @router.get("/recent", response_model=list[FoodItemPublic])
@@ -528,10 +905,7 @@ async def recent_foods(
     rows = (
         await session.execute(sql, {"uid": user.id, "limit": limit})
     ).mappings().all()
-    return [
-        FoodItemPublic.model_validate(FoodItem(**dict(r)), from_attributes=True)
-        for r in rows
-    ]
+    return [_public(FoodItem(**dict(r))) for r in rows]
 
 
 @router.post("/parse")
@@ -584,13 +958,13 @@ async def parse_meal_text(
     for hit in foods:
         try:
             items.append(await persist_resolved(session, hit))
-        except Exception:  # noqa: BLE001 - a write failure must not lose the parse
+        except Exception:
             await session.rollback()
 
     return {
         "query": text,
         "count": len(items),
-        "items": [FoodItemPublic.model_validate(i, from_attributes=True) for i in items],
+        "items": [_public(i) for i in items],
         "message": None
         if items
         else "Couldn't work out what that was. Try naming the foods more plainly.",

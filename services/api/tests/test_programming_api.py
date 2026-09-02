@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import text
 
 from app.models import Exercise, ExerciseAttributes, ExerciseSubstitution
+from app.services.movement import pattern_for
 
 
 # ---------------------------------------------------------------------------
@@ -44,17 +45,26 @@ def _hdr(auth: dict) -> dict:
     return {"Authorization": f"Bearer {auth['access_token']}"}
 
 
-#: (id, name, equipment, muscle, pattern, class, rep_min, rep_max, rest)
+#: (id, name, equipment, muscle, detail, class, rep_min, rep_max, rest)
+#:
+#: `detail` is a movement_detail from services/movement.py, NOT a
+#: movement_pattern. The pattern is derived from it by `pattern_for`,
+#: exactly as the real seed does -- so this fixture cannot drift into
+#: claiming a pattern the classification would not give it.
+#:
+#: `db-curl` derives a NULL pattern and is_isolation=True. That is the
+#: case the isolation slot exists for, and the reason this fixture keeps
+#: a curl in it.
 _CATALOGUE = [
     ("goblet-squat", "Goblet squat", "dumbbell", "quads", "squat", "compound", 6, 10, 120),
     ("db-rdl", "Dumbbell RDL", "dumbbell", "hamstrings", "hinge", "compound", 8, 12, 120),
-    ("db-bench", "Dumbbell bench press", "dumbbell", "chest", "push_horizontal", "compound", 6, 10, 120),
-    ("db-row", "Dumbbell row", "dumbbell", "back", "pull_horizontal", "compound", 8, 12, 90),
-    ("db-press", "Dumbbell shoulder press", "dumbbell", "shoulders", "push_vertical", "compound", 6, 10, 120),
-    ("pull-up", "Pull-up", "bodyweight", "back", "pull_vertical", "compound", 4, 8, 150),
-    ("push-up", "Push-up", "bodyweight", "chest", "push_horizontal", "compound", 8, 15, 90),
+    ("db-bench", "Dumbbell bench press", "dumbbell", "chest", "h-press", "compound", 6, 10, 120),
+    ("db-row", "Dumbbell row", "dumbbell", "back", "h-pull", "compound", 8, 12, 90),
+    ("db-press", "Dumbbell shoulder press", "dumbbell", "shoulders", "v-press", "compound", 6, 10, 120),
+    ("pull-up", "Pull-up", "bodyweight", "back", "v-pull", "compound", 4, 8, 150),
+    ("push-up", "Push-up", "bodyweight", "chest", "h-press", "compound", 8, 15, 90),
     ("farmer-carry", "Farmer carry", "dumbbell", "traps", "carry", "compound", 1, 3, 90),
-    ("db-curl", "Dumbbell curl", "dumbbell", "biceps", "isolation", "isolation", 10, 15, 60),
+    ("db-curl", "Dumbbell curl", "dumbbell", "biceps", "elbow-flex", "isolation", 10, 15, 60),
     ("bb-squat", "Barbell squat", "barbell", "quads", "squat", "compound", 5, 8, 180),
 ]
 
@@ -66,7 +76,7 @@ async def _seed_catalogue(db_session) -> None:
     proves a beginner is not handed a barbell just because the catalogue has
     one.
     """
-    for ex_id, name, equip, muscle, pattern, klass, rmin, rmax, rest in _CATALOGUE:
+    for ex_id, name, equip, muscle, detail, klass, rmin, rmax, rest in _CATALOGUE:
         db_session.add(
             Exercise(
                 id=ex_id,
@@ -77,10 +87,18 @@ async def _seed_catalogue(db_session) -> None:
                 is_compound=klass == "compound",
             )
         )
+        pattern = pattern_for(detail)
         db_session.add(
             ExerciseAttributes(
                 exercise_id=ex_id,
+                movement_detail=detail,
+                # DERIVED, never stated twice. `ck_exattr_isolation_matches_
+                # pattern` enforces that is_isolation is exactly the set with
+                # no pattern, so computing both from one fact is the only way
+                # this fixture can stay insertable.
                 movement_pattern=pattern,
+                is_isolation=pattern is None,
+                resistance_profile="mid",
                 exercise_class=klass,
                 default_rep_min=rmin,
                 default_rep_max=rmax,
@@ -417,7 +435,14 @@ class TestBeginnerSelection:
             edu = ex["education"]
             assert edu is not None
             assert edu["primary_muscle"]
-            assert edu["movement_pattern"]
+            # A NULL pattern is an ANSWER, not missing metadata. Isolation
+            # work satisfies none of the eight compound patterns, so this
+            # asserts the field is present and correctly typed rather than
+            # asserting it is always populated -- the latter would be the
+            # "treat NULL as a gap" mistake, in test form.
+            assert "movement_pattern" in edu
+            if not ex["education"]["movement_pattern"]:
+                assert edu["form_cue"], "an unpatterned lift still needs a cue"
             assert edu["form_cue"]
             low = edu["form_cue"].lower()
             for banned in ("injur", "pain", "doctor", "medical", "diagnos"):

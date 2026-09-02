@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -14,7 +14,7 @@ from ..config import get_settings
 from ..db import get_session
 from ..models import Recognition, RecognitionFeedback, User
 from ..schemas import RecognitionCorrection, RecognitionResponse
-from ..services import label_ocr, vision
+from ..services import image_quality, label_ocr, vision
 from .auth import current_user
 
 router = APIRouter(prefix="/api/foods", tags=["recognition"])
@@ -36,9 +36,35 @@ async def recognize_food(
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Image too large (max 12 MB).")
 
+    # --- Image quality, BEFORE the quota is spent ------------------------
+    #
+    # ORDER MATTERS. This sits above the free-tier check on purpose: a photo
+    # of a dark worktop must not consume one of three daily scans. Charging
+    # someone a scan to be told "too dark, try again" is the worst possible
+    # arrangement of these two gates.
+    #
+    # Only REJECT stops the request -- frames with nothing in them, too small
+    # to resolve print, or undecodable. Dark, washed-out and soft-focus images
+    # are MARGINAL and go to the model anyway: the estimate returns with lower
+    # confidence and the existing band-widening handles it, which beats
+    # refusing a photo a person could read. See services/image_quality.py for
+    # why every threshold leans that way.
+    quality = image_quality.assess_image(raw)
+    if not quality.should_upload:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": quality.message,
+                "reasons": list(quality.reasons),
+                # Scalar statistics only. Never the image, never a crop.
+                "stats": quality.stats,
+                "retryable": True,
+            },
+        )
+
     # --- Free tier quota -------------------------------------------------
     if not user.is_pro:
-        since = datetime.now(timezone.utc) - timedelta(days=1)
+        since = datetime.now(UTC) - timedelta(days=1)
         used = await session.scalar(
             select(func.count(Recognition.id)).where(
                 Recognition.user_id == user.id, Recognition.created_at >= since
@@ -73,13 +99,14 @@ async def recognize_food(
             model_used=cached.model_used,
             latency_ms=0,
             cached=True,
+            review_required=bool(cached.raw_output.get("review_required")),
         )
 
     try:
         result = await vision.recognize(raw, hint=hint)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(
             status_code=502,
             detail="Couldn't read that photo. Try again, or log it manually.",
@@ -108,6 +135,7 @@ async def recognize_food(
         model_used=result.model_used,
         latency_ms=result.latency_ms,
         cached=False,
+        review_required=bool(result.payload.get("review_required")),
     )
 
 

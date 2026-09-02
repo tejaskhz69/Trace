@@ -50,7 +50,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
 from sqlalchemy import text
@@ -70,27 +70,193 @@ from app.services.gtin import (
 
 VERSION = "1.0"
 
-#: Revisions this script is known to be correct against.
+#: Migrations that genuinely touch the guarded columns, and have been read.
 #:
-#: A SET, not a minimum. When a later migration lands, ADD its revision here
-#: after checking that these two columns still mean what they mean. Do not
-#: loosen the comparison -- the guard exists so the script cannot run against
-#: a schema it does not understand.
+#: WHY THIS IS NOT A LIST OF EVERY REVISION ANY MORE
+#: It used to be `EXPECTED_REVISIONS`, a literal set of every schema version
+#: the script had ever run against, and every unrelated migration made it
+#: refuse. That happened THREE TIMES in one day -- for a movement
+#: classification, a view, and a CHECK constraint, none of which come near
+#: `food_items`. Each time the fix was to paste the new hash in.
 #:
-#: f6a9c2e47d85 (workout programming tables) was checked and added: it is
-#: purely additive, creating nine new tables and altering nothing. It issues
-#: no ALTER TABLE, no DML, and does not reference food_items at all, so
-#: gtin14 and name_normalized still mean exactly what they meant at
-#: e4f7b0d25c63.
-#:
-#: a7c31d9b6e02 (gyms, stations, set_logs.station_id) was checked and added:
-#: it creates two new tables and adds two nullable columns plus an index to
-#: set_logs. It contains no reference to food_items, food_aliases, gtin14 or
-#: name_normalized, and performs no DML, so both guarded columns are
-#: untouched and still mean what they meant at e4f7b0d25c63.
-EXPECTED_REVISIONS = frozenset(
-    {"e4f7b0d25c63", "f6a9c2e47d85", "a7c31d9b6e02"}
+#: A guard that fires on every migration teaches people to silence it without
+#: reading it, which is the exact opposite of its purpose. So the question it
+#: asks has changed from "have I seen this revision before" -- which nobody
+#: can answer except by adding it -- to "does any migration actually touch
+#: the two columns I write", which is the thing worth refusing over.
+REVIEWED_FOOD_REVISIONS = frozenset(
+    {
+        "90fed76eff5e",  # baseline: creates food_items
+        "b1c4e7a92f30",  # adds gtin14 / name_normalized
+        "c2d5f8b03a41",  # creates food_aliases
+        "d3e6a9c14b52",  # backfills static licence metadata, not these columns
+        "e4f7b0d25c63",  # lookup indexes on both guarded columns
+    }
 )
+
+#: The tables and columns this script reads or writes.
+GUARDED_NAMES = ("food_items", "food_aliases", "gtin14", "name_normalized")
+
+_VERSIONS_DIR = pathlib.Path(__file__).resolve().parents[2] / "alembic" / "versions"
+
+
+def _ddl_text(path: pathlib.Path) -> str:
+    """String literals from upgrade()/downgrade() and module constants.
+
+    DOCSTRINGS AND COMMENTS ARE EXCLUDED, deliberately. A migration whose
+    prose explains that it does not touch `food_items` is not a migration
+    that touches it -- and a scan that cannot tell those apart produces
+    exactly the false alarms this guard was drowning in. `f6a9c2e47d85` is
+    the live example: its comment names food_items, its DDL never does.
+    """
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in ("upgrade", "downgrade"):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                body = body[1:]
+            for sub in body:
+                for n in ast.walk(sub):
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                        out.append(n.value)
+        elif isinstance(node, ast.Assign):
+            for n in ast.walk(node):
+                if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                    out.append(n.value)
+    return "\n".join(out).lower()
+
+
+def _module_assign(path: pathlib.Path, name: str):
+    """The value of a module-level `name = ...`, annotated or not.
+
+    Alembic writes `revision: str = "..."` in newer templates and
+    `revision = "..."` in older ones, and this repo contains both.
+    """
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign):
+            if getattr(node.target, "id", "") == name and node.value is not None:
+                return ast.literal_eval(node.value)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if getattr(t, "id", "") == name:
+                    return ast.literal_eval(node.value)
+    return None
+
+
+def _revision_of(path: pathlib.Path) -> str | None:
+    rev = _module_assign(path, "revision")
+    return None if rev is None else str(rev)
+
+
+def _parents_of(path: pathlib.Path) -> tuple[str, ...]:
+    """`down_revision`, normalised. A merge point declares a tuple of them."""
+    down = _module_assign(path, "down_revision")
+    if down is None:
+        return ()
+    if isinstance(down, (list, tuple)):
+        return tuple(str(d) for d in down if d)
+    return (str(down),)
+
+
+def _migration_graph() -> dict[str, tuple[str, ...]]:
+    """revision -> its parent revision(s), read off the migration files."""
+    graph: dict[str, tuple[str, ...]] = {}
+    if not _VERSIONS_DIR.is_dir():
+        return graph
+    for path in sorted(_VERSIONS_DIR.glob("*.py")):
+        rev = _revision_of(path)
+        if rev:
+            graph[rev] = _parents_of(path)
+    return graph
+
+
+def _ancestors_inclusive(rev: str, graph: dict[str, tuple[str, ...]]) -> set[str]:
+    """Everything the database has actually been through, `rev` included.
+
+    Walks toward base, following every branch of a merge. A revision that is
+    not in the graph at all contributes nothing, which is the correct answer:
+    an unknown revision means an unknown schema.
+    """
+    seen: set[str] = set()
+    stack = [rev]
+    while stack:
+        cur = stack.pop()
+        if cur in seen or cur not in graph:
+            continue
+        seen.add(cur)
+        stack.extend(graph[cur])
+    return seen
+
+
+def guarded_migrations_not_applied(rev: str | None) -> list[str]:
+    """Migrations defining the guarded columns that this database has not run.
+
+    THIS IS THE DATABASE-STATE HALF OF THE GUARD, and it is separate from
+    `unreviewed_migrations_touching_guarded_columns()` on purpose. That one
+    asks a question about the REPOSITORY -- has a human read every migration
+    that writes these columns. This one asks a question about the DATABASE --
+    has this particular database actually run them.
+
+    Both can be wrong independently, and only the second one catches a
+    database stamped backwards. `ALTER TABLE` leaves columns in place, and
+    `alembic stamp` rewrites the version row without touching data, so the
+    existence check on `gtin14` and `name_normalized` passes happily against
+    a schema whose revision says those columns do not exist yet. The columns
+    being present is not evidence that they mean what this script assumes.
+
+    Deliberately derived from the same DDL scan as the review check rather
+    than from a hardcoded revision, so it advances by itself when a new
+    column-touching migration lands. An unrelated migration adds nothing to
+    the required set, which is the whole reason the old EXPECTED_REVISIONS
+    list was removed -- it fired three times in one day and taught people to
+    silence it.
+    """
+    if not _VERSIONS_DIR.is_dir():
+        return []
+    graph = _migration_graph()
+    applied = _ancestors_inclusive(rev, graph) if rev else set()
+    behind: list[str] = []
+    for path in sorted(_VERSIONS_DIR.glob("*.py")):
+        sql = _ddl_text(path)
+        if not any(name in sql for name in GUARDED_NAMES):
+            continue
+        r = _revision_of(path)
+        if r and r not in applied:
+            behind.append(f"{r} ({path.name})")
+    return behind
+
+
+def unreviewed_migrations_touching_guarded_columns() -> list[str]:
+    """Migrations that write the guarded columns and nobody has signed off.
+
+    Empty is the normal answer, including right after an unrelated migration
+    lands. A non-empty answer means the meaning of `gtin14` or
+    `name_normalized` may have moved under this script, which is the one
+    thing worth refusing over.
+    """
+    if not _VERSIONS_DIR.is_dir():
+        return []
+    offenders: list[str] = []
+    for path in sorted(_VERSIONS_DIR.glob("*.py")):
+        sql = _ddl_text(path)
+        if not any(name in sql for name in GUARDED_NAMES):
+            continue
+        rev = _revision_of(path)
+        if rev and rev not in REVIEWED_FOOD_REVISIONS:
+            offenders.append(f"{rev} ({path.name})")
+    return offenders
+
 
 REQUIRED_COLUMNS = frozenset({"gtin14", "name_normalized"})
 
@@ -131,7 +297,7 @@ class Counters:
     samples: list[tuple] = field(default_factory=list)
 
 
-def reject_reason(raw: Optional[str]) -> str:
+def reject_reason(raw: str | None) -> str:
     """Why did normalize_gtin refuse this barcode?
 
     Uses gtin.py's own public helpers rather than re-deriving the rules, so
@@ -176,7 +342,7 @@ def save_state(path: pathlib.Path, cursor: str, counters: Counters) -> None:
     }
     try:
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    except OSError as exc:  # noqa: BLE001 -- never abort a good run over this
+    except OSError as exc:
         print(f"  warning: could not write state file: {exc.__class__.__name__}")
 
 
@@ -231,12 +397,31 @@ async def preflight(conn, args: argparse.Namespace, host: str | None, port: int 
 
     rev = await conn.scalar(text("SELECT version_num FROM alembic_version"))
     print(f"  alembic revision  : {rev}")
-    if rev not in EXPECTED_REVISIONS:
+
+    # The columns existing is not the same as the database being at a schema
+    # where they mean what this script assumes. `alembic stamp` moves the
+    # version row without touching a single column, so a database stamped
+    # backwards keeps both guarded columns and reports an older revision.
+    # Reading `rev` and not checking it is how this script came to rewrite
+    # rows against a schema it did not recognise.
+    behind = guarded_migrations_not_applied(rev)
+    if behind:
         raise Refused(
-            f"schema revision {rev!r} is not one this script is known to be "
-            f"correct against ({sorted(EXPECTED_REVISIONS)}). Add the new "
-            "revision to EXPECTED_REVISIONS after checking the columns still "
-            "mean the same thing."
+            f"database reports alembic revision {rev!r}, which has not run "
+            f"the migrations that define the columns this script writes: "
+            f"{behind}. The columns may exist anyway -- a stamp moves the "
+            "version row without touching data -- but their meaning is not "
+            "established at this revision. Bring the database up to date, or "
+            "correct the stamp, before writing."
+        )
+
+    offenders = unreviewed_migrations_touching_guarded_columns()
+    if offenders:
+        raise Refused(
+            "these migrations write the columns this script owns and have "
+            f"not been reviewed: {offenders}. Read them, confirm gtin14 and "
+            "name_normalized still mean what they meant, then add their "
+            "revisions to REVIEWED_FOOD_REVISIONS."
         )
 
     if args.apply:
@@ -267,7 +452,7 @@ _READ = text(
 )
 
 
-def build_update(changes: list[tuple[str, Optional[str], str]]) -> tuple[Any, dict]:
+def build_update(changes: list[tuple[str, str | None, str]]) -> tuple[Any, dict]:
     """One UPDATE per batch, carrying only the rows that actually change.
 
     EXPLICIT CAST(...) RATHER THAN `:param::text`. SQLAlchemy's text() parses
@@ -351,13 +536,13 @@ async def run(args: argparse.Namespace) -> int:
                 if not rows:
                     break
 
-                changes: list[tuple[str, Optional[str], str]] = []
+                changes: list[tuple[str, str | None, str]] = []
                 for r in rows:
                     counters.scanned += 1
                     try:
                         gtin = normalize_gtin(r["barcode"])
                         name_norm = normalize(r["name"] or "")
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         # ONE BAD ROW MUST NOT END THE RUN. Both functions are
                         # property-tested never to raise; this is the second
                         # layer, because the input is 578,773 uncontrolled
@@ -426,7 +611,7 @@ def _report(counters: Counters, args: argparse.Namespace, elapsed: float) -> Non
     if counters.samples:
         print(f"sample ({len(counters.samples)})")
         for _id, raw, gtin, name, norm in counters.samples:
-            print(f"  {str(raw)[:16]:16} -> {str(gtin):16}   "
+            print(f"  {str(raw)[:16]:16} -> {gtin!s:16}   "
                   f"{str(name)[:28]:28} -> {norm[:28]}")
         print()
     print("results")

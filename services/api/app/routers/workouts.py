@@ -8,23 +8,25 @@ possible on the client.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+import re
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from sqlalchemy import case, func, or_, text as sa_text
+from sqlalchemy import case, func, or_
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from ..db import get_session
 from ..models import Exercise, Gym, SetLog, Station, User, WorkoutSession
 from ..schemas import (
+    PlateauAssessmentPublic,
+    PlateauPerformance,
     SetLogRequest,
     StationCreate,
     StationPublic,
     StrengthPoint,
-    PlateauAssessmentPublic,
-    PlateauPerformance,
     StrengthSeries,
     VoiceCommitRequest,
     WorkoutSessionRequest,
@@ -33,12 +35,17 @@ from ..services import strength
 from ..services.adjudication import MIN_SESSIONS
 from ..services.plateau import (
     Exposure as PlateauExposure,
+)
+from ..services.plateau import (
     Series as PlateauSeries,
+)
+from ..services.plateau import (
     SeriesKey as PlateauSeriesKey,
+)
+from ..services.plateau import (
     assess_plateau,
 )
-from ..services.strength import ewma
-from ..services.volume import build_report as build_volume_report
+from ..services.strength import ewma_over_weeks
 from ..services.workout_voice import transcribe_workout
 from .auth import current_user
 
@@ -51,7 +58,7 @@ router = APIRouter(prefix="/api/workouts", tags=["workouts"])
 
 
 def _alias_match(needle: str):
-    """`EXISTS (SELECT 1 FROM jsonb_array_elements_text(aliases) WHERE ... ILIKE)`.
+    r"""`EXISTS (SELECT 1 FROM jsonb_array_elements_text(aliases) WHERE ... ILIKE)`.
 
     Written as a correlated EXISTS rather than the shorter
     `aliases.cast(Text).ilike(...)`, because casting the whole array to text
@@ -59,11 +66,58 @@ def _alias_match(needle: str):
     two unrelated aliases and return a movement nobody asked for. Matching
     each element separately is the honest test, and it is what makes brand
     search trustworthy enough to be the primary way people find a machine.
+
+    Aliases get the same token-prefix treatment as names, and for the same
+    reason: without it "row" still reached Narrow Stance Squats through the
+    alias "narrow stance squat", having been filtered out of the name side.
+    That row is why the name-side fix alone was not enough -- it was the one
+    removal of eleven that a name-only audit could not see.
     """
     return sa_text(
+        "EXISTS (SELECT 1 FROM jsonb_array_elements_text(exercises.aliases)"
+        " AS alias WHERE alias ~* ('\\m' || :alias_prefix))"
+    ).bindparams(alias_prefix=re.escape(needle.strip("%")))
+
+
+def _exact_alias_match(needle: str):
+    """The movement that OWNS this term, as opposed to merely containing it."""
+    return sa_text(
         "EXISTS (SELECT 1 FROM jsonb_array_elements_text(exercises.aliases) AS alias"
-        " WHERE alias ILIKE :alias_needle)"
-    ).bindparams(alias_needle=needle)
+        " WHERE lower(alias) = lower(:exact_needle))"
+    ).bindparams(exact_needle=needle)
+
+
+def _name_match(needle: str):
+    r"""Match the name at a TOKEN PREFIX -- Postgres `\m`, not `\y`.
+
+    The query must start a word; it need not end one. That single rule is
+    correct at every length, which is why there is no short-query special
+    case here any more.
+
+    WHY NOT A WORD BOUNDARY ON BOTH SIDES. `\yrow\y` does not match "Rows",
+    and the catalogue is full of plurals. Measured over all 897 rows:
+
+        query      \y..\y   \m     lost by the two-sided rule
+        row          55      61    Seated Cable Rows, Elevated Cable Rows
+        fly          13      26    Dumbbell Flyes, Bodyweight Flyes
+        curl         77      88    Concentration Curls, Finger Curls
+        dip           6      10    Bench Dips, Ring Dips
+        pulldown     18      20    Underhand Cable Pulldowns
+
+    `fly` loses HALF its results. Note `pulldown` too: a long query is
+    damaged as well, so there is no length at which the two-sided rule
+    becomes the right one.
+
+    Token-prefix still excludes the coincidences that started this --
+    "th(row)" and "na(rrow)" have the query starting mid-token, so `\m`
+    rejects them exactly as the old rule did.
+
+    """
+    # The needle reaches a regex, so metacharacters have to be escaped: a
+    # user typing "c++" must search for "c++", not raise a regex error.
+    return sa_text(
+        r"exercises.name ~* ('\m' || :name_prefix)"
+    ).bindparams(name_prefix=re.escape(needle))
 
 
 @router.get("/exercises", response_model=list[dict])
@@ -87,17 +141,23 @@ async def list_exercises(
         like = f"%{needle}%"
         stmt = stmt.where(
             or_(
-                Exercise.name.ilike(like),  # type: ignore[union-attr]
+                _name_match(needle),
                 _alias_match(like),
             )
         ).order_by(
-            # Best match first: the exact movement, then a name that starts
-            # with what was typed, then a name containing it, then an alias.
+            # Best match first. AN EXACT ALIAS SITS SECOND, ABOVE EVERY
+            # PARTIAL NAME MATCH. Without that tier "lateral raise" returned
+            # "Lateral Raise - With Bands" first and the movement that
+            # actually owns the alias, Dumbbell Lateral Raise, came sixth.
+            # Aliases are how a nameplate or brand term reaches a movement at
+            # all; ranking them below every substring hit defeats the thing
+            # they exist for.
             case(
                 (func.lower(Exercise.name) == needle.lower(), 0),
-                (Exercise.name.ilike(f"{needle}%"), 1),  # type: ignore[union-attr]
-                (Exercise.name.ilike(like), 2),  # type: ignore[union-attr]
-                else_=3,
+                (_exact_alias_match(needle), 1),
+                (Exercise.name.ilike(f"{needle}%"), 2),  # type: ignore[union-attr]
+                (Exercise.name.ilike(like), 3),  # type: ignore[union-attr]
+                else_=4,
             ),
             Exercise.name,
         )
@@ -137,7 +197,7 @@ async def exercise_catalogue(
     an all-time best: the list is answering "what am I lifting on this right
     now", and a PR from eight months ago is the wrong answer to that.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     recent_cut = now - timedelta(days=30)
     this_week_cut = now - timedelta(days=7)
     last_week_cut = now - timedelta(days=14)
@@ -241,7 +301,7 @@ async def start_session(
     ws = WorkoutSession(
         user_id=user.id,
         routine_name=payload.routine_name,
-        started_at=payload.started_at or datetime.now(timezone.utc),
+        started_at=payload.started_at or datetime.now(UTC),
         notes=payload.notes,
     )
     session.add(ws)
@@ -347,7 +407,7 @@ async def _reference_e1rm(
     max, and letting one set the reference would make it bounce around and
     turn every real working set into a fake personal record.
     """
-    since = datetime.now(timezone.utc) - timedelta(days=REFERENCE_WINDOW_DAYS)
+    since = datetime.now(UTC) - timedelta(days=REFERENCE_WINDOW_DAYS)
     return await session.scalar(
         select(func.max(SetLog.e1rm)).where(
             SetLog.user_id == user_id,
@@ -469,7 +529,7 @@ async def finish_session(
     if ws is None or ws.user_id != user.id:
         raise HTTPException(status_code=404, detail="Workout session not found.")
     if ws.ended_at is None:
-        ws.ended_at = datetime.now(timezone.utc)
+        ws.ended_at = datetime.now(UTC)
         session.add(ws)
         await session.commit()
     return await session_summary(session_id, session, user)
@@ -540,7 +600,7 @@ async def session_summary(
     ).all()
     previous = {k: v for k, v in prev_rows if v is not None}
 
-    ended = ws.ended_at or datetime.now(timezone.utc)
+    ended = ws.ended_at or datetime.now(UTC)
     duration = max(0, int((ended - ws.started_at).total_seconds() // 60))
 
     s = strength.summarise_session(
@@ -777,7 +837,7 @@ async def strength_overview(
     itself -- ranked by how many weeks they actually appear in, then by load,
     so a heavy one-off doesn't outrank the squat you do every week.
     """
-    since = datetime.now(timezone.utc) - timedelta(weeks=weeks)
+    since = datetime.now(UTC) - timedelta(weeks=weeks)
     rows = (
         await session.execute(
             select(SetLog, Exercise.name)
@@ -862,7 +922,7 @@ async def strength_progress(
     There is deliberately NO conversion between series. Compare within one;
     never across.
     """
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
     rows = (
         await session.execute(
             select(SetLog)
@@ -888,22 +948,28 @@ async def strength_progress(
 
     series: list[StrengthSeries] = []
     for (station_id, profile), weekly in grouped.items():
-        points: list[StrengthPoint] = []
-        running: list[float] = []
+        # Weeks with no training are ABSENT from `weekly`, not present with a
+        # null, so an undated smoother would run straight across a layoff and
+        # score the first session back against pre-layoff form. The dated
+        # smoother sees the interval and starts a new baseline instead.
+        dated: list[tuple[date, float]] = []
         for week in sorted(weekly):
-            sets = weekly[week]
-            best = max((s.e1rm for s in sets if s.e1rm), default=None)
-            if best is None:
-                continue
-            running.append(best)
-            points.append(
-                StrengthPoint(
-                    week_start=week,
-                    best_e1rm=round(best, 1),
-                    e1rm_ewma=round(ewma(running) or best, 1),
-                    volume_load=round(sum(s.weight_kg * s.reps for s in sets), 1),
-                )
+            best = max((s.e1rm for s in weekly[week] if s.e1rm), default=None)
+            if best is not None:
+                dated.append((week, best))
+
+        smoothed = ewma_over_weeks(dated)
+        points: list[StrengthPoint] = [
+            StrengthPoint(
+                week_start=week,
+                best_e1rm=round(best, 1),
+                e1rm_ewma=round(smooth, 1),
+                volume_load=round(
+                    sum(s.weight_kg * s.reps for s in weekly[week]), 1
+                ),
             )
+            for (week, best), smooth in zip(dated, smoothed)
+        ]
         if not points:
             continue
         label = names.get(station_id, "Not recorded") if station_id else "Not recorded"
@@ -967,7 +1033,7 @@ async def exercise_plateau(
     `False` here would be a lie dressed as data, so the exposures below say
     "unknown" and the detector treats unknown as unknown.
     """
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
     rows = (
         await session.execute(
             select(SetLog)
@@ -1054,7 +1120,7 @@ async def exercise_plateau(
     distinct_sessions = len({r.session_id for r in rows})
     assessment = assess_plateau(
         series,
-        today=datetime.now(timezone.utc).date(),
+        today=datetime.now(UTC).date(),
         adjudication_insufficient=distinct_sessions < MIN_SESSIONS,
         window_days=days,
     )
@@ -1265,7 +1331,7 @@ async def commit_voice_workout(
         ).all()
     }
 
-    started = payload.started_at or datetime.now(timezone.utc)
+    started = payload.started_at or datetime.now(UTC)
     ws = WorkoutSession(
         user_id=user.id,
         routine_name=payload.routine_name or "Voice log",
@@ -1275,7 +1341,7 @@ async def commit_voice_workout(
         # and let tomorrow's sets fall into yesterday's session.
         ended_at=started + timedelta(minutes=payload.duration_min)
         if payload.duration_min
-        else datetime.now(timezone.utc),
+        else datetime.now(UTC),
         notes=payload.transcript,
     )
     session.add(ws)

@@ -233,3 +233,70 @@ def describe(
     out.plates_lb = round(p_lb, 1)
     out.plates_both = f"{_fmt(p_kg, 'kg')} · {_fmt(p_lb, 'lb')}"
     return out
+
+
+# ---------------------------------------------------------------------------
+# Selectorised stacks
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS NOT `position * increment`
+# Two Hammer Strength machines standing a few metres apart on one Gold's Gym
+# floor, photographed 2026-08-22:
+#
+#   FIXED PULLDOWN / ROW   5, 12, 19, 26, ... 138   (a 5, then steps of 7)
+#   LATERAL RAISE          5, 10, 15, 20, 25, 32, 39, ... (5s, then 7s)
+#
+# Same brand, same gym, same afternoon. "Plate 8" is 54 on one and 46 on the
+# other, and on the Lateral Raise the step size CHANGES PARTWAY UP THE STACK,
+# so no single increment describes even that one machine. Anything that
+# multiplies a pin position by a constant is wrong here, and wrong in the
+# direction that tells somebody to select a weight the machine does not have.
+
+
+def stack_loads(stack_ranges: list[dict[str, float]]) -> list[float]:
+    """Expand `Station.stack_ranges` into the numbers printed on the plates.
+
+    Each range is inclusive of both ends. Ranges are walked in the order
+    given -- the order they appear on the machine, bottom plate first --
+    because a real stack's step size can change partway up and sorting would
+    lose that.
+    """
+    loads: list[float] = []
+    for r in stack_ranges:
+        start, end, step = float(r["start"]), float(r["end"]), float(r["step"])
+        if step <= 0 or end < start:
+            continue
+        value = start
+        while value <= end + 1e-9:
+            if not loads or abs(value - loads[-1]) > 1e-9:
+                loads.append(round(value, 3))
+            value += step
+    return loads
+
+
+def nearest_loadable_on_stack(
+    target_kg: float,
+    stack_ranges: list[dict[str, float]],
+    *,
+    add_ons_kg: list[float] | None = None,
+) -> float | None:
+    """The closest load this specific machine can actually produce.
+
+    `add_ons_kg` are the micro-plates sitting on top of the stack, each
+    independently engageable -- the Row carries two 2.5s, the Fixed Pulldown
+    a 2.5 and a 5. Every subset is a real selection, so the reachable set is
+    every stack value plus every subset sum.
+
+    `None` when the stack is unknown; callers must then fall back to the
+    coarse per-equipment step rather than inventing a number.
+    """
+    loads = stack_loads(stack_ranges)
+    if not loads:
+        return None
+
+    subsets = {0.0}
+    for a in add_ons_kg or []:
+        subsets |= {s + float(a) for s in subsets}
+
+    reachable = sorted({round(base + extra, 3) for base in loads for extra in subsets})
+    return min(reachable, key=lambda v: (abs(v - target_kg), v))

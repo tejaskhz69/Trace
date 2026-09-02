@@ -7,6 +7,8 @@ when they did.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from app.services.strength import (
@@ -18,6 +20,8 @@ from app.services.strength import (
     SetVerdict,
     assess_set,
     e1rm,
+    ewma,
+    ewma_over_weeks,
     load_pct,
     prescribe_next_set,
     purple_route,
@@ -465,3 +469,121 @@ class TestAdjudicationReadsTheSameImplementation:
         assert adjudication.E1RM_EWMA_ALPHA == 0.4
         assert adjudication.epley_e1rm(100, 1) == 100
         assert adjudication.ewma([100, 100, 100]) == 100
+
+
+class TestTheSmoothingIsPinnedToRealArithmetic:
+    """`ewma([100, 100, 100]) == 100` was the only coverage this had.
+
+    That assertion passes for any alpha, and it also passes for a plain mean,
+    for "return the last element", and for "return the first". It pins
+    nothing. These compute the series by hand instead.
+    """
+
+    def test_a_hand_computed_series(self):
+        # acc = 100
+        # acc = 100 + 0.4 * (110 - 100) = 104.0
+        # acc = 104 + 0.4 * (105 - 104) = 104.4
+        assert ewma([100.0, 110.0, 105.0]) == pytest.approx(104.4)
+
+    def test_a_second_hand_computed_series(self):
+        # acc = 50, 50, 50, then 50 + 0.4 * (100 - 50) = 70
+        assert ewma([50.0, 50.0, 50.0, 100.0]) == pytest.approx(70.0)
+
+    def test_it_is_not_the_mean_nor_the_latest_value(self):
+        """The three cheap wrong implementations, ruled out explicitly."""
+        got = ewma([100.0, 200.0])
+        assert got == pytest.approx(140.0)
+        assert got != pytest.approx(150.0)  # mean
+        assert got != pytest.approx(200.0)  # latest
+        assert got != pytest.approx(100.0)  # first
+
+    def test_the_first_session_is_itself_not_a_fraction_of_itself(self):
+        """Seeding the accumulator at zero is the classic EWMA bug: the first
+        point would come back as 40 kg for a 100 kg lift, and the opening
+        weeks of every series would read as a climb that never happened."""
+        assert ewma([100.0]) == 100.0
+
+    def test_an_empty_series_refuses_rather_than_returning_zero(self):
+        """Zero would render as a real e1RM of 0 kg."""
+        assert ewma([]) is None
+
+    def test_alpha_is_load_bearing_and_pinned(self):
+        from app.services.strength import EWMA_ALPHA
+
+        assert EWMA_ALPHA == 0.4
+        assert ewma([100.0, 200.0], alpha=0.4) != ewma([100.0, 200.0], alpha=0.6)
+
+
+class TestALayoffEndsTheSeriesRatherThanInterruptingIt:
+    """A lifter trains through March, disappears for six weeks, comes back.
+
+    The weekly series is built by grouping sets into ISO weeks, and weeks
+    with no training are ABSENT from that grouping rather than present with
+    a null. So the plain `ewma()` sees two adjacent numbers and smooths
+    straight across the gap -- the return reads as a continuation of
+    pre-layoff form.
+    """
+
+    #: Four weeks at 100, six weeks off, then three weeks back at 80.
+    LAYOFF = [
+        (date(2026, 3, 2), 100.0),
+        (date(2026, 3, 9), 100.0),
+        (date(2026, 3, 16), 100.0),
+        (date(2026, 3, 23), 100.0),
+        # six weeks of nothing
+        (date(2026, 5, 4), 80.0),
+        (date(2026, 5, 11), 82.0),
+        (date(2026, 5, 18), 84.0),
+    ]
+
+    def test_the_undated_smoother_cannot_see_the_gap(self):
+        """Not a failure of `ewma` -- a demonstration of why the dated one
+        has to exist. Given only the values, the first session back is
+        smoothed to 92, i.e. mostly the lifter's pre-layoff self."""
+        values = [v for _d, v in self.LAYOFF]
+        assert ewma(values[:5]) == pytest.approx(92.0)
+
+    def test_the_first_session_back_is_a_new_baseline(self):
+        smoothed = ewma_over_weeks(self.LAYOFF)
+        assert smoothed[3] == pytest.approx(100.0)  # last week before the break
+        assert smoothed[4] == pytest.approx(80.0)   # first week back: itself
+
+    def test_the_return_is_not_smoothed_towards_pre_layoff_form(self):
+        smoothed = ewma_over_weeks(self.LAYOFF)
+        assert smoothed[4] < 85.0, (
+            "the first session back was smoothed towards the pre-layoff "
+            "reference, which is the bug this function exists to prevent"
+        )
+
+    def test_the_rebuild_smooths_normally_once_training_resumes(self):
+        """Resetting must not mean "never smooth again"."""
+        smoothed = ewma_over_weeks(self.LAYOFF)
+        # 80, then 80 + 0.4*(82-80) = 80.8, then 80.8 + 0.4*(84-80.8) = 82.08
+        assert smoothed[5] == pytest.approx(80.8)
+        assert smoothed[6] == pytest.approx(82.08)
+
+    def test_an_ordinary_week_off_is_not_a_layoff(self):
+        """Missing one week is normal life -- illness, travel, a deload. It
+        must not reset the trend or nobody's series ever smooths."""
+        points = [
+            (date(2026, 3, 2), 100.0),
+            (date(2026, 3, 9), 100.0),
+            # one week missed
+            (date(2026, 3, 23), 120.0),
+        ]
+        smoothed = ewma_over_weeks(points)
+        assert smoothed[2] == pytest.approx(108.0)  # smoothed, not reset
+
+    def test_it_agrees_with_the_plain_smoother_on_an_unbroken_series(self):
+        """The two must not disagree when there is no gap to disagree about."""
+        points = [
+            (date(2026, 3, 2), 100.0),
+            (date(2026, 3, 9), 110.0),
+            (date(2026, 3, 16), 105.0),
+        ]
+        assert ewma_over_weeks(points)[-1] == pytest.approx(
+            ewma([v for _d, v in points])
+        )
+
+    def test_an_empty_series_is_empty_not_a_crash(self):
+        assert ewma_over_weeks([]) == []

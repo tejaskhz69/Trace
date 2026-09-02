@@ -321,13 +321,17 @@ class TestNoClassificationTokenIsAnAlias:
     """
 
     def test_the_token_set_covers_every_value_the_seed_uses(self):
-        """If a new pattern is added to the seed, this fails until the token
-        set is updated -- which keeps 'closed set' true rather than aspirational."""
-        from app.scripts import seed_movements
+        """If a new pattern is added, this fails until the token set is
+        updated -- which keeps 'closed set' true rather than aspirational.
+
+        Reads the classification from its own module now that it has left
+        the catalogue tuples; the tokens it must never become are still the
+        same ones."""
+        from app.scripts.data.movement_attributes import MOVEMENT_ATTRIBUTES
         from app.services.catalogue import CLASSIFICATION_TOKENS
 
-        used = {normalise_term(e[5]) for e in seed_movements.E}
-        used |= {normalise_term(e[6]) for e in seed_movements.E}
+        used = {normalise_term(d) for d, _p, _u in MOVEMENT_ATTRIBUTES.values()}
+        used |= {normalise_term(p) for _d, p, _u in MOVEMENT_ATTRIBUTES.values()}
         missing = sorted(used - CLASSIFICATION_TOKENS)
         assert missing == [], (
             f"{missing} are used as a pattern/profile but are not in "
@@ -341,7 +345,7 @@ class TestNoClassificationTokenIsAnAlias:
         offenders = [
             (row[0], alias)
             for row in seed_movements.E
-            for alias in row[8]
+            for alias in row[5]
             if is_classification_token(alias)
         ]
         assert offenders == [], offenders
@@ -354,7 +358,7 @@ class TestNoClassificationTokenIsAnAlias:
 
         rows = [
             {"name": name, "aliases": sorted(set(aliases))}
-            for (name, _m, _s, _e, _c, _p, _pr, _u, aliases) in seed_movements.E
+            for (name, _m, _s, _e, _c, aliases) in seed_movements.E
         ]
         offenders = [
             (r["name"], a)
@@ -364,13 +368,16 @@ class TestNoClassificationTokenIsAnAlias:
         ]
         assert offenders == []
 
-    def test_pattern_and_profile_are_still_recorded_in_the_source(self):
-        """Removed from the alias list, NOT lost. This file stays the source
-        of truth until `exercise_attributes` has somewhere to put them."""
+    def test_pattern_and_profile_are_still_recorded(self):
+        """Removed from the alias list and then moved out of the catalogue
+        tuples entirely -- but never lost. They now live in
+        `data/movement_attributes.py` and land in `exercise_attributes`.
+        See tests/test_movement_attributes.py for the full contract."""
         from app.scripts import seed_movements
+        from app.scripts.data.movement_attributes import MOVEMENT_ATTRIBUTES
 
-        assert all(row[5] and row[6] for row in seed_movements.E)
-        assert len(seed_movements.E) == 154
+        assert all(d and p for d, p, _u in MOVEMENT_ATTRIBUTES.values())
+        assert len(MOVEMENT_ATTRIBUTES) == len(seed_movements.E) == 154
 
 
 class TestAliasRemovalsAreCoherent:
@@ -438,7 +445,7 @@ class TestSeedSourceAliasHygiene:
         offenders = [
             (row[0], alias)
             for row in seed_movements.E
-            for alias in row[8]
+            for alias in row[5]
             if normalise_term(alias) in names
             and normalise_term(alias) != normalise_term(row[0])
         ]

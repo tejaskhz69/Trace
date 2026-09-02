@@ -175,6 +175,81 @@ def is_exportable(licence: Licence) -> bool:
     return licence in (Licence.public_domain, Licence.owned)
 
 
+#: What to CALL a source in front of a user, as distinct from the credit line.
+#:
+#: `attribution_for` returns "Open Food Facts (ODbL)" -- a credit, licence and
+#: all. A list row has space for a name and nothing else, and "TRACE ESTIMATE"
+#: is the honest label for a row we generated ourselves. Keeping the two apart
+#: is what lets the UI show a short tag in a row and a full sentence in a
+#: detail view without either being a truncation of the other.
+#:
+#: EXHAUSTIVE OVER `FoodSource` BY CONTRACT, same as LICENCE_MAP, and tested
+#: the same way. This table exists because the client used to keep its own
+#: copy and the copy drifted: `nutritionix` was added to the API and never to
+#: the client, so metered rows rendered as "SOURCE UNKNOWN" -- dropping a
+#: credit we are contractually obliged to show. The server owns the wording
+#: now and the client renders what it is handed.
+DISPLAY_NAMES: dict[FoodSource, str] = {
+    FoodSource.usda: "USDA FoodData Central",
+    FoodSource.off: "Open Food Facts",
+    FoodSource.curated: "Trace",
+    FoodSource.user: "You",
+    FoodSource.nutritionix: "Nutritionix",
+    FoodSource.ai: "Trace estimate",
+    FoodSource.ifct: "Indian Food Composition Tables",
+}
+
+#: Licence -> the phrase that goes after the source name. Deliberately plain:
+#: these are the words a user reads, not the words a licence uses about
+#: itself, and none of them asserts that showing them discharges anything.
+_LICENCE_PHRASES: dict[Licence, str] = {
+    Licence.public_domain: "in the public domain",
+    Licence.odbl: "made available under the Open Database License (ODbL)",
+    Licence.proprietary: "used under licence",
+    Licence.owned: "compiled by Trace",
+    Licence.unknown: "licence not recorded",
+}
+
+
+def display_name_for(source: FoodSource) -> str:
+    """User-facing name for a source. Never guesses.
+
+    An unmapped source returns a phrase that says so, rather than a prettified
+    version of the enum value -- a made-up name reads as authoritative, and
+    "we do not know" is the true answer.
+    """
+    return DISPLAY_NAMES.get(source, "Source not recorded")
+
+
+def attribution_line(source: FoodSource, licence: Licence | None = None) -> str | None:
+    """One factual sentence crediting this row's source, or None when none is owed.
+
+    None for `curated`, `user` and `ai`: there is no third party to credit, and
+    tagging our own dishes with somebody else's name is the specific error this
+    whole module exists to prevent. The caller renders nothing in that case
+    rather than rendering an empty notice.
+
+    The test is `attribution_for(...) is not None` -- IS A THIRD PARTY NAMED --
+    and deliberately NOT `requires_attribution(...)`, which additionally
+    demands a recognised licence. IFCT carries a named publisher and an
+    UNKNOWN licence, and the fail-closed direction differs between the two
+    questions this module answers: for EXPORT, "unsure" must mean no, because
+    distributing without the right is the harm; for CREDIT, "unsure" must mean
+    yes, because omitting a credit is the harm and showing one costs nothing.
+
+    `licence` is passed in so the row's OWN stored licence wins over the
+    source's default -- a row whose `source_licence` is 'unknown' must say so,
+    not inherit ODbL from a table.
+    """
+    if attribution_for(source) is None:
+        return None
+    name = display_name_for(source)
+    phrase = _LICENCE_PHRASES.get(licence or licence_for(source))
+    return f"Nutrition data from {name}, {phrase}." if phrase else (
+        f"Nutrition data from {name}."
+    )
+
+
 def attribution_notice() -> str:
     """The credit block for the profile screen.
 
