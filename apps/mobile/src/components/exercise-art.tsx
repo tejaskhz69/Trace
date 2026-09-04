@@ -6,14 +6,26 @@
  * photographs would be a few hundred megabytes of assets that would also wreck
  * the near-black line-art language the rest of the app is built in.
  *
- * So: tier 1 is a hand-drawn figure for the movements a beginner is actually
- * confused by, tier 2 is a large equipment glyph for everything else. Exercise
- * logging is brutally power-law — bench, squat, deadlift, press, rows,
- * pulldowns and curls are the overwhelming majority of logged sets — so a
- * small drawn set covers most of what anyone opens.
+ * So there are three tiers, and each is a real answer rather than a
+ * placeholder:
  *
- * Tier 2 is NOT a placeholder. "Cable" versus "barbell" versus "machine" is
- * genuinely the thing that tells a beginner what to walk up to.
+ *   1. NAME MATCH   a hand-drawn figure for the specific movement.
+ *   2. CATEGORY     the family figure — a stretch looks like a stretch, a
+ *                   plyometric looks like a jump. Measured: this alone
+ *                   rescues 76 of the 121 names that matched nothing, and
+ *                   it is far more informative than a dumbbell glyph on
+ *                   "Child's Pose".
+ *   3. EQUIPMENT    the glyph. "Cable" versus "barbell" versus "machine" is
+ *                   genuinely what tells a beginner where to walk.
+ *
+ * Exercise logging is brutally power-law — bench, squat, deadlift, press,
+ * rows, pulldowns and curls are most logged sets — so the drawn set covers
+ * most of what anyone opens, and the tiers below it stop the tail from
+ * looking broken.
+ *
+ * COVERAGE IS MEASURED, NOT ASSUMED. `artifacts/art-coverage-misses.json` is
+ * regenerated from the catalogue; the name tier alone was 752/873 (86.1%).
+ * `drawn` in the return value stays honest about which tier answered.
  *
  * MATCHING is on keywords rather than exercise IDs, because the catalogue is
  * seeded from an external source and its IDs are not stable across re-seeds.
@@ -50,6 +62,22 @@ function art(render: (s: ReturnType<typeof S>) => React.ReactNode) {
     );
   });
 }
+
+/**
+ * Cardio. A crank and a wheel: the one shape shared by bike, elliptical and
+ * rower, which is what the cardio rows in the catalogue actually have in
+ * common. Treadmill names match the `Jump` runner instead.
+ */
+const Cardio = art((s) => (
+  <>
+    <Circle cx="30" cy="70" r="16" {...s} />
+    <Circle cx="74" cy="70" r="9" {...s} />
+    <Path d="M30 70 L42 50 H60" {...s} />
+    <Path d="M60 50 L74 70" {...s} />
+    <Path d="M52 50 L52 30 H68" {...s} />
+    <Circle cx="30" cy="70" r="3" {...s} />
+  </>
+));
 
 /** Incline press — the bench angle is the whole point of the drawing. */
 const InclinePress = art((s) => (
@@ -715,6 +743,64 @@ const PATTERNS: Array<[string[], React.ComponentType<ArtProps>]> = [
   [['sprint'], Jump],
   [['bound'], Jump],
   [['skater'], Jump],
+  // ---- names the first pass missed, added after measuring -----------
+  // Each of these was in the 121-name miss list. Grouped by the figure they
+  // land on so the reasoning stays visible.
+  //
+  // Floor and anti-extension core. All of these are someone on their back or
+  // in a plank; the crunch figure reads correctly for the whole family.
+  [['dead', 'bug'], Crunch],
+  [['flutter'], Crunch],
+  [['heel', 'touch'], Crunch],
+  [['cocoon'], Crunch],
+  [['jackknife'], Crunch],
+  [['pull-in'], Crunch],
+  [['bottoms', 'up'], Crunch],
+  [['leg', 'tuck'], Crunch],
+  [['butt-up'], Crunch],
+  [['body-up'], Crunch],
+  [['otis'], Crunch],
+  [['fallout'], Rollout],
+  [['elbow', 'to', 'knee'], Crunch],
+  [['leg', 'lift'], HangingRaise],
+  // Hanging from a bar. Chins, muscle-ups and rope climbs are all vertical
+  // pulls, which is what the pulldown figure shows.
+  [['chin'], Pulldown],
+  [['muscle', 'up'], Pulldown],
+  [['rope', 'climb'], Pulldown],
+  // Shoulder and rotator-cuff work: arms out to the side, loaded light.
+  [['scaption'], LateralRaise],
+  [['pronation'], LateralRaise],
+  [['supination'], LateralRaise],
+  [['side', 'lateral'], LateralRaise],
+  [['around', 'the', 'world'], LateralRaise],
+  [['iron', 'cross'], LateralRaise],
+  [['car', 'driver'], LateralRaise],
+  [['power', 'partial'], LateralRaise],
+  // Barbell hinges and landmine work.
+  [['landmine'], Twist],
+  [['jammer'], OverheadPress],
+  [['rack', 'pull'], Deadlift],
+  [['rack', 'delivery'], OlympicPull],
+  [['pull', 'through'], Hinge],
+  [['stiff', 'leg'], Hinge],
+  // Grip.
+  [['pinch'], Wrist],
+  [['hand', 'squeeze'], Wrist],
+  [['spell', 'caster'], Twist],
+  // Machine and assisted hamstring / hip.
+  [['hamstring', 'slide'], LegCurl],
+  [['manual', 'hamstring'], LegCurl],
+  [['thigh', 'abductor'], Abduction],
+  [['monster', 'walk'], Band],
+  [['slam'], Swing],
+  // Cardio equipment.
+  [['air', 'bike'], Cardio],
+  [['bicycl'], Cardio],
+  [['elliptical'], Cardio],
+  [['rowing'], Cardio],
+  [['stationary'], Cardio],
+  [['treadmill'], Jump],
   // ---- the big generic buckets, LAST --------------------------------
   // 'stretch' is the single largest block in the catalogue at 51 names,
   // and it is deliberately near the bottom: "standing hamstring stretch"
@@ -730,24 +816,50 @@ const PATTERNS: Array<[string[], React.ComponentType<ArtProps>]> = [
 ];
 
 /**
+ * The category tier. Every row in the catalogue carries one of these, and a
+ * family figure beats an equipment glyph every time: "Child's Pose" drawn as
+ * a stretch is useful, drawn as a dumbbell is noise.
+ */
+const BY_CATEGORY: Record<string, React.ComponentType<ArtProps>> = {
+  stretching: Stretch,
+  plyometrics: Jump,
+  strongman: Carry,
+  cardio: Cardio,
+  powerlifting: Deadlift,
+  'olympic weightlifting': OlympicPull,
+};
+
+/** Which tier answered. Useful for measuring coverage, and for tests. */
+export type ArtTier = 'name' | 'category' | 'equipment';
+
+/**
  * Pick the illustration for an exercise.
  *
- * Falls back to the equipment glyph, drawn large. Returning a component rather
- * than an element lets the caller size and colour it.
+ * Returns a component rather than an element so the caller sizes and colours
+ * it. `drawn` stays true for tiers 1 and 2 — both are real figures — and goes
+ * false only for the equipment glyph, so a screen can still choose to treat
+ * the glyph differently.
  */
 export function exerciseArt(
   name: string,
   equipment: string | null | undefined,
-): { Art: React.ComponentType<ArtProps>; drawn: boolean } {
+  category?: string | null,
+): { Art: React.ComponentType<ArtProps>; drawn: boolean; tier: ArtTier } {
   const n = name.toLowerCase();
   for (const [words, Comp] of PATTERNS) {
-    if (words.every((w) => n.includes(w))) return { Art: Comp, drawn: true };
+    if (words.every((w) => n.includes(w))) {
+      return { Art: Comp, drawn: true, tier: 'name' };
+    }
   }
+
+  const byCat = category ? BY_CATEGORY[category.toLowerCase()] : undefined;
+  if (byCat) return { Art: byCat, drawn: true, tier: 'category' };
+
   const Glyph = equipmentIcon(equipment);
   const Fallback = ({ size = 120, color = palette.textDim }: ArtProps) => (
     <View style={{ alignItems: 'center', justifyContent: 'center' }}>
       <Glyph size={size * 0.55} color={color} strokeWidth={1.4} />
     </View>
   );
-  return { Art: Fallback, drawn: false };
+  return { Art: Fallback, drawn: false, tier: 'equipment' };
 }

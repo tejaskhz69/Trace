@@ -1,0 +1,607 @@
+[
+  {
+    "name": "90/90 Hamstring",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Air Bike",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Alternate Heel Touchers",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Ankle On The Knee",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Around The Worlds",
+    "equipment": "dumbbell",
+    "category": "strength"
+  },
+  {
+    "name": "Bicycling",
+    "equipment": "other",
+    "category": "cardio"
+  },
+  {
+    "name": "Bicycling, Stationary",
+    "equipment": "machine",
+    "category": "cardio"
+  },
+  {
+    "name": "Body-Up",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Bottoms Up",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Box Skip",
+    "equipment": "other",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Butt-Ups",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Car Drivers",
+    "equipment": "barbell",
+    "category": "strength"
+  },
+  {
+    "name": "Carioca Quick Step",
+    "equipment": null,
+    "category": "plyometrics"
+  },
+  {
+    "name": "Chest Push from 3 point stance",
+    "equipment": "medicine ball",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Chest Push (multiple response)",
+    "equipment": "medicine ball",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Chest Push (single response)",
+    "equipment": "medicine ball",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Chest Push with Run Release",
+    "equipment": "medicine ball",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Child's Pose",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Circus Bell",
+    "equipment": "other",
+    "category": "strongman"
+  },
+  {
+    "name": "Cocoons",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Conan's Wheel",
+    "equipment": "other",
+    "category": "strongman"
+  },
+  {
+    "name": "Crucifix",
+    "equipment": "other",
+    "category": "strongman"
+  },
+  {
+    "name": "Dead Bug",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Double Leg Butt Kick",
+    "equipment": "body only",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Drop Push",
+    "equipment": "other",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Dumbbell Lying Pronation",
+    "equipment": "dumbbell",
+    "category": "strength"
+  },
+  {
+    "name": "Dumbbell Lying Supination",
+    "equipment": "dumbbell",
+    "category": "strength"
+  },
+  {
+    "name": "Dumbbell Scaption",
+    "equipment": "dumbbell",
+    "category": "strength"
+  },
+  {
+    "name": "Elbow to Knee",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Elbows Back",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Elliptical Trainer",
+    "equipment": "machine",
+    "category": "cardio"
+  },
+  {
+    "name": "Exercise Ball Pull-In",
+    "equipment": "exercise ball",
+    "category": "strength"
+  },
+  {
+    "name": "Fast Skipping",
+    "equipment": "body only",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Flutter Kicks",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Gironda Sternum Chins",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "Heavy Bag Thrust",
+    "equipment": "other",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Hug A Ball",
+    "equipment": "exercise ball",
+    "category": "stretching"
+  },
+  {
+    "name": "Hug Knees To Chest",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Inchworm",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Iron Cross",
+    "equipment": "dumbbell",
+    "category": "strength"
+  },
+  {
+    "name": "Jogging, Treadmill",
+    "equipment": "machine",
+    "category": "cardio"
+  },
+  {
+    "name": "Keg Load",
+    "equipment": "other",
+    "category": "strongman"
+  },
+  {
+    "name": "Kipping Muscle Up",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "Knee Across The Body",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Kneeling Arm Drill",
+    "equipment": null,
+    "category": "plyometrics"
+  },
+  {
+    "name": "Kneeling Hip Flexor",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Landmine 180's",
+    "equipment": "barbell",
+    "category": "strength"
+  },
+  {
+    "name": "Landmine Linear Jammer",
+    "equipment": "barbell",
+    "category": "strength"
+  },
+  {
+    "name": "Leg Lift",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Leg Pull-In",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Linear 3-Part Start Technique",
+    "equipment": null,
+    "category": "plyometrics"
+  },
+  {
+    "name": "Linear Acceleration Wall Drill",
+    "equipment": null,
+    "category": "plyometrics"
+  },
+  {
+    "name": "Log Lift",
+    "equipment": "other",
+    "category": "strongman"
+  },
+  {
+    "name": "Looking At Ceiling",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Lying Crossover",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Lying Glute",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Lying Hamstring",
+    "equipment": "other",
+    "category": "stretching"
+  },
+  {
+    "name": "Lying Prone Quadriceps",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Medicine Ball Chest Pass",
+    "equipment": "medicine ball",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Mixed Grip Chin",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "Monster Walk",
+    "equipment": "bands",
+    "category": "strength"
+  },
+  {
+    "name": "Mountain Climbers",
+    "equipment": null,
+    "category": "plyometrics"
+  },
+  {
+    "name": "Moving Claw Series",
+    "equipment": null,
+    "category": "plyometrics"
+  },
+  {
+    "name": "Muscle Up",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "One-Arm Medicine Ball Slam",
+    "equipment": "medicine ball",
+    "category": "strength"
+  },
+  {
+    "name": "One-Arm Side Laterals",
+    "equipment": "dumbbell",
+    "category": "strength"
+  },
+  {
+    "name": "One Arm Against Wall",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "One Half Locust",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "One Handed Hang",
+    "equipment": "other",
+    "category": "stretching"
+  },
+  {
+    "name": "One Knee To Chest",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Otis-Up",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "Overhead Lat",
+    "equipment": "other",
+    "category": "stretching"
+  },
+  {
+    "name": "Overhead Slam",
+    "equipment": "medicine ball",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Plate Pinch",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "Platform Hamstring Slides",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "Power Partials",
+    "equipment": "dumbbell",
+    "category": "strength"
+  },
+  {
+    "name": "Power Stairs",
+    "equipment": "other",
+    "category": "strongman"
+  },
+  {
+    "name": "Prone Manual Hamstring",
+    "equipment": null,
+    "category": "strength"
+  },
+  {
+    "name": "Pull Through",
+    "equipment": "cable",
+    "category": "strength"
+  },
+  {
+    "name": "Pyramid",
+    "equipment": "exercise ball",
+    "category": "stretching"
+  },
+  {
+    "name": "Quick Leap",
+    "equipment": "other",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Rack Delivery",
+    "equipment": "barbell",
+    "category": "olympic weightlifting"
+  },
+  {
+    "name": "Rack Pulls",
+    "equipment": "barbell",
+    "category": "powerlifting"
+  },
+  {
+    "name": "Recumbent Bike",
+    "equipment": "machine",
+    "category": "cardio"
+  },
+  {
+    "name": "Return Push from Stance",
+    "equipment": "medicine ball",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Rope Climb",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "Running, Treadmill",
+    "equipment": "machine",
+    "category": "cardio"
+  },
+  {
+    "name": "Sandbag Load",
+    "equipment": "other",
+    "category": "strongman"
+  },
+  {
+    "name": "Scissor Kick",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Seated Biceps",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Seated Front Deltoid",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Seated Glute",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Seated Hamstring",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Seated Leg Tucks",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Side Jackknife",
+    "equipment": "body only",
+    "category": "strength"
+  },
+  {
+    "name": "Side To Side Chins",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "Side to Side Box Shuffle",
+    "equipment": "other",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Single-Arm Linear Jammer",
+    "equipment": "barbell",
+    "category": "strength"
+  },
+  {
+    "name": "Single Leg Butt Kick",
+    "equipment": "body only",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Single Leg Push-off",
+    "equipment": "other",
+    "category": "plyometrics"
+  },
+  {
+    "name": "Skating",
+    "equipment": "other",
+    "category": "cardio"
+  },
+  {
+    "name": "Spell Caster",
+    "equipment": "dumbbell",
+    "category": "strength"
+  },
+  {
+    "name": "Stairmaster",
+    "equipment": "machine",
+    "category": "cardio"
+  },
+  {
+    "name": "Standing Hip Flexors",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Standing Olympic Plate Hand Squeeze",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "Standing Pelvic Tilt",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Standing Toe Touches",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Step Mill",
+    "equipment": "machine",
+    "category": "cardio"
+  },
+  {
+    "name": "Stomach Vacuum",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Superman",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Suspended Fallout",
+    "equipment": "other",
+    "category": "strength"
+  },
+  {
+    "name": "The Straddle",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Thigh Abductor",
+    "equipment": "machine",
+    "category": "strength"
+  },
+  {
+    "name": "Tire Flip",
+    "equipment": "other",
+    "category": "strongman"
+  },
+  {
+    "name": "Toe Touchers",
+    "equipment": "body only",
+    "category": "stretching"
+  },
+  {
+    "name": "Trail Running/Walking",
+    "equipment": null,
+    "category": "cardio"
+  },
+  {
+    "name": "Upper Back-Leg Grab",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Walking, Treadmill",
+    "equipment": "machine",
+    "category": "cardio"
+  },
+  {
+    "name": "Wide Stance Stiff Legs",
+    "equipment": "barbell",
+    "category": "olympic weightlifting"
+  },
+  {
+    "name": "Windmills",
+    "equipment": null,
+    "category": "stretching"
+  },
+  {
+    "name": "Yoke Walk",
+    "equipment": "other",
+    "category": "strongman"
+  }
+]
