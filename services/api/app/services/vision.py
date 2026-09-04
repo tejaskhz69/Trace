@@ -293,6 +293,23 @@ def prepare_image(raw: bytes) -> tuple[bytes, str, str]:
     return data, "image/webp", phash
 
 
+
+async def prepare_image_async(raw: bytes) -> tuple[bytes, str, str]:
+    """`prepare_image` on a worker thread.
+
+    WHY THIS EXISTS
+    Pillow decode + resize + WebP encode is pure CPU with no await in it, and
+    it was being called straight from async handlers. Measured at 169-223 ms
+    for a 187 KB image, which is 169-223 ms during which the event loop
+    services nobody -- every other in-flight request, every health check, all
+    of it stalls. One user never notices. Twenty users at lunch turn a 5 s
+    scan into a queue.
+
+    A real phone photo is several megabytes, so the real figure is worse than
+    the measured one.
+    """
+    return await asyncio.to_thread(prepare_image, raw)
+
 def _cost(model: str, in_tok: int, out_tok: int) -> float:
     price_in, price_out = _PRICES_PER_MTOK.get(model, (1.25, 10.0))
     return (in_tok / 1e6) * price_in + (out_tok / 1e6) * price_out
@@ -340,6 +357,7 @@ async def recognize(
     *,
     hint: str | None = None,
     force_model: str | None = None,
+    prepared: tuple[bytes, str, str] | None = None,
 ) -> VisionResult:
     """Run the two-stage recognition pipeline.
 
@@ -352,7 +370,15 @@ async def recognize(
         raise RuntimeError("GEMINI_API_KEY is not configured.")
 
     client = _client()
-    data, media_type, phash = prepare_image(image_bytes)
+    # The router already prepared this to compute the cache hash. Redoing it
+    # here was ~200 ms of duplicated CPU on every single scan -- the same
+    # decode, the same resize, the same encode, thrown away the first time.
+    # `prepared` is optional so direct callers (eval_vision.py, tests) still
+    # work unchanged.
+    if prepared is None:
+        data, media_type, phash = await prepare_image_async(image_bytes)
+    else:
+        data, media_type, phash = prepared
     b64 = base64.standard_b64encode(data).decode("ascii")
 
     user_input: list[dict[str, Any]] = [
