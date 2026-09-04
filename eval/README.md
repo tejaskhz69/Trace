@@ -1,15 +1,26 @@
 # Trace vision eval set
 
-25 photos with known calorie truth, used to measure whether the food scan
+26 photos with known calorie truth, used to measure whether the food scan
 actually works — and specifically whether it fails the way every other app
 fails.
 
 ```
 eval/
-├── manifest.csv   ← the deliverable. 25 rows, pre-planned, truth blank
-├── score.py       ← validates the set, then scores a run
-└── photos/        ← you shoot these
+├── manifest.csv    ← the deliverable. 26 rows, pre-planned, truth blank
+├── score.py        ← validates the set, then scores a run
+├── SHOPPING.md     ← ~₹900, one grocery run, what to buy and shoot
+├── DORM.md         ← how to collect it without a kitchen
+├── recipe_calc.py  ← recipes/*.yaml → a truth number; refuses while any
+│                     field is null (needs PyYAML: pip install pyyaml)
+├── recipes/        ← the worked recipe for fo-009
+└── photos/         ← you shoot these. Currently EMPTY.
 ```
+
+The runner lives in the API, not here: `python -m app.scripts.eval_vision`
+from `services/api`. There is deliberately one runner and one scorer — two of
+either drift.
+
+**Start with `SHOPPING.md`.** Six of the 26 rows need no cooking at all.
 
 ## Why there are no photos in here
 
@@ -24,10 +35,15 @@ commercial repo.
 
 So the photos have to be yours, and the truth has to be weighed.
 
-## The kitchen scale is the whole job
+## The scale is the whole job — you do not need a kitchen
 
-A ₹500 digital scale is the only equipment needed. The routine, once you're
-used to it, adds about 60 seconds to a meal:
+A ₹500 digital scale is the only equipment needed. Most of the set is
+**`label` tier**: packaged food photographed beside its own nutrition panel.
+That is *better* truth than weighing your own cooking, because the
+manufacturer already measured the oil you cannot see. `DORM.md` has the
+routine for a room with a kettle and no stove.
+
+Where you do weigh something, it adds about 60 seconds to a meal:
 
 1. **Weigh each component into the serving dish**, before you plate it.
    Rice 180 g, dal 150 g, 2 roti 84 g. Write it in the `grams` column,
@@ -40,17 +56,20 @@ used to it, adds about 60 seconds to a meal:
 4. **Compute `truth_kcal`** from grams × your food database values, plus the
    fat. Put it in the manifest.
 
-If you only do one thing: **weigh ten Indian home meals.** That set is worth
-more than fifty guessed photos, and it's the one no competitor has.
+If you only do one thing: **shoot the six no-cook rows in `SHOPPING.md`.**
+Six rows will not pass validation, and you should run the eval on them anyway
+— they answer whether the pipeline works end to end, whether the model is
+roughly right or wildly off, and whether it refuses the opaque box. None of
+those three is currently known.
 
 ## Filename convention
 
 Already written into the manifest — just match it:
 
 ```
-in-001-dal-tadka-roti-thali.jpg     in- = Indian
-fo-001-pasta-cream.jpg              fo- = foreign
-ad-001-no-scale-ref.jpg             ad- = adversarial
+in-001-mtr-dal-makhani-rice.jpg     in- = Indian
+fo-002-protein-bar-with-label.jpg   fo- = foreign / packaged
+ad-004-opaque-container.jpg         ad- = adversarial
 ```
 
 ## truth_source tiers
@@ -96,12 +115,18 @@ Before you shoot, and again after you fill the manifest in:
 python score.py --validate
 ```
 
-It refuses to pass until you have ≥10 weighed rows, ≥12 Indian, ≥8 high
-hidden-fat, ≥3 adversarial, and zero guessed truth in the scored set. Those
-floors exist because an easy set reports excellent accuracy.
+It refuses to pass until you have ≥10 **label-or-weighed** rows, ≥12 Indian,
+≥8 high hidden-fat, ≥3 adversarial, zero guessed truth in the scored set, and
+**≥1 real photograph per row**. Those floors exist because an easy set reports
+excellent accuracy.
+
+The photo check opens the files; it does not just count them. Twenty-five
+generated placeholder cards once sat in `photos/` and passed a
+`Path.exists()` check for months while the set contained no photograph of
+food at all. `is_placeholder()` is what closed that.
 
 After a run, with results as JSON — one object per photo with `file`, `kcal`,
-`kcal_low`, `kcal_high`, `confidence`, optional `refused`:
+`kcal_low`, `kcal_high`, `confidence`, `refused`:
 
 ```bash
 python score.py --results results.json
