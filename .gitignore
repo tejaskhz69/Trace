@@ -14,3 +14,52 @@ dist/
 # catalogue, ~1.4 MB, and superseded by every run. review/README.md is
 # tracked; the generated JSON is not.
 services/api/review/*.json
+
+# Ruflo local secrets and runtime data
+.env.local
+.env.*.local
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+
+# ---------------------------------------------------------------------------
+# Added 2026-09-04, before the repository was first pushed to a remote.
+# A secret that reaches a remote is not fixed by deleting it: it stays in
+# history, and removing it means rewriting every commit. These rules exist
+# so that never has to happen.
+# ---------------------------------------------------------------------------
+
+# Every env file EXCEPT the example. The negation must stay below the
+# wildcard -- git applies the last matching rule, so reversing these two
+# lines silently stops tracking .env.example.
+.env.*
+!.env.example
+
+# Database dumps. ~60 MB each and they contain every user row.
+*.dump
+*.sql.gz
+*.backup
+
+# Keys and certificates.
+*.pem
+*.key
+*.pfx
+*.p12
+.pgpass
+.npmrc
+.netrc
+
+# Build and tool output.
+build/
+*.log
+.coverage
+.coverage.*
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# Claude-flow / ruflo runtime state. Regenerated, machine-specific, and
+# .swarm/memory.db is a live SQLite file that would conflict on every pull.
+.swarm/
+.claude-flow/
+*.bak
