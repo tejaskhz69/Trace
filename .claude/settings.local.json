@@ -4,7 +4,17 @@
       "Bash(npx expo *)",
       "Bash(echo \"exit:$?\")",
       "Bash(npm install *)",
-      "Bash(.venv/Scripts/python -c ' *)"
+      "Bash(.venv/Scripts/python -c ' *)",
+      "Bash(wc -l app/scripts/seed_exercises.py)",
+      "Bash(grep -cE '^\\\\s*\\\\\\(\"|^\\\\s*\"' app/scripts/seed_exercises.py)",
+      "Bash(grep -oE '\"[A-Z][A-Za-z0-9 \\(\\)/\\\\x27-]{4,50}\"' app/scripts/seed_exercises.py)",
+      "Bash(ls -la \"apps/mobile/src/components/__tests__/../../../../../services/api/app/scripts/data/exercises.json\")",
+      "Bash(grep -n \"_client\\\\|lru_cache\\\\|genai.Client\\\\|AsyncClient\" services/api/app/services/vision.py)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "claude-flow",
+    "ruv-swarm",
+    "flow-nexus"
+  ]
 }
