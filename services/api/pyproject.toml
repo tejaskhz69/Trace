@@ -1,0 +1,81 @@
+# Tooling configuration for services/api.
+#
+# WHY THIS FILE EXISTS
+# The universal-food specification requires deterministic generation --
+# "stable sorting, stable identifiers, stable serialization, normalized
+# Unicode". None of that can be MACHINE-enforced without a linter and a type
+# checker, so the Phase 0 baseline recorded its absence as a risk (R10). This
+# is that risk closed.
+#
+# Dependencies and packaging still live in requirements.txt; this file
+# configures tools only.
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+extend-exclude = [".venv", "alembic/versions", "__pycache__"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # import sorting -- determinism starts with stable import order
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # line length is handled by the formatter, not the linter
+    "B008",   # FastAPI's Depends() in defaults is the framework's idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on things linters dislike, and fixtures are deliberately odd.
+"tests/*" = ["B011", "SIM117"]
+# Migrations are frozen history. A migration must keep meaning what it meant
+# when it ran, so they are never reformatted.
+"alembic/versions/*" = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["app"]
+exclude = "(^alembic/|/__pycache__/|^\\.venv/)"
+
+# THIS PACKAGE HAS NO __init__.py FILES ANYWHERE -- it relies on implicit
+# namespace packages. Without the two settings below, mypy sees
+# `app/services/adjudication.py` and `app/routers/adjudication.py` as two
+# modules both named `adjudication`, calls it a duplicate, and stops before
+# checking anything. The alternative fix -- adding __init__.py files -- would
+# change the package structure to satisfy a linter, which is the wrong way
+# round.
+mypy_path = "."
+explicit_package_bases = true
+namespace_packages = true
+
+# STARTING POSTURE IS DELIBERATELY LENIENT.
+#
+# This codebase has ~2,900 lines of service code that predates any type
+# checking. Turning on strict mode today produces hundreds of errors, which
+# means the tool gets ignored and enforces nothing -- the same failure mode as
+# a guard that cries wolf on every migration. So: catch real mistakes now,
+# tighten module by module as each is cleaned.
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unreachable = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `app/services/` is the part the project treats as the spec: pure functions,
+# no I/O, exhaustively tested. It is held to a higher standard than the
+# routers, and new service modules should arrive already clean.
+module = "app.services.*"
+disallow_untyped_defs = true
+disallow_incomplete_defs = true

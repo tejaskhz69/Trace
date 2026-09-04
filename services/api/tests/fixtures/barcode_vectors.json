@@ -1,0 +1,215 @@
+{
+  "_comment": "Shared contract table for barcode validation. Generated from services/api/app/services/gtin.py, consumed by BOTH services/api/tests/test_gtin.py and apps/mobile/src/lib/__tests__/barcode.test.ts so the device and the server cannot silently disagree about what is a valid product identifier. Regenerate only with a deliberate change to the GS1 rules.",
+  "cases": [
+    {
+      "raw": "00012345678905",
+      "symbology": null,
+      "status": "ok",
+      "gtin14": "00012345678905",
+      "why": "GTIN-14 (ITF-14 form)"
+    },
+    {
+      "raw": "012345678905",
+      "symbology": null,
+      "status": "ok",
+      "gtin14": "00012345678905",
+      "why": "UPC-A"
+    },
+    {
+      "raw": "0012345678905",
+      "symbology": null,
+      "status": "ok",
+      "gtin14": "00012345678905",
+      "why": "EAN-13 of the same UPC-A product"
+    },
+    {
+      "raw": "40063812",
+      "symbology": null,
+      "status": "ok",
+      "gtin14": "00000040063812",
+      "why": "EAN-8"
+    },
+    {
+      "raw": "9780306406157",
+      "symbology": null,
+      "status": "ok",
+      "gtin14": "09780306406157",
+      "why": "EAN-13, real ISBN-13 form"
+    },
+    {
+      "raw": "8906136651951",
+      "symbology": null,
+      "status": "ok",
+      "gtin14": "08906136651951",
+      "why": "EAN-13, Indian product (Pintola)"
+    },
+    {
+      "raw": "00000012345670",
+      "symbology": null,
+      "status": "ok",
+      "gtin14": "00000012345670",
+      "why": "padded UPC-A; interior 2/0 digits are NOT a prefix"
+    },
+    {
+      "raw": " 012345678905 ",
+      "symbology": null,
+      "status": "ok",
+      "gtin14": "00012345678905",
+      "why": "whitespace stripped"
+    },
+    {
+      "raw": "0-12345-67890-5",
+      "symbology": null,
+      "status": "ok",
+      "gtin14": "00012345678905",
+      "why": "hyphens stripped"
+    },
+    {
+      "raw": "012345678906",
+      "symbology": null,
+      "status": "bad_check_digit",
+      "gtin14": null,
+      "why": "UPC-A with a bad check digit"
+    },
+    {
+      "raw": "0123456789019",
+      "symbology": null,
+      "status": "bad_check_digit",
+      "gtin14": null,
+      "why": "13 digits, deliberately wrong check digit"
+    },
+    {
+      "raw": "12345",
+      "symbology": null,
+      "status": "invalid_length",
+      "gtin14": null,
+      "why": "5 digits: no such GTIN"
+    },
+    {
+      "raw": "0123456789",
+      "symbology": null,
+      "status": "invalid_length",
+      "gtin14": null,
+      "why": "10 digits: truncated scan"
+    },
+    {
+      "raw": "012345678901234",
+      "symbology": null,
+      "status": "invalid_length",
+      "gtin14": null,
+      "why": "15 digits: too long"
+    },
+    {
+      "raw": "",
+      "symbology": null,
+      "status": "not_numeric",
+      "gtin14": null,
+      "why": "empty"
+    },
+    {
+      "raw": "abcdefgh",
+      "symbology": null,
+      "status": "not_numeric",
+      "gtin14": null,
+      "why": "not numeric"
+    },
+    {
+      "raw": "00000000",
+      "symbology": null,
+      "status": "restricted",
+      "gtin14": null,
+      "why": "all zeros"
+    },
+    {
+      "raw": "0490711802107",
+      "symbology": null,
+      "status": "restricted",
+      "gtin14": "00490711802107",
+      "why": "real number-system-4 own-label code"
+    },
+    {
+      "raw": "0200000000004",
+      "symbology": null,
+      "status": "restricted",
+      "gtin14": "00200000000004",
+      "why": "in-store variable measure (02), EAN-13 form"
+    },
+    {
+      "raw": "0400000000008",
+      "symbology": null,
+      "status": "restricted",
+      "gtin14": "00400000000008",
+      "why": "in-store (04), EAN-13 form"
+    },
+    {
+      "raw": "2000000000008",
+      "symbology": null,
+      "status": "restricted",
+      "gtin14": "02000000000008",
+      "why": "restricted distribution (20), EAN-13 form"
+    },
+    {
+      "raw": "2900000000001",
+      "symbology": null,
+      "status": "restricted",
+      "gtin14": "02900000000001",
+      "why": "restricted distribution, top of range (29), EAN-13 form"
+    },
+    {
+      "raw": "9800000000007",
+      "symbology": null,
+      "status": "restricted",
+      "gtin14": "09800000000007",
+      "why": "coupon (98), EAN-13 form"
+    },
+    {
+      "raw": "9900000000004",
+      "symbology": null,
+      "status": "restricted",
+      "gtin14": "09900000000004",
+      "why": "coupon (99), EAN-13 form"
+    },
+    {
+      "raw": "04252614",
+      "symbology": "upc_e",
+      "status": "ok",
+      "gtin14": "00042100005264",
+      "why": "UPC-E expanding to UPC-A 042100005264"
+    },
+    {
+      "raw": "04252614",
+      "symbology": null,
+      "status": "bad_check_digit",
+      "gtin14": null,
+      "why": "same digits, symbology unknown -> judged as EAN-8"
+    },
+    {
+      "raw": "04252614",
+      "symbology": "ean8",
+      "status": "bad_check_digit",
+      "gtin14": null,
+      "why": "same digits, scanner said EAN-8"
+    },
+    {
+      "raw": "01234565",
+      "symbology": "upc_e",
+      "status": "ok",
+      "gtin14": "00012345000065",
+      "why": "UPC-E, number system 0"
+    },
+    {
+      "raw": "12345670",
+      "symbology": "upc_e",
+      "status": "ok",
+      "gtin14": "00123456000070",
+      "why": "UPC-E, number system 1"
+    },
+    {
+      "raw": "24252614",
+      "symbology": "upc_e",
+      "status": "bad_check_digit",
+      "gtin14": null,
+      "why": "8 digits, number system 2: no UPC-E form exists"
+    }
+  ]
+}
