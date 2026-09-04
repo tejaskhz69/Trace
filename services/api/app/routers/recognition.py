@@ -84,7 +84,10 @@ async def recognize_food(
     # Same photo -> same numbers, always. This alone fixes the single most
     # common complaint about photo trackers ("it gives me different calories
     # every time I scan the same meal").
-    _, _, phash = vision.prepare_image(raw)
+    # Off the event loop, and kept: `recognize` below takes it rather than
+    # decoding the same bytes a second time.
+    prepared = await vision.prepare_image_async(raw)
+    phash = prepared[2]
     cached = await session.scalar(
         select(Recognition)
         .where(Recognition.user_id == user.id, Recognition.image_hash == phash)
@@ -100,10 +103,15 @@ async def recognize_food(
             latency_ms=0,
             cached=True,
             review_required=bool(cached.raw_output.get("review_required")),
+            # A cached refusal is still a refusal. Re-serving it without this
+            # would make the same photo refuse on the first scan and report
+            # "no food found" on every scan after.
+            refused=bool(cached.raw_output.get("refused", False)),
+            refusal_reason=str(cached.raw_output.get("refusal_reason", "") or ""),
         )
 
     try:
-        result = await vision.recognize(raw, hint=hint)
+        result = await vision.recognize(raw, hint=hint, prepared=prepared)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
@@ -136,6 +144,11 @@ async def recognize_food(
         latency_ms=result.latency_ms,
         cached=False,
         review_required=bool(result.payload.get("review_required")),
+        refused=bool(result.payload.get("refused", False)),
+        # Verbatim from the service. Do not reword: the model names the actual
+        # obstruction ("food is in an opaque container"), and a generic
+        # substitute would throw away the only actionable part.
+        refusal_reason=str(result.payload.get("refusal_reason", "") or ""),
     )
 
 

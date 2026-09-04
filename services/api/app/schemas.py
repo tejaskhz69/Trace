@@ -288,6 +288,22 @@ class RecognitionResponse(BaseModel):
     #: True when ANY item needs review. Additive and defaulted so an older
     #: client that ignores it behaves exactly as before.
     review_required: bool = False
+    #: True when the model declined to estimate at all -- opaque container,
+    #: food hidden, photo unusable. Product invariant 3: refusing to answer
+    #: beats answering wrong.
+    #:
+    #: WHY THIS IS ITS OWN FIELD AND NOT INFERRED
+    #: A refusal and a low-confidence guess are different failures needing
+    #: different handling, and they are indistinguishable from `items` alone:
+    #: both can arrive with an empty list and a low confidence. Without this
+    #: field the client shows "no food found" for a refusal, which invites
+    #: the user to retry the same unusable photo forever.
+    #:
+    #: `refusal_reason` is the model's own wording, passed through verbatim
+    #: rather than mapped to a canned string -- it says WHY, and the whole
+    #: value of a refusal is that the user learns what to change.
+    refused: bool = False
+    refusal_reason: str = ""
 
 
 class RecognitionCorrection(BaseModel):
