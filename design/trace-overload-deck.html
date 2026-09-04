@@ -1,0 +1,426 @@
+<title>Trace Overload Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap">
+<style>
+:root{
+  --void:#07090B; --panel:#0E1216; --panel2:#141A20; --hair:#1C2126;
+  --text:#F2F5F7; --muted:#8A97A3; --dim:#5C6874;
+  --brand:#3DDC84; --brand-ink:#06210F;
+  --s-strength:#1FA862; --s-weight:#2E86D9; --s-energy:#C2871F;
+  --s-sleep:#9A5FD0; --bad:#D9534F;
+  /* certainty palette — meaning mapped onto the existing validated series */
+  --confirmed:#1FA862; --confirmed-bg:rgba(31,168,98,.13);
+  --building:#9A5FD0;  --building-bg:rgba(154,95,208,.15);
+  --held:#C2871F;      --held-bg:rgba(194,135,31,.14);
+  --declining:#D9534F; --declining-bg:rgba(217,83,79,.14);
+  --watching:#5C6874;  --watching-bg:rgba(92,104,116,.16);
+  --font:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#05070A;color:var(--text);padding:30px 16px 80px;font:15px/1.55 var(--font);-webkit-font-smoothing:antialiased}
+.page{max-width:1320px;margin:0 auto}
+a{color:var(--brand);text-decoration:none}
+a:hover{color:#6BE6A4}
+.tnum{font-variant-numeric:tabular-nums}
+h1{font-size:29px;letter-spacing:-.025em;margin-bottom:8px;font-weight:600;text-wrap:balance}
+.lede{color:var(--muted);max-width:74ch;margin-bottom:6px}
+.note-p{color:var(--dim);font-size:13px;max-width:74ch;margin-top:10px}
+.sec{display:flex;align-items:baseline;gap:16px;margin:56px 0 4px;padding-top:22px;border-top:1px solid #161B21;flex-wrap:wrap}
+.sec h2{font-size:19px;font-weight:600;letter-spacing:-.02em;flex:none}
+.sec p{font-size:13px;color:var(--dim);flex:1 1 320px}
+.screens{display:flex;gap:26px;flex-wrap:wrap;justify-content:center;margin-top:30px}
+figure{margin:0;width:360px;max-width:100%}
+figcaption{margin-top:12px;color:var(--muted);font-size:13px;line-height:1.5}
+figcaption b{color:var(--text);display:block;font-size:14px;margin-bottom:3px}
+.phone{background:var(--void);border:1px solid #262D35;border-radius:30px;padding:14px 12px 0;height:748px;
+  overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.55);display:flex;flex-direction:column}
+.bar{display:flex;justify-content:space-between;align-items:center;padding:2px 8px 12px;gap:10px}
+.brand{display:flex;align-items:center;gap:7px;font-weight:700;letter-spacing:.18em;font-size:11px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--brand);flex:none}
+.av{width:30px;height:30px;border-radius:50%;background:var(--panel2);border:1px solid #262D35;
+  display:grid;place-items:center;font-size:10.5px;font-weight:700;color:var(--muted);flex:none}
+.card{background:var(--panel);border:1px solid var(--hair);border-radius:16px;padding:14px;margin-bottom:10px}
+.eyebrow{font-size:9.5px;letter-spacing:1.5px;color:var(--dim);font-weight:600;text-transform:uppercase}
+.scroll{flex-grow:1;overflow:hidden}
+.tabs{margin-top:auto;display:flex;justify-content:space-around;border-top:1px solid var(--hair);padding:11px 0 15px}
+.tab{text-align:center;color:#4A5560;font-size:9.5px}
+.tab.on{color:var(--brand)}
+.tab svg{display:block;margin:0 auto 3px}
+/* state pills */
+.pill{display:inline-block;font-size:9px;letter-spacing:.11em;text-transform:uppercase;font-weight:700;
+  padding:4px 8px;border-radius:4px;white-space:nowrap}
+.p-conf{color:var(--confirmed);background:var(--confirmed-bg)}
+.p-bld{color:var(--building);background:var(--building-bg)}
+.p-held{color:var(--held);background:var(--held-bg)}
+.p-dec{color:var(--declining);background:var(--declining-bg)}
+.p-wat{color:var(--watching);background:var(--watching-bg)}
+.row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px;padding:9px 2px}
+.mv{font-size:13.5px;font-weight:500;letter-spacing:-.01em}
+.sub{font-size:10.5px;color:var(--dim);margin-top:2px}
+.pips{display:flex;gap:2.5px;margin-top:6px}
+.pip{width:11px;height:3px;border-radius:2px;background:#1C2126}
+.grp{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;margin:14px 2px 2px}
+/* legend table on the page itself */
+.legend{display:grid;gap:1px;background:var(--hair);border:1px solid var(--hair);border-radius:12px;overflow:hidden;margin-top:26px}
+@media(min-width:900px){.legend{grid-template-columns:repeat(5,1fr)}}
+.key{background:var(--panel);padding:18px 16px}
+.key .sw{height:3px;width:32px;border-radius:2px;margin-bottom:12px}
+.key h3{font-size:14px;font-weight:600;margin-bottom:6px;letter-spacing:-.01em}
+.key p{font-size:12.5px;color:var(--muted);line-height:1.5}
+.act{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:7px 2px}
+.act .n{font-size:12.5px}
+.act .m{font-size:10.5px;color:var(--dim)}
+.chipwrap{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.chip{font-size:10.5px;padding:5px 9px;border-radius:999px;background:var(--panel2);border:1px solid var(--hair);color:var(--muted)}
+.chip.on{background:var(--brand);border-color:var(--brand);color:var(--brand-ink);font-weight:600}
+</style>
+<div class="page">
+
+<h1>Trace &mdash; the overload deck</h1>
+<p class="lede">Revision 6. The Flight Deck screens, plus the thing that was missing: a colour system
+that answers <b style="color:var(--text)">am I actually progressively overloading?</b> per movement, not per session.</p>
+<p class="note-p">Colour here never means good or bad. It means <b style="color:var(--text)">how much Trace actually
+knows</b>. That is the whole difference between this and every other tracker&rsquo;s green-arrow-everywhere dashboard,
+where 89% of sets get marked as improvement and the signal is worth nothing.</p>
+
+<div class="legend">
+<div class="key"><div class="sw" style="background:var(--confirmed)"></div><h3>Confirmed</h3><p>Eight or more sessions and the smoothed trend is up. This is Trace saying you got stronger and being willing to be wrong about it.</p></div><div class="key"><div class="sw" style="background:var(--building)"></div><h3>Building</h3><p>You are beating previous bests, but under eight sessions. Every one is a true fact about that day. None of them is a trend.</p></div><div class="key"><div class="sw" style="background:var(--held)"></div><h3>Held</h3><p>Enough sessions, trend flat. A verdict too — just not the one anyone wants. Six weeks flat on a squat is information.</p></div><div class="key"><div class="sw" style="background:var(--declining)"></div><h3>Declining</h3><p>Enough sessions, trend down. Shown plainly rather than buried, because the alternative is finding out much later.</p></div><div class="key"><div class="sw" style="background:var(--watching)"></div><h3>Not yet</h3><p>Too few sessions, too few reps for the maths, or a gap long enough that the old data no longer describes you.</p></div>
+</div>
+
+<div class="sec"><h2>Progressive overload</h2>
+<p>Four screens. The board answers the question at a glance; the other three show the working.</p></div>
+<div class="screens">
+<figure><div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>TRACE</div>
+    <div class="av">TK</div>
+  </div>
+  <div class="scroll">
+<div class="card" style="padding:16px 14px">
+  <div class="eyebrow">Overload board · last 8 weeks</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px">
+    <div><div class="tnum" style="font-size:24px;font-weight:700;color:var(--confirmed);line-height:1">2</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:3px">Confirmed</div></div>
+    <div><div class="tnum" style="font-size:24px;font-weight:700;color:var(--building);line-height:1">2</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:3px">Building</div></div>
+    <div><div class="tnum" style="font-size:24px;font-weight:700;color:var(--watching);line-height:1">4</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:3px">Not yet</div></div>
+  </div>
+</div>
+
+<div class="grp" style="color:var(--confirmed)">Confirmed &middot; 8+ sessions agree</div>
+<div class="card" style="padding:6px 12px">
+  <div class="row"><div><div class="mv">Barbell Bench Press</div><div class="sub">8 of 8 sessions</div></div>
+    <div style="text-align:right"><div class="tnum" style="font-size:13.5px;font-weight:600;color:var(--confirmed)">+4.5 kg</div>
+      <div class="sub tnum">82.5 &rarr; 87.0</div></div></div>
+  <div class="row" style="border-top:1px solid var(--hair)"><div><div class="mv">Lat Pulldown</div><div class="sub">11 of 8 sessions</div></div>
+    <div style="text-align:right"><div class="tnum" style="font-size:13.5px;font-weight:600;color:var(--confirmed)">+6.0 kg</div>
+      <div class="sub tnum">50.7 &rarr; 56.7</div></div></div>
+</div>
+
+<div class="grp" style="color:var(--building)">Building &middot; bests beaten, verdict pending</div>
+<div class="card" style="padding:6px 12px">
+  <div class="row"><div><div class="mv">Overhead Shoulder Press</div><div class="pips"><span class="pip" style="background:var(--building)"></span><span class="pip" style="background:var(--building)"></span><span class="pip" style="background:var(--building)"></span><span class="pip" style="background:var(--building)"></span><span class="pip" style="background:var(--building)"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span></div></div>
+    <div style="text-align:right"><div style="font-size:12.5px;font-weight:600;color:var(--building)">4 bests</div>
+      <div class="sub">3 to go</div></div></div>
+  <div class="row" style="border-top:1px solid var(--hair)"><div><div class="mv">Chest-Supported Row</div><div class="pips"><span class="pip" style="background:var(--building)"></span><span class="pip" style="background:var(--building)"></span><span class="pip" style="background:var(--building)"></span><span class="pip" style="background:var(--building)"></span><span class="pip" style="background:var(--building)"></span><span class="pip" style="background:var(--building)"></span><span class="pip"></span><span class="pip"></span></div></div>
+    <div style="text-align:right"><div style="font-size:12.5px;font-weight:600;color:var(--building)">3 bests</div>
+      <div class="sub">2 to go</div></div></div>
+</div>
+
+<div class="grp" style="color:var(--held)">Held &middot; enough data, trend flat</div>
+<div class="card" style="padding:6px 12px">
+  <div class="row"><div><div class="mv">Barbell Back Squat</div><div class="sub">9 of 8 sessions</div></div>
+    <div style="text-align:right"><div class="tnum" style="font-size:13.5px;font-weight:600;color:var(--held)">0.0 kg</div>
+      <div class="sub">6 weeks flat</div></div></div>
+</div>
+
+<div class="grp" style="color:var(--watching)">Not enough data yet</div>
+<div class="card" style="padding:6px 12px">
+  <div class="row"><div class="mv" style="color:var(--muted)">Machine Lateral Raise</div><span class="pill p-wat">3 of 8</span></div>
+  <div class="row" style="border-top:1px solid var(--hair)"><div class="mv" style="color:var(--muted)">Face Pull</div><span class="pill p-wat">2 of 8</span></div>
+  <div class="row" style="border-top:1px solid var(--hair)"><div class="mv" style="color:var(--muted)">Romanian Deadlift</div><span class="pill p-wat">31 days ago</span></div>
+</div>
+</div>
+  <div class="tabs"><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>Today</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Food</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>Train</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 18L11 11l3 3 5-7"/><path d="M19 7h-4M19 7v4"/></svg>Move</div><div class="tab on"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V10M10 18V5M16 18v-6M22 18V8"/></svg>Progress</div></div>
+</div><figcaption><b>Overload Board &mdash; the new home for &ldquo;is it working?&rdquo;</b>Every movement, grouped by what Trace can honestly say about it. The counts at the top are the answer; the groups are the evidence. Four of nine movements sit in grey &mdash; on most apps all nine would be green.</figcaption></figure>
+<figure><div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>TRACE</div>
+    <div class="av">TK</div>
+  </div>
+  <div class="scroll">
+<div class="card" style="padding:0;overflow:hidden">
+  <div style="display:flex;justify-content:space-between;padding:13px 14px;border-bottom:1px solid var(--hair)">
+    <span class="eyebrow">Session complete</span><span class="eyebrow">Push &middot; Fri</span></div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);text-align:left">
+    <div style="padding:13px 10px;border-right:1px solid var(--hair)"><div class="tnum" style="font-size:18px;font-weight:600">53</div><div class="sub">min</div></div>
+    <div style="padding:13px 10px;border-right:1px solid var(--hair)"><div class="tnum" style="font-size:18px;font-weight:600">18</div><div class="sub">sets</div></div>
+    <div style="padding:13px 10px;border-right:1px solid var(--hair)"><div class="tnum" style="font-size:18px;font-weight:600">10.8k</div><div class="sub">kg vol</div></div>
+    <div style="padding:13px 10px"><div class="tnum" style="font-size:18px;font-weight:600">8.8</div><div class="sub">RPE</div></div>
+  </div>
+  <div style="padding:11px 14px;background:var(--building-bg);color:var(--building);font-size:11px;
+    letter-spacing:.09em;text-transform:uppercase;font-weight:700;border-top:1px solid var(--hair)">
+    4 lifts beat a previous best</div>
+  <div style="padding:4px 12px">
+    <div style="display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:9px 2px;"><span class="mv" style="">Overhead Shoulder Press</span><span class="pill p-bld">Beat best</span><span class="tnum" style="font-size:12px;color:var(--building);text-align:right;min-width:56px">+2.2 kg</span></div><div style="display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid var(--hair);"><span class="mv" style="">Dumbbell Lateral Raise</span><span class="pill p-bld">Beat best</span><span class="tnum" style="font-size:12px;color:var(--building);text-align:right;min-width:56px">+0.7 kg</span></div><div style="display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid var(--hair);"><span class="mv" style="">Face Pull</span><span class="pill p-bld">Beat best</span><span class="tnum" style="font-size:12px;color:var(--building);text-align:right;min-width:56px">+1.0 kg</span></div><div style="display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid var(--hair);"><span class="mv" style="">Triceps Overhead Ext.</span><span class="pill p-bld">Beat best</span><span class="tnum" style="font-size:12px;color:var(--building);text-align:right;min-width:56px">+0.9 kg</span></div><div style="display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid var(--hair);"><span class="mv" style="">Incline Dumbbell Press</span><span class="pill p-held">Held</span><span class="tnum" style="font-size:12px;color:var(--held);text-align:right;min-width:56px">no change</span></div><div style="display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid var(--hair);"><span class="mv" style="color:var(--muted);">Cable Crunch</span><span class="pill p-wat">Not measured</span><span class="tnum" style="font-size:12px;color:var(--watching);text-align:right;min-width:56px">16 reps</span></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--hair)">
+    <div style="padding:14px;border-right:1px solid var(--hair)">
+      <div class="eyebrow">Today &middot; fact</div>
+      <div style="font-size:14.5px;font-weight:700;color:var(--building);margin-top:6px;line-height:1.25">4 lifts beat<br>their best</div>
+      <div class="sub" style="margin-top:6px;line-height:1.45">Against your own last session.</div>
+    </div>
+    <div style="padding:14px">
+      <div class="eyebrow">Trend &middot; verdict</div>
+      <div style="font-size:14.5px;font-weight:700;color:var(--watching);margin-top:6px;line-height:1.25">Not enough<br>data yet</div>
+      <div class="pips"><span class="pip" style="background:var(--watching)"></span><span class="pip" style="background:var(--watching)"></span><span class="pip" style="background:var(--watching)"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span></div>
+      <div class="sub" style="margin-top:6px">5 more sessions.</div>
+    </div>
+  </div>
+</div>
+</div>
+  <div class="tabs"><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>Today</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Food</div><div class="tab on"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>Train</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 18L11 11l3 3 5-7"/><path d="M19 7h-4M19 7v4"/></svg>Move</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V10M10 18V5M16 18v-6M22 18V8"/></svg>Progress</div></div>
+</div><figcaption><b>Session complete &mdash; facts and verdicts, kept apart</b>The stat strip and purple badges are the VXS pattern, and they earn their place: beating a previous best is real and worth showing. The split panel at the foot is where Trace diverges &mdash; violet says what happened, grey says what it will claim, and they are never the same sentence.</figcaption></figure>
+<figure><div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>TRACE</div>
+    <div class="av">TK</div>
+  </div>
+  <div class="scroll">
+<div class="card">
+  <div class="eyebrow">Barbell Bench Press</div>
+  <div style="display:flex;align-items:baseline;gap:8px;margin-top:7px">
+    <span style="font-size:25px;font-weight:700;letter-spacing:-.025em;color:var(--confirmed)">Stronger</span>
+    <span class="tnum" style="font-size:14px;color:var(--confirmed)">+4.5 kg</span></div>
+  <div style="font-size:12.5px;color:var(--muted);margin-top:6px;line-height:1.45">
+    Eight sessions of smoothed data agree. Trace will stand behind this.</div>
+</div>
+
+<div class="card">
+  <div class="eyebrow">Estimated 1RM &middot; noise vs trend</div>
+  <svg width="100%" viewBox="0 0 320 132" style="margin-top:10px" role="img"
+       aria-label="Eight sessions of estimated one-rep max. Sessions 2, 4 and 6 fell; the smoothed trend line rises from 82.5 to 87 kilograms.">
+    <line x1="0" y1="18" x2="320" y2="18" stroke="#1C2126"/>
+    <line x1="0" y1="58" x2="320" y2="58" stroke="#1C2126"/>
+    <line x1="0" y1="98" x2="320" y2="98" stroke="#1C2126"/>
+    <rect x="8" y="58" width="18" height="60" rx="2" fill="#1C2126"/><rect x="48" y="79" width="18" height="39" rx="2" fill="#1C2126"/><rect x="88" y="37" width="18" height="81" rx="2" fill="var(--building-bg)"/><rect x="128" y="44" width="18" height="74" rx="2" fill="#1C2126"/><rect x="168" y="16" width="18" height="102" rx="2" fill="var(--building-bg)"/><rect x="208" y="37" width="18" height="81" rx="2" fill="#1C2126"/><rect x="248" y="2" width="18" height="116" rx="2" fill="var(--building-bg)"/><rect x="288" y="-5" width="18" height="123" rx="2" fill="var(--building-bg)"/>
+    <polyline points="16,66 56,71 96,64 136,62 176,54 216,52 256,42 296,36"
+      fill="none" stroke="var(--confirmed)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="296" cy="36" r="4" fill="var(--confirmed)"/>
+  </svg>
+  <div style="display:flex;justify-content:space-between;margin-top:6px">
+    <span class="sub tnum">S1 &middot; 82.5</span><span class="tnum" style="font-size:10.5px;color:var(--confirmed)">S8 &middot; 87.0</span></div>
+</div>
+
+<div class="card" style="background:var(--panel2)">
+  <div style="display:flex;gap:8px;align-items:center">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round">
+      <circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg>
+    <span class="eyebrow">Why eight</span></div>
+  <div style="font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.5">
+    Sessions 2, 4 and 6 went <span style="color:var(--bad)">down</span>. Day-to-day variation is larger
+    than a week of real progress, so no single session can carry a verdict &mdash; only the smoothed line can.</div>
+</div>
+
+<div class="card" style="padding:6px 12px">
+  <div style="padding:9px 2px 6px"><span class="eyebrow">Every session</span></div>
+  <div style="display:grid;grid-template-columns:24px 1fr auto auto;gap:8px;align-items:center;padding:8px 2px;border-top:1px solid var(--hair)"><span class="sub tnum">08</span><span class="tnum" style="font-size:12px">45.0 kg × 8 @ 2</span><span class="tnum" style="font-size:12px;text-align:right">87.0</span><span class="tnum" style="font-size:11px;color:var(--building);text-align:right;min-width:38px">+0.5</span></div><div style="display:grid;grid-template-columns:24px 1fr auto auto;gap:8px;align-items:center;padding:8px 2px;border-top:1px solid var(--hair)"><span class="sub tnum">07</span><span class="tnum" style="font-size:12px">45.0 kg × 7 @ 2</span><span class="tnum" style="font-size:12px;text-align:right">86.5</span><span class="tnum" style="font-size:11px;color:var(--building);text-align:right;min-width:38px">+2.5</span></div><div style="display:grid;grid-template-columns:24px 1fr auto auto;gap:8px;align-items:center;padding:8px 2px;border-top:1px solid var(--hair)"><span class="sub tnum">06</span><span class="tnum" style="font-size:12px">42.5 kg × 8 @ 2</span><span class="tnum" style="font-size:12px;text-align:right">84.0</span><span class="tnum" style="font-size:11px;color:var(--bad);text-align:right;min-width:38px">−1.5</span></div><div style="display:grid;grid-template-columns:24px 1fr auto auto;gap:8px;align-items:center;padding:8px 2px;border-top:1px solid var(--hair)"><span class="sub tnum">05</span><span class="tnum" style="font-size:12px">42.5 kg × 9 @ 2</span><span class="tnum" style="font-size:12px;text-align:right">85.5</span><span class="tnum" style="font-size:11px;color:var(--building);text-align:right;min-width:38px">+2.0</span></div>
+</div>
+</div>
+  <div class="tabs"><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>Today</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Food</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>Train</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 18L11 11l3 3 5-7"/><path d="M19 7h-4M19 7v4"/></svg>Move</div><div class="tab on"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V10M10 18V5M16 18v-6M22 18V8"/></svg>Progress</div></div>
+</div><figcaption><b>Exercise detail &mdash; why eight sessions</b>Sessions 2, 4 and 6 fell. Plot only the bars and this looks like chaos; plot only the line and it looks like a promise. Both together is the honest picture, and it is the argument for the whole threshold.</figcaption></figure>
+<figure><div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>TRACE</div>
+    <div class="av">TK</div>
+  </div>
+  <div class="scroll">
+<div class="card">
+  <div class="eyebrow">Next set &middot; route to a best</div>
+  <div style="font-size:17px;font-weight:600;margin-top:7px;letter-spacing:-.015em">Hammer Strength Fixed Pulldown</div>
+  <div class="sub" style="margin-top:3px">Gold&rsquo;s Gym &middot; stack, 20 positions</div>
+</div>
+
+<div class="card">
+  <div class="eyebrow">Your reference</div>
+  <div style="display:flex;align-items:baseline;gap:7px;margin-top:6px">
+    <span class="tnum" style="font-size:27px;font-weight:700;letter-spacing:-.02em">56.7</span>
+    <span style="font-size:13px;color:var(--muted)">kg estimated max</span></div>
+  <div style="height:6px;border-radius:3px;background:var(--panel2);margin-top:12px;overflow:hidden">
+    <div style="width:79.7%;height:100%;background:var(--building);border-radius:3px"></div></div>
+  <div style="display:flex;justify-content:space-between;margin-top:6px">
+    <span class="sub">Last set 42.5 kg</span><span class="tnum" style="font-size:10.5px;color:var(--building)">79.7% of max</span></div>
+</div>
+
+<div class="card" style="border-color:var(--building)">
+  <div class="eyebrow" style="color:var(--building)">Either of these beats it</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:11px">
+    <div style="background:var(--panel2);border-radius:12px;padding:13px">
+      <div class="tnum" style="font-size:21px;font-weight:700">9<span style="font-size:12px;font-weight:400;color:var(--muted)"> reps</span></div>
+      <div class="sub" style="margin-top:4px">at 42.5 kg</div></div>
+    <div style="background:var(--panel2);border-radius:12px;padding:13px">
+      <div class="tnum" style="font-size:21px;font-weight:700">47<span style="font-size:12px;font-weight:400;color:var(--muted)"> kg</span></div>
+      <div class="sub" style="margin-top:4px">for 8 reps</div></div>
+  </div>
+</div>
+
+<div class="card" style="background:var(--panel2)">
+  <div style="display:flex;gap:8px;align-items:center">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--held)" stroke-width="2" stroke-linecap="round">
+      <path d="M12 3l9 16H3z"/><path d="M12 9v4M12 16v.01"/></svg>
+    <span class="eyebrow" style="color:var(--held)">Snapped to this machine</span></div>
+  <div style="font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.5">
+    The maths says 45.0 kg. This stack runs 5, 12, 19, 26, 33, 40, <b style="color:var(--text)">47</b> &mdash;
+    45 is not a position you can select, so Trace rounds to one you can.</div>
+  <div class="chipwrap">
+    <span class="chip">33</span><span class="chip">40</span><span class="chip on">47</span><span class="chip">54</span><span class="chip">61</span>
+  </div>
+</div>
+</div>
+  <div class="tabs"><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>Today</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Food</div><div class="tab on"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>Train</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 18L11 11l3 3 5-7"/><path d="M19 7h-4M19 7v4"/></svg>Move</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V10M10 18V5M16 18v-6M22 18V8"/></svg>Progress</div></div>
+</div><figcaption><b>Next set &mdash; a target you can actually load</b>Two routes to a best: more reps at the same weight, or more weight. The warning is the detail nobody else handles &mdash; the maths says 45 kg, this Hammer Strength stack has no 45, so Trace snaps to 47 rather than prescribing a weight the machine cannot make.</figcaption></figure>
+</div>
+
+<div class="sec"><h2>Activities</h2>
+<p>66 activities across five families, indoor and outdoor &mdash; and the Indian ones nobody else carries.</p></div>
+<div class="screens">
+<figure><div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>TRACE</div>
+    <div class="av">TK</div>
+  </div>
+  <div class="scroll">
+<div class="card" style="padding:12px 14px">
+  <div style="display:flex;align-items:center;gap:9px;background:var(--panel2);border:1px solid var(--hair);
+    border-radius:11px;padding:10px 12px">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--dim)" stroke-width="2" stroke-linecap="round">
+      <circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+    <span style="font-size:13px;color:var(--dim)">Search 66 activities</span>
+  </div>
+  <div class="chipwrap">
+    <span class="chip on">All</span><span class="chip">Indoor</span><span class="chip">Outdoor</span>
+    <span class="chip">Team</span><span class="chip">Solo</span><span class="chip">No kit</span>
+  </div>
+</div>
+<div class="grp" style="color:var(--dim)">Court &amp; field <span style="color:#3A444F">&middot; 14</span></div><div class="card" style="padding:2px 12px 6px"><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Badminton</div><div class="m">singles · 7.0 MET</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Cricket</div><div class="m">batting/fielding · 4.8</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Kabaddi</div><div class="m">raid play · 9.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Kho-kho</div><div class="m">chase · 8.5</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Football</div><div class="m">casual · 7.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Field hockey</div><div class="m">match · 8.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Basketball</div><div class="m">half court · 6.5</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Volleyball</div><div class="m">recreational · 4.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Tennis</div><div class="m">singles · 8.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Table tennis</div><div class="m">rally · 4.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Squash</div><div class="m">match · 12.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Throwball</div><div class="m">match · 5.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Ultimate frisbee</div><div class="m">match · 8.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Handball</div><div class="m">match · 8.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div></div><div class="grp" style="color:var(--dim)">Endurance <span style="color:#3A444F">&middot; 17</span></div><div class="card" style="padding:2px 12px 6px"><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Running</div><div class="m">outdoor · pace-scaled</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Trail running</div><div class="m">elevation-aware</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Treadmill</div><div class="m">incline-aware</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Walking</div><div class="m">step-derived</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Cycling — road</div><div class="m">Strava import</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Cycling — MTB</div><div class="m">Strava import</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Stationary bike</div><div class="m">resistance · 7.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Spin class</div><div class="m">instructor-led · 8.5</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Swimming — pool</div><div class="m">stroke-scaled</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Swimming — open water</div><div class="m">6.0–10.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Rowing machine</div><div class="m">split-scaled</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Rowing — water</div><div class="m">6.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Stair climbing</div><div class="m">flights · 8.8</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Elliptical</div><div class="m">resistance · 5.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Skipping / jump rope</div><div class="m">10.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Hiking</div><div class="m">pack-weight aware</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Trekking</div><div class="m">multi-day, elevation</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div></div><div class="grp" style="color:var(--dim)">Combat &amp; martial arts <span style="color:#3A444F">&middot; 10</span></div><div class="card" style="padding:2px 12px 6px"><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Boxing</div><div class="m">bag/pads · 9.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Kickboxing</div><div class="m">class · 10.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">MMA</div><div class="m">training · 10.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Judo</div><div class="m">randori · 10.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Karate</div><div class="m">kata/kumite · 10.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Taekwondo</div><div class="m">class · 10.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Wrestling</div><div class="m">practice · 6.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Muay Thai</div><div class="m">pads · 9.5</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Kalaripayattu</div><div class="m">practice · 8.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Fencing</div><div class="m">bouts · 6.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div></div><div class="grp" style="color:var(--dim)">Studio &amp; bodyweight <span style="color:#3A444F">&middot; 13</span></div><div class="card" style="padding:2px 12px 6px"><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Yoga — hatha</div><div class="m">2.5</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Yoga — vinyasa</div><div class="m">4.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Yoga — ashtanga</div><div class="m">6.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Pilates</div><div class="m">3.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Barre</div><div class="m">4.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Calisthenics</div><div class="m">5.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">CrossFit / HIIT</div><div class="m">interval-scaled</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Circuit training</div><div class="m">6.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Gymnastics</div><div class="m">4.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Dance — bharatanatyam</div><div class="m">5.5</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Dance — hip hop</div><div class="m">7.3</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Zumba</div><div class="m">6.5</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Aerobics</div><div class="m">6.5</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div></div><div class="grp" style="color:var(--dim)">Outdoor &amp; adventure <span style="color:#3A444F">&middot; 12</span></div><div class="card" style="padding:2px 12px 6px"><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Rock climbing</div><div class="m">lead · 8.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Bouldering</div><div class="m">gym · 5.8</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Kayaking</div><div class="m">5.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Surfing</div><div class="m">3.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Stand-up paddle</div><div class="m">6.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Skateboarding</div><div class="m">5.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Horse riding</div><div class="m">5.5</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Golf</div><div class="m">carrying · 4.8</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Skiing</div><div class="m">7.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Snowboarding</div><div class="m">5.3</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Archery</div><div class="m">3.5</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div><div class="act" style="border-top:1px solid var(--hair)"><div><div class="n">Parkour</div><div class="m">8.0</div></div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3A444F" stroke-width="2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></div></div></div>
+  <div class="tabs"><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>Today</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Food</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>Train</div><div class="tab on"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 18L11 11l3 3 5-7"/><path d="M19 7h-4M19 7v4"/></svg>Move</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V10M10 18V5M16 18v-6M22 18V8"/></svg>Progress</div></div>
+</div><figcaption><b>The activity catalogue</b>Cycling was one row; it is now one of sixty-six. Kabaddi, kho-kho and throwball are here because a student in an Indian college gym plays them and no Western tracker has ever listed them. MET values are shown so the burn estimate is inspectable rather than magic.</figcaption></figure>
+<figure><div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>TRACE</div>
+    <div class="av">TK</div>
+  </div>
+  <div class="scroll">
+<div class="card">
+  <div class="eyebrow">Last night</div>
+  <div style="display:flex;align-items:baseline;gap:8px;margin-top:7px">
+    <span class="tnum" style="font-size:31px;font-weight:700;letter-spacing:-.03em">7h 20m</span>
+    <span style="font-size:13px;color:var(--muted)">asleep</span></div>
+  <svg width="100%" viewBox="0 0 320 62" style="margin-top:14px" role="img"
+       aria-label="Sleep stages across the night: deep early, REM concentrated in the second half, two brief wakes.">
+    <rect x="0" y="8" width="26" height="40" rx="2" fill="#3B3350"/><rect x="26" y="8" width="38" height="40" rx="2" fill="var(--s-sleep)"/><rect x="64" y="8" width="22" height="40" rx="2" fill="#3B3350"/><rect x="86" y="8" width="30" height="40" rx="2" fill="#6E43A0"/><rect x="116" y="8" width="5" height="40" rx="2" fill="#242A31"/><rect x="121" y="8" width="34" height="40" rx="2" fill="#3B3350"/><rect x="155" y="8" width="26" height="40" rx="2" fill="var(--s-sleep)"/><rect x="181" y="8" width="30" height="40" rx="2" fill="#3B3350"/><rect x="211" y="8" width="42" height="40" rx="2" fill="#6E43A0"/><rect x="253" y="8" width="4" height="40" rx="2" fill="#242A31"/><rect x="257" y="8" width="26" height="40" rx="2" fill="#3B3350"/><rect x="283" y="8" width="37" height="40" rx="2" fill="#6E43A0"/>
+  </svg>
+  <div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap">
+    <span style="font-size:10.5px;color:var(--muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--s-sleep);margin-right:5px"></span>Deep 1h 12m</span>
+    <span style="font-size:10.5px;color:var(--muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#6E43A0;margin-right:5px"></span>REM 1h 48m</span>
+    <span style="font-size:10.5px;color:var(--muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#3B3350;margin-right:5px"></span>Light 4h 06m</span>
+    <span style="font-size:10.5px;color:var(--muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#242A31;margin-right:5px"></span>Awake 14m</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="eyebrow">Seven nights</div>
+  <svg width="100%" viewBox="0 0 320 96" style="margin-top:10px" role="img"
+       aria-label="Seven nights of sleep duration against a seven-hour target line; two nights below it, both midweek.">
+    <line x1="0" y1="30" x2="320" y2="30" stroke="#2A3038" stroke-dasharray="3 4"/>
+    <text x="0" y="24" fill="#5C6874" font-size="9" font-family="IBM Plex Sans">7h target</text>
+    <rect x="6" y="26" width="26" height="62" rx="3" fill="var(--s-sleep)"/><text x="19" y="96" fill="#5C6874" font-size="9" text-anchor="middle" font-family="IBM Plex Sans">M</text><rect x="51" y="18" width="26" height="70" rx="3" fill="var(--s-sleep)"/><text x="64" y="96" fill="#5C6874" font-size="9" text-anchor="middle" font-family="IBM Plex Sans">T</text><rect x="96" y="44" width="26" height="44" rx="3" fill="var(--held)"/><text x="109" y="96" fill="#5C6874" font-size="9" text-anchor="middle" font-family="IBM Plex Sans">W</text><rect x="141" y="20" width="26" height="68" rx="3" fill="var(--s-sleep)"/><text x="154" y="96" fill="#5C6874" font-size="9" text-anchor="middle" font-family="IBM Plex Sans">T</text><rect x="186" y="38" width="26" height="50" rx="3" fill="var(--held)"/><text x="199" y="96" fill="#5C6874" font-size="9" text-anchor="middle" font-family="IBM Plex Sans">F</text><rect x="231" y="10" width="26" height="78" rx="3" fill="var(--s-sleep)"/><text x="244" y="96" fill="#5C6874" font-size="9" text-anchor="middle" font-family="IBM Plex Sans">S</text><rect x="276" y="14" width="26" height="74" rx="3" fill="var(--s-sleep)"/><text x="289" y="96" fill="#5C6874" font-size="9" text-anchor="middle" font-family="IBM Plex Sans">S</text>
+  </svg>
+  <div style="font-size:12.5px;color:var(--muted);margin-top:10px;line-height:1.5">
+    Two nights under target, both midweek. Your three heaviest sessions followed the two longest nights &mdash;
+    <span style="color:var(--text)">a pattern, not yet a finding</span>.</div>
+</div>
+
+<div class="card" style="background:var(--panel2)">
+  <div class="eyebrow" style="color:var(--held)">What Trace will not say</div>
+  <div style="font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.5">
+    That sleep caused the lifts. Two facts sitting next to each other is not a cause, and 7 nights is
+    not enough to claim one. When there are 8 weeks, the trend gets a colour.</div>
+</div>
+</div>
+  <div class="tabs"><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>Today</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Food</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>Train</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 18L11 11l3 3 5-7"/><path d="M19 7h-4M19 7v4"/></svg>Move</div><div class="tab on"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V10M10 18V5M16 18v-6M22 18V8"/></svg>Progress</div></div>
+</div><figcaption><b>Sleep &mdash; reported, not diagnosed</b>Stages, seven nights against target, and one honest sentence. Trace notices that heavy sessions followed long nights and refuses to call it cause &mdash; two facts side by side is not a finding, and seven nights is not a sample.</figcaption></figure>
+<figure><div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>TRACE</div>
+    <div class="av">TK</div>
+  </div>
+  <div class="scroll">
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <span class="eyebrow">Is it working?</span>
+    <span style="font-size:9.5px;letter-spacing:1.2px;color:var(--confirmed);font-weight:700">&#9650; MOSTLY MUSCLE</span></div>
+  <div style="display:flex;align-items:baseline;gap:7px;margin-top:12px">
+    <span class="tnum" style="font-size:40px;font-weight:700;letter-spacing:-.035em;color:var(--confirmed)">+3.1</span>
+    <span style="font-size:14px;color:var(--muted)">kg in 10 weeks</span></div>
+  <div style="display:flex;gap:3px;margin-top:14px">
+    <div style="flex:71;height:26px;border-radius:7px 3px 3px 7px;background:var(--confirmed);display:flex;
+      align-items:center;padding-left:11px"><span style="font-size:11px;font-weight:700;color:#04140C">2.2 kg lean</span></div>
+    <div style="flex:29;height:26px;border-radius:3px 7px 7px 3px;background:var(--s-energy);display:flex;
+      align-items:center;justify-content:flex-end;padding-right:11px"><span style="font-size:11px;font-weight:700;color:#1A1204">0.9 fat</span></div>
+  </div>
+  <div style="font-size:12.5px;color:var(--muted);margin-top:11px;line-height:1.45">
+    Seven of every ten kilos gained is muscle. Two of your three main lifts are confirmed up.</div>
+</div>
+
+<div class="card">
+  <div class="eyebrow">Overload, by movement</div>
+  <div style="display:flex;gap:3px;margin-top:12px;height:9px;border-radius:5px;overflow:hidden">
+    <div style="flex:2;background:var(--confirmed)"></div>
+    <div style="flex:2;background:var(--building)"></div>
+    <div style="flex:1;background:var(--held)"></div>
+    <div style="flex:4;background:var(--watching)"></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px 14px;margin-top:13px">
+    <span style="font-size:11px;color:var(--muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--confirmed);margin-right:6px"></span>2 confirmed</span>
+    <span style="font-size:11px;color:var(--muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--building);margin-right:6px"></span>2 building</span>
+    <span style="font-size:11px;color:var(--muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--held);margin-right:6px"></span>1 held</span>
+    <span style="font-size:11px;color:var(--muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--watching);margin-right:6px"></span>4 watching</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="eyebrow">Weight trend &middot; 10 weeks</div>
+  <svg width="100%" viewBox="0 0 320 92" style="margin-top:10px" role="img"
+       aria-label="Daily weigh-ins scattered around a rising smoothed trend line, from 68.4 to 71.5 kilograms over ten weeks.">
+    <line x1="0" y1="20" x2="320" y2="20" stroke="#1C2126"/>
+    <line x1="0" y1="52" x2="320" y2="52" stroke="#1C2126"/>
+    <line x1="0" y1="84" x2="320" y2="84" stroke="#1C2126"/>
+    <circle cx="8" cy="72" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="19" cy="67" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="29" cy="73" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="40" cy="63" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="50" cy="68" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="61" cy="64" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="72" cy="58" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="82" cy="63" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="93" cy="54" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="103" cy="58" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="114" cy="51" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="125" cy="50" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="135" cy="53" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="146" cy="57" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="156" cy="46" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="167" cy="45" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="178" cy="49" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="188" cy="52" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="199" cy="45" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="209" cy="41" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="220" cy="48" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="231" cy="33" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="241" cy="43" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="252" cy="33" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="262" cy="29" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="273" cy="27" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="284" cy="28" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="294" cy="34" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="305" cy="23" r="1.9" fill="#2E86D9" opacity=".42"/><circle cx="315" cy="27" r="1.9" fill="#2E86D9" opacity=".42"/>
+    <polyline points="8,74 43,70 78,68 113,62 148,58 183,52 218,44 253,38 288,30 313,26"
+      fill="none" stroke="var(--s-weight)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <div style="display:flex;justify-content:space-between;margin-top:6px">
+    <span class="sub tnum">68.4 kg</span><span class="tnum" style="font-size:10.5px;color:var(--s-weight)">71.5 kg</span></div>
+</div>
+</div>
+  <div class="tabs"><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>Today</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Food</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>Train</div><div class="tab"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 18L11 11l3 3 5-7"/><path d="M19 7h-4M19 7v4"/></svg>Move</div><div class="tab on"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V10M10 18V5M16 18v-6M22 18V8"/></svg>Progress</div></div>
+</div><figcaption><b>Progress &mdash; muscle or fat, and how sure</b>The split bar is unchanged from Flight Deck because it was right. What is new is the second card: the overload states rolled up, so &ldquo;+3.1 kg&rdquo; sits next to how much of the strength story is actually confirmed.</figcaption></figure>
+</div>
+
+<div class="sec"><h2>What this is not</h2>
+<p>The restraint is the product. Worth stating plainly, because it is the part that is easy to lose.</p></div>
+<p class="note-p" style="margin-top:18px">
+No movement turns green from one good session. No verdict survives a four-week gap. A set logged at sixteen reps
+gets no estimate at all, because the formula stops meaning anything past twelve and a number that means nothing
+is worse than a blank. Every threshold here &mdash; eight sessions, twelve reps, four weeks &mdash; is written down
+in the constants table with an honest label saying whether evidence, convention or judgement put it there.
+</p>
+<p class="note-p" style="margin-top:14px;color:var(--muted)">
+Screens are mockups. The strength engine, the session summary and the route are implemented and verified against
+real logged sets; the overload board and the expanded catalogue are not built yet.
+</p>
+
+</div>

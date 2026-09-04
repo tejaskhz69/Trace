@@ -1,0 +1,1565 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}</style></head><body>
+<title>Trace Flight Deck</title>
+<style>
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:300;font-display:block;src:url(data:font/ttf;base64,<STRIPPED>) format('truetype');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:400;font-display:block;src:url(data:font/ttf;base64,<STRIPPED>) format('truetype');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:500;font-display:block;src:url(data:font/ttf;base64,<STRIPPED>) format('truetype');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:600;font-display:block;src:url(data:font/ttf;base64,<STRIPPED>) format('truetype');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:700;font-display:block;src:url(data:font/ttf;base64,<STRIPPED>) format('truetype');}
+
+/* ============================================================
+   TRACE — revision 5.
+   Visual language taken from trace-mockup.html: green accent,
+   16px cards, a validated multi-hue chart set, and a plain-English
+   sentence under every picture. Typeface stays IBM Plex Sans, which
+   is what apps/mobile/src/theme.ts loads.
+   Chart colours were validated for a dark surface: lightness band,
+   chroma floor, colour-blind separation on adjacent pairs, contrast.
+   Every series is also directly labelled, so identity never depends
+   on colour alone.
+   ============================================================ */
+:root{
+  --void:#07090B; --panel:#0E1216; --panel2:#141A20; --hair:#1C2126;
+  --text:#F2F5F7; --muted:#8A97A3; --dim:#5C6874;
+
+  --s-strength:#1FA862;         /* chart series — validated set */
+  --s-weight:#2E86D9;
+  --s-energy:#C2871F;
+  --s-sleep:#9A5FD0;
+  --bad:#D9534F;
+
+  /* Strava's brand orange. The one licensed exception to the palette:
+     their guidelines require it on the connect button and the mark.
+     Imported data itself renders in Trace's own colours. */
+  --strava:#FC5200;
+
+  --font:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+
+  /* Accent defaults to green; .stage[data-accent] overrides it. See below. */
+  --brand:#3DDC84; --brand-ink:#06210F;
+  --brand-soft:rgba(61,220,132,.08); --brand-tint:rgba(61,220,132,.14);
+  --plain-text:#D6E2DC;
+}
+
+/* ------------------------------------------------------------------
+   Accent choice. This is a real user setting, not a preview toggle —
+   it lives in Profile › Appearance too. Only the INTERACTION accent
+   changes: buttons, the active tab, a selected chip, the callout rule.
+   The chart series and macro colours are identical in both, because
+   those carry data and data shouldn't restyle on a preference.
+   ------------------------------------------------------------------ */
+.stage[data-accent="green"]{
+  --brand:#3DDC84; --brand-ink:#06210F;
+  --brand-soft:rgba(61,220,132,.08); --brand-tint:rgba(61,220,132,.14);
+  --plain-text:#D6E2DC;
+}
+.stage[data-accent="white"]{
+  --brand:#EDF1F6; --brand-ink:#07090B;
+  --brand-soft:rgba(237,241,246,.06); --brand-tint:rgba(237,241,246,.12);
+  --plain-text:#CFD7DD;
+}
+.stage{transition:none}
+.card,.cell,.chip,.tab,.plain,.nav-i,.dot,.tile svg{transition:background-color .22s ease,color .22s ease,border-color .22s ease}
+
+.accentbar{display:flex;align-items:center;gap:14px;margin:22px 0 4px;flex-wrap:wrap}
+.aswitch{display:inline-flex;background:var(--panel);border:1px solid var(--hair);border-radius:999px;padding:3px;gap:3px}
+.aswitch button{font:inherit;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  padding:9px 20px;border-radius:999px;border:0;cursor:pointer;background:transparent;color:var(--dim);
+  display:inline-flex;align-items:center;gap:7px;transition:background-color .2s,color .2s}
+.aswitch button i{width:9px;height:9px;border-radius:50%;display:inline-block}
+.aswitch button[data-a="green"] i{background:#3DDC84}
+.aswitch button[data-a="white"] i{background:#EDF1F6}
+.aswitch button[aria-pressed="true"]{background:var(--panel2);color:var(--text)}
+.aswitch button:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.accentbar span{font-size:13px;color:var(--dim)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:#05070A; color:var(--text); padding:28px 16px 72px;
+  font:15px/1.55 var(--font);
+  -webkit-font-smoothing:antialiased;
+}
+.page{max-width:1320px;margin:0 auto}
+h1{font-size:28px;letter-spacing:-.02em;margin-bottom:6px;font-weight:600;text-wrap:balance}
+.lede{color:var(--muted);max-width:72ch;margin-bottom:8px}
+.note-p{color:var(--dim);font-size:13px;max-width:72ch}
+
+.sec{display:flex;align-items:baseline;gap:16px;margin:52px 0 4px;padding-top:20px;border-top:1px solid #161B21;flex-wrap:wrap}
+.sec h2{font-size:19px;font-weight:600;letter-spacing:-.02em}
+.sec p{font-size:13px;color:var(--dim);flex:1 1 300px}
+
+.screens{display:flex;gap:26px;flex-wrap:wrap;justify-content:center;margin-top:28px}
+figure{margin:0;width:360px;max-width:100%}
+figcaption{margin-top:12px;color:var(--muted);font-size:13px;line-height:1.5}
+figcaption b{color:var(--text);display:block;font-size:14px;margin-bottom:3px}
+
+/* phone shell */
+.phone{
+  background:var(--void); border:1px solid #262D35; border-radius:30px;
+  padding:14px 12px 0; height:740px; overflow-y:auto; overflow-x:hidden;
+  box-shadow:0 24px 60px rgba(0,0,0,.55); scrollbar-width:none;
+  display:flex; flex-direction:column;
+}
+.phone::-webkit-scrollbar{display:none}
+.phone > .tabs{margin-top:auto}
+
+.bar{display:flex;justify-content:space-between;align-items:center;padding:2px 8px 12px;gap:10px}
+.brand{display:flex;align-items:center;gap:7px;font-weight:700;letter-spacing:.18em;font-size:11px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--brand);flex:none}
+.time{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+/* settings live behind the avatar, top right of every tab */
+.av{width:30px;height:30px;border-radius:50%;background:var(--panel2);border:1px solid #262D35;
+  display:grid;place-items:center;font-size:10.5px;font-weight:700;color:var(--muted);flex:none;letter-spacing:.04em}
+.bar-r{display:flex;align-items:center;gap:10px}
+
+.card{background:var(--panel);border:1px solid var(--hair);border-radius:16px;margin-bottom:12px;overflow:hidden}
+.card-h{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:13px 15px;border-bottom:1px solid var(--hair)}
+.card-b{padding:15px}
+.lbl{font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.tag{font-size:10px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;white-space:nowrap}
+
+.hero{text-align:center;padding:6px 0 2px}
+.hero .n{font-size:54px;font-weight:700;letter-spacing:-.035em;line-height:1;font-variant-numeric:tabular-nums}
+.hero .u{font-size:13px;color:var(--muted);margin-top:6px}
+
+/* the sentence under every picture — this is the voice of the redesign */
+.plain{background:var(--brand-soft);border-left:3px solid var(--brand);
+  padding:11px 13px;border-radius:0 8px 8px 0;font-size:13.5px;line-height:1.5;color:var(--plain-text)}
+.plain.amber{background:rgba(194,135,31,.09);border-left-color:var(--s-energy);color:#E5D6BC}
+.plain.red{background:rgba(217,83,79,.09);border-left-color:var(--bad);color:#EBD2D1}
+.plain b{color:var(--text)}
+
+.row{display:flex;gap:9px}
+.cell{flex:1;background:var(--panel2);border-radius:11px;padding:11px}
+.cell .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:3px}
+.cell .v span{font-size:11px;font-weight:600;color:var(--muted);margin-left:2px}
+.cell .s{font-size:11px;color:var(--muted);margin-top:1px}
+/* keyed cells carry the ring's segment colour as a top rule, so the strip
+   reads as a legend for the ring rather than three unrelated numbers */
+.cell.keyed{border-top:2px solid var(--k);border-radius:3px 3px 11px 11px}
+.cell.act{text-align:center;font-size:13px;padding:13px;font-weight:600}
+.cell.go{background:var(--brand);color:var(--brand-ink);font-weight:700}
+.cell.ghost{background:transparent;border:1px solid var(--hair);color:var(--muted);font-weight:600}
+.cell.pick{border:1px solid var(--brand);color:var(--brand);background:transparent}
+
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);padding:0 15px 13px}
+.legend i{display:inline-block;width:10px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
+
+svg{display:block;width:100%;height:auto;overflow:visible}
+.grid line{stroke:var(--hair);stroke-width:1}
+.axis{fill:var(--dim);font-size:9.5px;letter-spacing:.06em}
+.dlabel{font-size:10px;font-weight:700;letter-spacing:.04em}
+
+.tabs{display:flex;justify-content:space-around;padding:12px 0 16px;border-top:1px solid var(--hair);
+  position:sticky;bottom:0;background:var(--void);margin-top:4px}
+.tab{font-size:10px;color:var(--dim);text-align:center;letter-spacing:.05em;display:flex;flex-direction:column;align-items:center;gap:4px}
+.tab.on{color:var(--brand)}
+.tab svg{width:19px;height:19px}
+.ico{fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.pict{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.pict .bar2{stroke:var(--brand)}
+
+.step{display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--hair)}
+.step:last-child{border-bottom:0}
+.step .num{width:24px;height:24px;flex:none;border-radius:50%;background:var(--brand-tint);
+  color:var(--brand);font-size:11px;font-weight:700;display:grid;place-items:center;font-variant-numeric:tabular-nums}
+.step h4{font-size:14px;margin-bottom:3px;font-weight:600}
+.step p{font-size:12.5px;color:var(--muted);line-height:1.5}
+
+table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--hair)}
+th{color:var(--dim);font-weight:600;font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+td{font-variant-numeric:tabular-nums;color:var(--muted)}
+tr:last-child td{border-bottom:0}
+
+/* nutrition entry tiles */
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.tile{background:var(--panel2);border-radius:11px;padding:13px;display:flex;flex-direction:column;gap:6px}
+.tile svg{width:20px;height:20px;color:var(--brand)}
+.tile .tn{font-size:13.5px;font-weight:600}
+.tile .ts{font-size:11px;color:var(--muted);line-height:1.45}
+
+.search{background:var(--panel2);border:1px solid var(--hair);border-radius:11px;height:42px;
+  display:flex;align-items:center;gap:9px;padding:0 12px;color:var(--dim);font-size:13.5px;margin-bottom:12px}
+.search svg{width:15px;height:15px;flex:none}
+.search.filled{color:var(--text);border-color:#2A3138}
+
+/* coach conversation */
+.msg{display:flex}
+.msg.me{justify-content:flex-end}
+.bub{max-width:86%;padding:10px 13px;border-radius:13px;font-size:13px;line-height:1.5}
+.bub.ai{background:var(--panel2);color:var(--muted);border-bottom-left-radius:4px}
+.bub.me{background:var(--brand);color:var(--brand-ink);border-bottom-right-radius:4px;font-weight:500}
+.composer{display:flex;gap:9px;align-items:center;padding:11px 0 13px;border-top:1px solid var(--hair);
+  position:sticky;bottom:56px;background:var(--void)}
+
+/* exercise catalogue — the pictogram is the point */
+.grp{padding:8px 15px;background:var(--panel2);font-size:9.5px;font-weight:700;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted)}
+.ex{display:flex;align-items:center;gap:12px;padding:10px 15px;border-bottom:1px solid var(--hair)}
+.ex:last-child{border-bottom:0}
+.ex-t{width:46px;height:36px;border-radius:8px;background:var(--panel2);border:1px solid var(--hair);
+  flex:none;color:var(--muted);padding:2px}
+.ex-b{flex:1;min-width:0}
+.ex-n{font-size:13.5px;font-weight:600}
+.ex-m{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-top:2px;font-weight:600}
+.ex-r{text-align:right;flex:none;font-variant-numeric:tabular-nums}
+.ex-v{font-size:13px;font-weight:700}
+.ex-d{font-size:10px;font-weight:700;margin-top:2px}
+.up{color:var(--s-strength)} .dn{color:var(--s-energy)} .fl{color:var(--dim)}
+
+.hero-pict{height:132px;color:var(--muted);padding:14px}
+.mus{display:flex;flex-wrap:wrap;gap:6px;padding:0 15px 13px}
+.mu{padding:4px 9px;border-radius:999px;background:var(--panel2);font-size:9.5px;font-weight:700;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--muted)}
+.mu.p{background:var(--brand-tint);color:var(--brand)}
+
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:7px 12px 7px 9px;border-radius:999px;
+  border:1px solid var(--hair);background:var(--panel2);font-size:12px;color:var(--muted)}
+.chip svg{width:15px;height:15px;flex:none}
+.chip.on{background:var(--brand-tint);border-color:var(--brand);color:var(--brand);font-weight:600}
+
+.pill{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;border:1px solid var(--hair);
+  background:var(--panel2);font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);white-space:nowrap}
+
+.src{display:inline-flex;align-items:center;gap:5px;font-size:9.5px;font-weight:700;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--dim)}
+.src svg{width:11px;height:11px;flex:none}
+.imp{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 15px;border-bottom:1px solid var(--hair)}
+.imp:last-child{border-bottom:0}
+.imp-n{font-size:13.5px;font-weight:600}
+.imp-s{font-size:11px;color:var(--muted);margin-top:1px}
+.imp-r{text-align:right;flex:none;font-variant-numeric:tabular-nums}
+
+.setrow{display:flex;align-items:center;justify-content:space-between;padding:11px 15px;font-size:13.5px;border-bottom:1px solid var(--hair)}
+.setrow:last-child{border-bottom:0}
+.setrow-r{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12.5px}
+.setrow-r svg{width:14px;height:14px}
+.mini{display:inline-flex;background:var(--panel2);border:1px solid var(--hair);border-radius:999px;padding:2px;gap:2px}
+.mini span{padding:5px 11px;border-radius:999px;font-size:9.5px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--dim)}
+.mini span.on{background:var(--brand);color:var(--brand-ink)}
+
+/* ---------------------------------------------------------------- */
+/* WEB — same language, wider frame                                  */
+/* ---------------------------------------------------------------- */
+.webs{display:flex;flex-direction:column;gap:26px;margin-top:28px}
+.browser{border:1px solid #262D35;border-radius:14px;overflow:hidden;background:var(--void);
+  box-shadow:0 24px 60px rgba(0,0,0,.45)}
+.chrome{display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--panel);border-bottom:1px solid var(--hair)}
+.lights{display:flex;gap:6px;flex:none}
+.lights i{width:9px;height:9px;border-radius:50%;background:#2A3138}
+.urlbar{flex:1;height:28px;border-radius:7px;background:var(--panel2);border:1px solid var(--hair);
+  display:flex;align-items:center;gap:7px;padding:0 10px;font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+.urlbar svg{width:11px;height:11px;flex:none}
+.urlbar b{color:var(--muted);font-weight:500}
+
+.app{display:grid;grid-template-columns:212px 1fr;min-height:400px}
+.side{border-right:1px solid var(--hair);padding:16px 12px;display:flex;flex-direction:column;gap:18px;background:var(--panel)}
+.side-nav{display:flex;flex-direction:column;gap:2px}
+.nav-i{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;font-size:13px;color:var(--dim)}
+.nav-i svg{width:16px;height:16px;flex:none}
+.nav-i.on{background:var(--brand-tint);color:var(--brand);font-weight:600}
+.side-foot{margin-top:auto;display:flex;align-items:center;gap:10px;padding-top:14px;border-top:1px solid var(--hair)}
+.side-foot .sn{font-size:13px;font-weight:600}
+.side-foot .se{font-size:11px;color:var(--dim);margin-top:1px}
+
+.main{padding:22px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.main-top{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.main-top h3{font-size:22px;font-weight:600;letter-spacing:-.02em}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(268px,1fr));gap:12px;align-items:start}
+.cols .card{margin-bottom:0}
+.tblwrap{overflow-x:auto}
+.wt{width:100%;border-collapse:collapse;font-size:12.5px}
+.wt th{text-align:left;padding:9px 15px;font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--dim);border-bottom:1px solid var(--hair)}
+.wt td{padding:10px 15px;border-bottom:1px solid var(--hair);color:var(--muted);font-variant-numeric:tabular-nums}
+.wt tr:last-child td{border-bottom:0}
+.wt td.nm{color:var(--text);font-weight:600;font-variant-numeric:normal}
+.wt td.r{text-align:right;color:var(--text);font-weight:700}
+
+/* the one thing the web genuinely cannot do */
+.locked{position:relative}
+.modal{position:absolute;inset:0;background:rgba(3,5,7,.74);display:flex;align-items:center;justify-content:center;padding:18px}
+.modal-c{width:min(380px,100%);background:var(--panel);border:1px solid #2A3138;border-radius:16px;overflow:hidden;
+  box-shadow:0 20px 50px rgba(0,0,0,.6)}
+.modal-b{padding:16px;display:flex;flex-direction:column;gap:11px}
+.modal-b h4{font-size:16px;font-weight:600;letter-spacing:-.01em}
+.modal-b p{font-size:13px;line-height:1.5;color:var(--muted)}
+.modal-a{display:flex;gap:9px;padding:13px;border-top:1px solid var(--hair)}
+.modal-a > *{flex:1}
+.qr{width:62px;height:62px;border-radius:9px;background:var(--panel2);border:1px solid var(--hair);flex:none;
+  display:grid;grid-template-columns:repeat(5,1fr);grid-template-rows:repeat(5,1fr);gap:2px;padding:7px}
+.qr i{border-radius:1px;background:var(--dim)}
+.qr i.k{background:var(--text)}
+.btn-off{background:transparent;border:1px solid var(--hair);color:var(--dim);border-radius:11px;
+  padding:11px 14px;font-size:12.5px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:7px}
+.btn-off svg{width:14px;height:14px}
+.btn-go{background:var(--brand);color:var(--brand-ink);border-radius:11px;padding:11px 14px;font-size:12.5px;
+  font-weight:700;display:flex;align-items:center;justify-content:center;gap:7px}
+.btn-gh{background:transparent;border:1px solid var(--hair);color:var(--text);border-radius:11px;padding:11px 14px;
+  font-size:12.5px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:7px}
+
+.ship{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:28px}
+.ship-c{background:var(--panel);border:1px solid var(--hair);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:9px}
+.ship-c h4{font-size:14px;font-weight:600}
+.ship-c p{font-size:13px;line-height:1.55;color:var(--muted)}
+.ship-c code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--text);
+  background:var(--panel2);border-radius:4px;padding:1px 5px}
+.ship-c ol{padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:12.5px;line-height:1.5;color:var(--muted)}
+
+.tip{position:fixed;pointer-events:none;background:#1A2027;border:1px solid #2C343D;border-radius:8px;
+  padding:7px 10px;font-size:12px;opacity:0;transition:opacity .12s;z-index:99;white-space:nowrap;
+  box-shadow:0 6px 20px rgba(0,0,0,.5)}
+.tip b{color:var(--text)} .tip span{color:var(--muted)}
+.hot{cursor:pointer}
+.hot:hover circle.mk{r:6}
+
+@media (max-width:720px){.app{grid-template-columns:1fr}.side{border-right:0;border-bottom:1px solid var(--hair)}
+  .side-nav{flex-direction:row;flex-wrap:wrap}.main{padding:16px}}
+@media (prefers-reduced-motion:reduce){*{transition:none !important}}
+</style>
+
+<!-- ==================================================================== -->
+<!-- Pictogram library — defined once, referenced with <use>.              -->
+<!-- ==================================================================== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+  <symbol id="i-home" viewBox="0 0 24 24"><path class="ico" d="M3.5 16a8.5 8.5 0 0 1 17 0"/><path class="ico" d="M12 16l4.2-5.4"/><circle class="ico" cx="12" cy="16" r="1.5"/><path class="ico" d="M3.5 19.5h17"/></symbol>
+  <symbol id="i-nut" viewBox="0 0 24 24"><path class="ico" d="M7 3v6M10.5 3v6M8.75 9v12"/><path class="ico" d="M7 9h3.5"/><path class="ico" d="M17.5 3c1.6 2.2 1.6 6.3 0 8.4V21"/></symbol>
+  <symbol id="i-train" viewBox="0 0 24 24"><path class="ico" d="M3 9.5v5M6.5 7v10M17.5 7v10M21 9.5v5M6.5 12h11"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle class="ico" cx="12" cy="8.4" r="3.4"/><path class="ico" d="M5 20.2a7 7 0 0 1 14 0"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle class="ico" cx="10.5" cy="10.5" r="6"/><path class="ico" d="M15 15l5 5"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path class="ico" d="M3 8.5h3.5L8 6h8l1.5 2.5H21v11H3z"/><circle class="ico" cx="12" cy="13.5" r="3.6"/></symbol>
+  <symbol id="i-barcode" viewBox="0 0 24 24"><path class="ico" d="M3 5v14M6.5 5v14M9.5 5v10M12.5 5v14M15.5 5v10M18.5 5v14M21 5v14"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path class="ico" d="M4 4.5h9a3 3 0 0 1 3 3V21a3 3 0 0 0-3-3H4z"/><path class="ico" d="M20 4.5h-4v13.8h4z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle class="ico" cx="12" cy="12" r="3.2"/><path class="ico" d="M12 3v2.6M12 18.4V21M3 12h2.6M18.4 12H21M5.6 5.6l1.9 1.9M16.5 16.5l1.9 1.9M18.4 5.6l-1.9 1.9M7.5 16.5l-1.9 1.9"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><path class="ico" d="M6.5 10.5h11V20h-11z"/><path class="ico" d="M8.8 10.5V7.8a3.2 3.2 0 0 1 6.4 0v2.7"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path class="ico" d="M9.5 5.5L16 12l-6.5 6.5"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path class="ico" d="M4 19.5h16"/><path class="ico" d="M6.5 19.5v-6M11 19.5v-11M15.5 19.5v-7M20 19.5v-13"/></symbol>
+  <symbol id="i-watch" viewBox="0 0 24 24"><rect class="ico" x="7" y="6.5" width="10" height="11" rx="3"/><path class="ico" d="M9.5 6.5V3.5h5v3M9.5 17.5v3h5v-3"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path class="ico" d="M12 20s-7.5-4.6-7.5-9.4A4.1 4.1 0 0 1 12 8a4.1 4.1 0 0 1 7.5 2.6C19.5 15.4 12 20 12 20z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path class="ico" d="M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.4l-1.7 1.7"/><path class="ico" d="M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.6l1.7-1.7"/></symbol>
+  <symbol id="i-strava" viewBox="0 0 24 24"><path d="M9.7 2 3.9 13.5h3.4L9.7 8.8l2.4 4.7h3.4z" fill="currentColor"/><path d="M15.5 13.5 13.9 16.7l-1.6-3.2H9.8l4.1 8.3 4.1-8.3z" fill="currentColor" opacity=".6"/></symbol>
+
+  <symbol id="ex-bench" viewBox="0 0 64 48"><path class="pict" d="M12 34h34M17 34v9M41 34v9"/><circle class="pict" cx="19" cy="29" r="3.4"/><path class="pict" d="M23 30h15l7 5"/><path class="pict" d="M27 29l3-8M35 29l-2-8"/><path class="pict bar2" d="M20 20h24M24 15v10M28 17v6M40 15v10M36 17v6"/></symbol>
+  <symbol id="ex-squat" viewBox="0 0 64 48"><circle class="pict" cx="32" cy="12" r="3.4"/><path class="pict bar2" d="M18 17h28M22 12v10M42 12v10"/><path class="pict" d="M32 17v9"/><path class="pict" d="M32 26l-8 5 3 10M32 26l8 5-3 10"/><path class="pict" d="M14 41h36"/></symbol>
+  <symbol id="ex-deadlift" viewBox="0 0 64 48"><circle class="pict" cx="22" cy="14" r="3.4"/><path class="pict" d="M25 16l11 7"/><path class="pict" d="M30 20v13"/><path class="pict" d="M36 23l3 9M39 32l-2 9"/><path class="pict bar2" d="M18 33h22M22 28v10M36 28v10"/><path class="pict" d="M12 41h40"/></symbol>
+  <symbol id="ex-pulldown" viewBox="0 0 64 48"><path class="pict" d="M48 6v34M48 8H34"/><path class="pict bar2" d="M34 8v6M24 14h20"/><circle class="pict" cx="30" cy="21" r="3.4"/><path class="pict" d="M30 24v9"/><path class="pict" d="M30 25l-4-10M30 25l6-10"/><path class="pict" d="M30 33h9v8"/><path class="pict" d="M22 33h12"/></symbol>
+  <symbol id="ex-ohp" viewBox="0 0 64 48"><circle class="pict" cx="32" cy="17" r="3.4"/><path class="pict bar2" d="M20 7h24M24 3v8M40 3v8"/><path class="pict" d="M28 15l-2-7M36 15l2-7"/><path class="pict" d="M32 20v10"/><path class="pict" d="M32 30l-5 11M32 30l5 11"/></symbol>
+  <symbol id="ex-incline" viewBox="0 0 64 48"><path class="pict" d="M14 40l30-20M20 40v-3M42 25v15"/><circle class="pict" cx="43" cy="18" r="3.4"/><path class="pict" d="M40 21L24 32"/><path class="pict" d="M33 26l1-9M30 28l1-9"/><path class="pict bar2" d="M29 15h8M30 12v6M36 12v6"/></symbol>
+  <symbol id="ex-row" viewBox="0 0 64 48"><circle class="pict" cx="20" cy="17" r="3.4"/><path class="pict" d="M23 19l13 4"/><path class="pict" d="M32 22v8"/><path class="pict" d="M36 23l2 9M38 32l-1 9"/><path class="pict bar2" d="M22 30h20M26 26v8M38 26v8"/><path class="pict" d="M12 41h40"/></symbol>
+  <symbol id="ex-curl" viewBox="0 0 64 48"><circle class="pict" cx="32" cy="12" r="3.4"/><path class="pict" d="M32 15v11"/><path class="pict" d="M32 18l-6 6 3 4M32 18l6 6-3 4"/><path class="pict bar2" d="M25 28h14M27 25v6M37 25v6"/><path class="pict" d="M32 26l-4 15M32 26l4 15"/></symbol>
+
+  <symbol id="act-cycle" viewBox="0 0 48 48"><circle class="pict" cx="12" cy="32" r="8"/><circle class="pict" cx="36" cy="32" r="8"/><path class="pict" d="M12 32l8-13h8l8 13M20 19h7M24 32l4-13"/></symbol>
+  <symbol id="act-run" viewBox="0 0 48 48"><circle class="pict" cx="28" cy="10" r="4"/><path class="pict" d="M26 16l-6 8 6 5-2 11"/><path class="pict" d="M20 24l-8 3M26 29l9 4"/><path class="pict" d="M24 40l-9 4"/></symbol>
+  <symbol id="act-badminton" viewBox="0 0 48 48"><ellipse class="pict" cx="17" cy="17" rx="9" ry="11" transform="rotate(-38 17 17)"/><path class="pict" d="M23 24l10 11"/><path class="pict" d="M33 15l6-6M33 15l-3-4M33 15l4 3"/><circle class="pict" cx="40" cy="8" r="2.5"/></symbol>
+  <symbol id="act-pickle" viewBox="0 0 48 48"><rect class="pict" x="8" y="7" width="20" height="24" rx="7"/><path class="pict" d="M18 31v9"/><circle class="pict" cx="37" cy="30" r="7"/><path class="pict" d="M35 27h.01M39 30h.01M35 33h.01"/></symbol>
+  <symbol id="act-cricket" viewBox="0 0 48 48"><path class="pict" d="M10 38l14-14M22 26l6 6M24 16l8 8-4 4-8-8z"/><path class="pict" d="M24 16l4-4 8 8-4 4"/><circle class="pict" cx="12" cy="14" r="4.5"/><path class="pict" d="M40 26v14M44 26v14M36 26v14M36 30h8"/></symbol>
+  <symbol id="act-swim" viewBox="0 0 48 48"><circle class="pict" cx="16" cy="17" r="4"/><path class="pict" d="M20 21l8 3 8-8"/><path class="pict" d="M6 33c4-3 6 3 10 0s6 3 10 0 6 3 10 0 5 2 6 2"/><path class="pict" d="M6 40c4-3 6 3 10 0s6 3 10 0 6 3 10 0 5 2 6 2"/></symbol>
+  <symbol id="act-row" viewBox="0 0 48 48"><circle class="pict" cx="18" cy="13" r="4"/><path class="pict" d="M18 17v8l-6 6"/><path class="pict" d="M18 21l10 4"/><path class="pict" d="M6 36h30M8 30l28 8"/></symbol>
+  <symbol id="act-walk" viewBox="0 0 48 48"><circle class="pict" cx="24" cy="10" r="4"/><path class="pict" d="M24 16v11M24 27l-5 13M24 27l5 13"/><path class="pict" d="M24 19l-6 4M24 19l7 3"/></symbol>
+  <symbol id="act-hiit" viewBox="0 0 48 48"><path class="pict" d="M26 5l-9 18h11l-8 20"/><path class="pict" d="M8 14h6M6 24h8M8 34h6"/></symbol>
+</defs></svg>
+
+<div class="page">
+
+<h1>Trace — revision 5</h1>
+<p class="lede">
+  The picture-led language from the mockup, now carrying the four-tab structure:
+  <b>Home · Nutrition · Trainer · Profile</b>, with settings behind the avatar in the top-right of
+  every tab. Every number that mattered is still here — it just has a shape and a plain-English
+  sentence underneath. Rides arrive on their own from Strava, and the same account logs from a browser.
+</p>
+<p class="note-p">
+  Chart colours were validated for a dark surface before use: lightness band, chroma floor,
+  colour-blind separation on adjacent pairs, and contrast. Every series is also directly labelled,
+  so identity never depends on colour alone. Typeface is IBM Plex Sans, unchanged.
+</p>
+
+<div class="accentbar">
+  <div class="aswitch" role="group" aria-label="Accent colour">
+    <button type="button" data-a="green" aria-pressed="false"><i></i>Green</button>
+    <button type="button" data-a="white" aria-pressed="true"><i></i>White</button>
+  </div>
+  <span>Both ship. This is a setting in Profile › Appearance — the accent moves, the data colours don't.</span>
+</div>
+
+<div class="stage" data-accent="white">
+
+<div class="sec">
+  <h2>The app</h2>
+  <p>Five tabs. Everything else is a push from one of them.</p>
+</div>
+
+<div class="screens">
+
+<!-- ========================= TAB 1 · HOME ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>TRACE</div>
+    <div class="bar-r"><div class="time">FRI · 15 AUG</div><div class="av">TK</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Remaining today</span><span class="tag" style="color:var(--brand)">ON TRACK</span></div>
+    <div class="card-b">
+      <!-- Full ring. Each arc is a macro's share of the day's 2,450 kcal
+           target, so the segments sum to the target and the gap IS what's
+           left: protein 472, carbs 856, fat 522, remaining 600.
+           r=52 → circumference 326.7. -->
+      <svg viewBox="0 0 200 168" role="img"
+           aria-label="Calorie ring: of a 2,450 kilocalorie target, protein is 472, carbs 856 and fat 522, leaving 600 remaining.">
+        <g transform="translate(100,84) rotate(-90)">
+          <circle r="52" fill="none" stroke="#1C2126" stroke-width="17"/>
+          <circle r="52" fill="none" stroke="var(--s-strength)" stroke-width="17"
+                  stroke-dasharray="62.9 263.8" stroke-dashoffset="0"/>
+          <circle r="52" fill="none" stroke="var(--s-weight)" stroke-width="17"
+                  stroke-dasharray="114.1 212.6" stroke-dashoffset="-62.9"/>
+          <circle r="52" fill="none" stroke="var(--s-energy)" stroke-width="17"
+                  stroke-dasharray="69.6 257.1" stroke-dashoffset="-177.0"/>
+        </g>
+        <text x="100" y="80" text-anchor="middle" fill="var(--text)" font-size="42" font-weight="700"
+              letter-spacing="-1.4" style="font-variant-numeric:tabular-nums">600</text>
+        <text x="100" y="99" text-anchor="middle" fill="var(--muted)" font-size="10" letter-spacing="1.4">KCAL LEFT</text>
+        <text x="4"   y="160" fill="var(--dim)" font-size="9.5" letter-spacing=".6">1,850 EATEN</text>
+        <text x="196" y="160" fill="var(--dim)" font-size="9.5" letter-spacing=".6" text-anchor="end">2,450 TARGET</text>
+      </svg>
+
+      <!-- The ring can't label its own arcs at this size, so the strip does it. -->
+      <div class="row" style="margin-top:4px">
+        <div class="cell keyed" style="--k:var(--s-strength)"><div class="lbl">Protein</div><div class="v">118<span>g</span></div><div class="s">47 g left</div></div>
+        <div class="cell keyed" style="--k:var(--s-weight)"><div class="lbl">Carbs</div><div class="v">214<span>g</span></div><div class="s">86 g left</div></div>
+        <div class="cell keyed" style="--k:var(--s-energy)"><div class="lbl">Fat</div><div class="v">58<span>g</span></div><div class="s">20 g left</div></div>
+      </div>
+
+      <div class="plain" style="margin-top:11px">
+        You've eaten <b>1,850</b> today. About <b>two rotis and a bowl of dal</b> worth of room left.
+      </div>
+    </div>
+  </div>
+
+  <!-- micronutrient ledger, with a real over state -->
+  <div class="card">
+    <div class="card-h"><span class="lbl">Worth watching</span><span class="tag" style="color:var(--bad)">1 OVER</span></div>
+    <div class="card-b">
+      <svg viewBox="0 0 300 104" role="img"
+           aria-label="Sodium 2,610 of 2,300 milligrams — over. Potassium 2,140 of 3,400. Sugars 44 of 50 grams. Fibre 21 of 34 grams.">
+        <g font-size="10.5" letter-spacing=".08em">
+          <text x="0" y="10" fill="var(--bad)" font-weight="700">SODIUM</text>
+          <text x="300" y="10" fill="var(--bad)" text-anchor="end" font-weight="700">2,610 / 2,300 mg</text>
+          <rect x="0" y="15" width="300" height="7" rx="3.5" fill="#1C2126"/>
+          <rect x="0" y="15" width="300" height="7" rx="3.5" fill="var(--bad)"/>
+
+          <text x="0" y="38" fill="var(--muted)">POTASSIUM</text>
+          <text x="300" y="38" fill="var(--text)" text-anchor="end" font-weight="700">2,140 / 3,400 mg</text>
+          <rect x="0" y="43" width="300" height="7" rx="3.5" fill="#1C2126"/>
+          <rect x="0" y="43" width="189" height="7" rx="3.5" fill="var(--s-weight)"/>
+
+          <text x="0" y="66" fill="var(--muted)">SUGARS</text>
+          <text x="300" y="66" fill="var(--text)" text-anchor="end" font-weight="700">44 / 50 g</text>
+          <rect x="0" y="71" width="300" height="7" rx="3.5" fill="#1C2126"/>
+          <rect x="0" y="71" width="264" height="7" rx="3.5" fill="var(--s-energy)"/>
+
+          <text x="0" y="94" fill="var(--muted)">FIBRE</text>
+          <text x="300" y="94" fill="var(--text)" text-anchor="end" font-weight="700">21 / 34 g</text>
+          <rect x="0" y="99" width="300" height="7" rx="3.5" fill="#1C2126"/>
+          <rect x="0" y="99" width="185" height="7" rx="3.5" fill="var(--s-strength)"/>
+        </g>
+      </svg>
+      <div class="plain red" style="margin-top:16px">
+        Sodium is <b>310 mg over</b>. Most of it was the kadala curry — restaurant gravies carry the salt.
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Activity today</span><span class="tag" style="color:var(--s-weight)">ABOVE USUAL</span></div>
+    <div class="card-b">
+      <div class="row">
+        <div class="cell"><div class="lbl">Steps</div><div class="v">9,240</div><div class="s">usual 7,100</div></div>
+        <div class="cell"><div class="lbl">Sleep</div><div class="v">7h 20m</div><div class="s">usual 6h 40m</div></div>
+        <div class="cell"><div class="lbl">Trained</div><div class="v">Push</div><div class="s">62 min</div></div>
+      </div>
+      <svg viewBox="0 0 300 62" style="margin-top:13px" role="img"
+           aria-label="Steps over the last seven days, all near or above the seven thousand one hundred average.">
+        <line x1="0" y1="26" x2="300" y2="26" stroke="#333B44" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="300" y="22" fill="var(--dim)" font-size="9" text-anchor="end">AVG</text>
+        <g fill="var(--s-weight)">
+          <rect x="4"   y="30" width="30" height="18" rx="4"/>
+          <rect x="46"  y="18" width="30" height="30" rx="4"/>
+          <rect x="88"  y="34" width="30" height="14" rx="4"/>
+          <rect x="130" y="24" width="30" height="24" rx="4"/>
+          <rect x="172" y="12" width="30" height="36" rx="4"/>
+          <rect x="214" y="28" width="30" height="20" rx="4"/>
+          <rect x="256" y="6"  width="30" height="42" rx="4" fill="var(--brand)"/>
+        </g>
+        <g class="axis" text-anchor="middle">
+          <text x="19" y="60">S</text><text x="61" y="60">M</text><text x="103" y="60">T</text>
+          <text x="145" y="60">W</text><text x="187" y="60">T</text><text x="229" y="60">F</text>
+          <text x="271" y="60" fill="var(--brand)">S</text>
+        </g>
+      </svg>
+      <div class="plain" style="margin-top:12px">
+        You're moving more than usual this week. That's already counted in your target —
+        <b>you don't need to eat it back.</b>
+      </div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab on"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-home"/></svg>Home</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-nut"/></svg>Nutrition</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-train"/></svg>Trainer</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chart"/></svg>Progress</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-user"/></svg>Profile</div>
+  </div>
+</div>
+<figcaption><b>Tab 1 · Home</b>
+  The ring answers "how much more can I eat?" in one glance, and the sentence converts 640&nbsp;kcal
+  into food. The watch-list card is where the micronutrient over-limit lives — one bar goes full and red,
+  and the sentence names the dish that did it.
+</figcaption>
+</figure>
+
+<!-- ========================= TAB 2 · NUTRITION ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>NUTRITION</div>
+    <div class="bar-r"><div class="time">LUNCH</div><div class="av">TK</div></div>
+  </div>
+
+  <div class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-search"/></svg>Search 2.1 M foods</div>
+
+  <div class="card"><div class="card-b">
+    <div class="tiles">
+      <div class="tile">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-camera"/></svg>
+        <div class="tn">AI scan</div>
+        <div class="ts">Point at the plate. Returns a range, never one confident number.</div>
+      </div>
+      <div class="tile">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-barcode"/></svg>
+        <div class="tn">Barcode</div>
+        <div class="ts">Packaged food, straight off the label.</div>
+      </div>
+      <div class="tile">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-search"/></svg>
+        <div class="tn">Search</div>
+        <div class="ts">Indian brands and restaurant dishes included.</div>
+      </div>
+      <div class="tile">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-book"/></svg>
+        <div class="tn">My foods</div>
+        <div class="ts">Meals you saved, and everything you corrected.</div>
+      </div>
+    </div>
+  </div></div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Today · 3 meals</span><span class="tag" style="color:var(--muted)">2,100 KCAL</span></div>
+    <div class="imp"><div><div class="imp-n">Breakfast</div><div class="imp-s">Poha, 2 eggs, coffee</div></div><div class="imp-r"><div style="font-weight:700">486</div></div></div>
+    <div class="imp"><div><div class="imp-n">Lunch</div><div class="imp-s">Puttu, kadala curry</div></div><div class="imp-r"><div style="font-weight:700">444</div><div class="imp-s">±63</div></div></div>
+    <div class="imp"><div><div class="imp-n">Snack</div><div class="imp-s">Whey isolate</div></div><div class="imp-r"><div style="font-weight:700">120</div></div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Recent</span><span class="tag" style="color:var(--dim)">TAP TO REPEAT</span></div>
+    <div class="imp"><div><div class="imp-n">Kadala curry</div><div class="imp-s">1 katori · 150 g</div></div><div class="imp-r"><div style="font-weight:700">196</div><div class="imp-s">±41</div></div></div>
+    <div class="imp"><div><div class="imp-n">Amul Masti Dahi</div><div class="imp-s">Barcode · 100 g</div></div><div class="imp-r"><div style="font-weight:700">60</div><div class="imp-s">verified</div></div></div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-home"/></svg>Home</div>
+    <div class="tab on"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-nut"/></svg>Nutrition</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-train"/></svg>Trainer</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chart"/></svg>Progress</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-user"/></svg>Profile</div>
+  </div>
+</div>
+<figcaption><b>Tab 2 · Nutrition</b>
+  Four ways in, then the day so far. The tiles are the whole tab — anything more and the fastest
+  path to logging a meal stops being obvious.
+</figcaption>
+</figure>
+
+<!-- ========================= LOG — THE ONE THAT MATTERS ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar"><div class="brand"><span class="dot"></span>SCAN REVIEW</div><div class="time">LUNCH</div></div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Scanned</span><span class="tag" style="color:var(--s-energy)">CHECK THE OIL</span></div>
+    <div class="card-b">
+      <div style="height:96px;border-radius:12px;background:linear-gradient(135deg,#1E252C,#2A3138);
+                  display:grid;place-items:center;color:var(--dim);font-size:12px;margin-bottom:13px">
+        [ meal photo ]
+      </div>
+      <div class="row" style="flex-direction:column;gap:8px">
+        <div class="cell" style="display:flex;justify-content:space-between;align-items:center">
+          <div><div style="font-weight:600;font-size:14px">Puttu</div><div class="s">2 pieces · 180 g</div></div>
+          <div style="text-align:right"><div style="font-weight:700;font-variant-numeric:tabular-nums">248</div><div class="s">±22</div></div>
+        </div>
+        <div class="cell" style="display:flex;justify-content:space-between;align-items:center">
+          <div><div style="font-weight:600;font-size:14px">Kadala curry</div><div class="s">1 katori · 150 g</div></div>
+          <div style="text-align:right"><div style="font-weight:700;font-variant-numeric:tabular-nums">196</div><div class="s">±41</div></div>
+        </div>
+      </div>
+
+      <div class="plain amber" style="margin-top:13px">
+        <b>How much coconut oil in the curry?</b><br>
+        <span style="color:var(--muted);font-size:12.5px">This is the biggest source of error in Indian food — the app can't see oil in a photo.</span>
+      </div>
+      <div class="row" style="margin-top:9px">
+        <div class="cell act" style="font-size:12px;padding:10px">Barely any</div>
+        <div class="cell act pick" style="font-size:12px;padding:10px">Home style</div>
+        <div class="cell act" style="font-size:12px;padding:10px">Restaurant</div>
+      </div>
+
+      <svg viewBox="0 0 300 44" style="margin-top:16px" role="img"
+           aria-label="Estimate 444 kcal, range 381 to 507, narrowing once you answer.">
+        <text x="0" y="11" fill="var(--muted)" font-size="10" letter-spacing=".1em">ESTIMATE</text>
+        <rect x="0" y="18" width="300" height="8" rx="4" fill="#1C2126"/>
+        <rect x="86" y="18" width="128" height="8" rx="4" fill="var(--brand)" opacity=".45"/>
+        <circle cx="150" cy="22" r="6" fill="var(--brand)"/>
+        <text x="0" y="42" fill="var(--dim)" font-size="10">381</text>
+        <text x="150" y="42" fill="var(--text)" font-size="11" font-weight="700" text-anchor="middle">444 kcal</text>
+        <text x="300" y="42" fill="var(--dim)" font-size="10" text-anchor="end">507</text>
+      </svg>
+      <div class="note-p" style="margin-top:8px;font-size:11.5px">Answering narrows this band. Trace never hides an item it's unsure about.</div>
+
+      <div class="row" style="margin-top:14px">
+        <div class="cell act ghost" style="flex:0 0 96px">Cancel</div>
+        <div class="cell act go">Log 444 kcal</div>
+      </div>
+    </div>
+  </div>
+</div>
+<figcaption><b>Push · Log — where accuracy is actually won</b>
+  An NIH study found photo apps undercount by ~⅓, almost entirely from <em>fat</em>. One tap on the
+  oil question fixes more error than any model upgrade. Showing the range is the honesty signal.
+</figcaption>
+</figure>
+
+<!-- ========================= TAB 3 · TRAINER — THE COACH ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>AI TRAINER</div>
+    <div class="bar-r"><span class="pill">Gemini</span><div class="av">TK</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Priority lever</span><span class="tag" style="color:var(--s-sleep)">SLEEP</span></div>
+    <div class="card-b">
+      <div style="display:flex;gap:12px">
+        <div style="width:2px;border-radius:1px;background:var(--s-sleep);flex:none"></div>
+        <div>
+          <div style="font-size:15px;font-weight:600;margin-bottom:5px">Your sleep dropped 1.2 h this week.</div>
+          <div style="font-size:13px;line-height:1.5;color:var(--muted)">Cheapest lever first — short sleep moves appetite
+            and training quality more than a 100 kcal cut would. Calories stay where they are until this recovers.</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <div class="cell"><div class="lbl">Confidence</div><div class="v">78<span>%</span></div></div>
+        <div class="cell"><div class="lbl">Data</div><div class="v">91<span>%</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Conversation</span></div>
+    <div class="card-b" style="display:flex;flex-direction:column;gap:9px">
+      <div class="msg"><div class="bub ai">Your weight's been flat 11 days, but your lifts are up 3%. That's recomposition, not a stall.</div></div>
+      <div class="msg me"><div class="bub me">Should I drop calories?</div></div>
+      <div class="msg"><div class="bub ai">Not yet. You're gaining strength at maintenance — that's the outcome you want. Hold another week.</div></div>
+      <div class="msg me"><div class="bub me">What about the ride yesterday?</div></div>
+      <div class="msg"><div class="bub ai">842 kcal, and it's already in your trend. Don't eat it back — that's the mistake that turns a lean gain into a fat one.</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Also worth knowing</span></div>
+    <div class="card-b">
+      <div style="display:flex;gap:12px">
+        <div style="width:2px;border-radius:1px;background:var(--s-energy);flex:none"></div>
+        <div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:4px">Protein landed 3 of 7 days.</div>
+          <div style="font-size:13px;line-height:1.5;color:var(--muted)">Averaging 1.4 g/kg against a 1.6 target.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- pinned: asking never requires scrolling back down -->
+  <div class="composer">
+    <div class="search" style="flex:1;margin:0;height:40px">Ask the trainer…</div>
+    <div class="cell act go" style="flex:0 0 70px;padding:11px">ASK</div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-home"/></svg>Home</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-nut"/></svg>Nutrition</div>
+    <div class="tab on"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-train"/></svg>Trainer</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chart"/></svg>Progress</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-user"/></svg>Profile</div>
+  </div>
+</div>
+<figcaption><b>Tab 3 · Trainer — the coach</b>
+  The chatbot is back, with the priority lever above it so the conversation starts from a position
+  rather than a blank prompt. The composer is pinned above the tab bar — asking never needs a scroll.
+</figcaption>
+</figure>
+
+<!-- ========================= TAB 3 · TRAINER — GYM ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>TRAINER</div>
+    <div class="bar-r"><div class="time">PUSH DAY</div><div class="av">TK</div></div>
+  </div>
+
+  <div class="row" style="margin-bottom:12px">
+    <div class="cell act go" style="padding:10px">GYM</div>
+    <div class="cell act ghost" style="padding:10px">ACTIVITIES</div>
+  </div>
+
+  <div class="search filled"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-search"/></svg>incline</div>
+
+  <div class="card">
+    <div class="grp">Chest · 26 exercises</div>
+    <div class="ex">
+      <svg class="ex-t" viewBox="0 0 64 48" aria-label="Incline dumbbell press"><use href="#ex-incline"/></svg>
+      <div class="ex-b"><div class="ex-n">Incline Dumbbell Press</div><div class="ex-m">Dumbbell · Compound</div></div>
+      <div class="ex-r"><div class="ex-v">32.5 kg</div><div class="ex-d up">▲ 4.2%</div></div>
+    </div>
+    <div class="ex">
+      <svg class="ex-t" viewBox="0 0 64 48" aria-label="Barbell bench press"><use href="#ex-bench"/></svg>
+      <div class="ex-b"><div class="ex-n">Barbell Bench Press</div><div class="ex-m">Barbell · Compound</div></div>
+      <div class="ex-r"><div class="ex-v">75 kg</div><div class="ex-d dn">▼ 2.1%</div></div>
+    </div>
+    <div class="ex">
+      <svg class="ex-t" viewBox="0 0 64 48" aria-label="Overhead press"><use href="#ex-ohp"/></svg>
+      <div class="ex-b"><div class="ex-n">Overhead Press</div><div class="ex-m">Barbell · Compound</div></div>
+      <div class="ex-r"><div class="ex-v">42.5 kg</div><div class="ex-d fl">— 0.0%</div></div>
+    </div>
+    <div class="grp">Back · 31 exercises</div>
+    <div class="ex">
+      <svg class="ex-t" viewBox="0 0 64 48" aria-label="Lat pulldown"><use href="#ex-pulldown"/></svg>
+      <div class="ex-b"><div class="ex-n">Lat Pulldown</div><div class="ex-m">Cable · Compound</div></div>
+      <div class="ex-r"><div class="ex-v">61 kg</div><div class="ex-d up">▲ 3.4%</div></div>
+    </div>
+    <div class="ex">
+      <svg class="ex-t" viewBox="0 0 64 48" aria-label="Barbell row"><use href="#ex-row"/></svg>
+      <div class="ex-b"><div class="ex-n">Barbell Row</div><div class="ex-m">Barbell · Compound</div></div>
+      <div class="ex-r"><div class="ex-v">70 kg</div><div class="ex-d up">▲ 1.9%</div></div>
+    </div>
+    <div class="ex">
+      <svg class="ex-t" viewBox="0 0 64 48" aria-label="Deadlift"><use href="#ex-deadlift"/></svg>
+      <div class="ex-b"><div class="ex-n">Deadlift</div><div class="ex-m">Barbell · Compound</div></div>
+      <div class="ex-r"><div class="ex-v">130 kg</div><div class="ex-d up">▲ 2.8%</div></div>
+    </div>
+    <div class="grp">Legs · 24 exercises</div>
+    <div class="ex">
+      <svg class="ex-t" viewBox="0 0 64 48" aria-label="Back squat"><use href="#ex-squat"/></svg>
+      <div class="ex-b"><div class="ex-n">Back Squat</div><div class="ex-m">Barbell · Compound</div></div>
+      <div class="ex-r"><div class="ex-v">102.5 kg</div><div class="ex-d up">▲ 5.1%</div></div>
+    </div>
+    <div class="grp">Arms · 18 exercises</div>
+    <div class="ex">
+      <svg class="ex-t" viewBox="0 0 64 48" aria-label="Barbell curl"><use href="#ex-curl"/></svg>
+      <div class="ex-b"><div class="ex-n">Barbell Curl</div><div class="ex-m">Barbell · Isolation</div></div>
+      <div class="ex-r"><div class="ex-m">New</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Today · Incline DB Press</span><span class="tag" style="color:var(--s-strength)">▲ 4.2% VS LAST WK</span></div>
+    <div class="setrow"><span style="color:var(--muted)">Set 1</span><span style="font-variant-numeric:tabular-nums;font-weight:700">32.5 kg × 9 <span class="ex-d up" style="display:inline">▲ 1</span></span></div>
+    <div class="setrow"><span style="color:var(--muted)">Set 2</span><span style="font-variant-numeric:tabular-nums;font-weight:700">32.5 kg × 8 <span class="ex-d fl" style="display:inline">— 0</span></span></div>
+    <div class="setrow"><span style="color:var(--dim)">Set 3</span><span style="font-variant-numeric:tabular-nums;font-weight:700;color:var(--dim)">32.5 kg × — <span class="ex-d fl" style="display:inline">last: 8</span></span></div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-home"/></svg>Home</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-nut"/></svg>Nutrition</div>
+    <div class="tab on"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-train"/></svg>Trainer</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chart"/></svg>Progress</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-user"/></svg>Profile</div>
+  </div>
+</div>
+<figcaption><b>Tab 3 · Trainer — the gym catalogue</b>
+  Every movement carries a drawing, so a beginner recognises the exercise before reading its name.
+  The number on the right is your current estimated 1RM and which way it's going.
+</figcaption>
+</figure>
+
+<!-- ========================= EXERCISE DETAIL ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar"><div class="brand"><span class="dot"></span>INCLINE DB PRESS</div><div class="time">CHEST</div></div>
+
+  <div class="card">
+    <svg class="hero-pict" viewBox="0 0 64 48" aria-label="Illustration of the incline dumbbell press"><use href="#ex-incline"/></svg>
+    <div class="mus"><span class="mu p">Upper chest</span><span class="mu">Front delts</span><span class="mu">Triceps</span></div>
+    <div class="card-b" style="border-top:1px solid var(--hair)">
+      <div class="step"><div class="num">1</div><div><h4>Set the bench to 30°</h4>
+        <p>Any steeper and your shoulders take the work instead of your chest.</p></div></div>
+      <div class="step"><div class="num">2</div><div><h4>Press up and slightly together</h4>
+        <p>Stop before the dumbbells touch — that's where the tension leaves the muscle.</p></div></div>
+      <div class="step"><div class="num">3</div><div><h4>Lower to just below the bench line</h4>
+        <p>Elbows a little under your shoulders. Then press again.</p></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Estimated 1RM</span><span class="tag" style="color:var(--s-strength)">▲ 4.2% VS LAST WK</span></div>
+    <div class="hero" style="padding-top:14px"><div class="n" style="color:var(--s-strength);font-size:44px">41.8<span style="font-size:20px"> kg</span></div>
+      <div class="u">up 1.7 kg over six weeks</div></div>
+    <svg viewBox="0 0 320 120" style="margin-top:8px" role="img"
+         aria-label="Estimated one-rep max over six weeks, rising from 38 to 41.8 kilograms.">
+      <g class="grid"><line x1="14" y1="24" x2="306" y2="24"/><line x1="14" y1="62" x2="306" y2="62"/><line x1="14" y1="100" x2="306" y2="100"/></g>
+      <path d="M28 88 L84 78 L140 84 L196 62 L252 68 L296 40" fill="none" stroke="var(--s-strength)"
+            stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <g fill="var(--s-strength)" opacity=".5">
+        <circle cx="28" cy="88" r="3"/><circle cx="84" cy="78" r="3"/><circle cx="140" cy="84" r="3"/>
+        <circle cx="196" cy="62" r="3"/><circle cx="252" cy="68" r="3"/>
+      </g>
+      <circle cx="296" cy="40" r="5" fill="var(--s-strength)" stroke="var(--panel)" stroke-width="2"/>
+      <text x="296" y="30" class="dlabel" fill="var(--s-strength)" text-anchor="end">41.8</text>
+      <text x="28" y="114" class="axis">WK 1</text><text x="296" y="114" class="axis" text-anchor="end">WK 6</text>
+    </svg>
+    <div class="card-b" style="padding-top:4px">
+      <div class="plain">Same top weight, more reps at it. <b>That's why the estimate moved</b> while your
+        heaviest set didn't — weight alone would have shown no progress this week.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Today</span><span class="tag" style="color:var(--dim)">SET 3 OF 4</span></div>
+    <div class="setrow"><span style="color:var(--muted)">Set 1</span><span style="font-variant-numeric:tabular-nums;font-weight:700">32.5 kg × 9 <span class="ex-d up" style="display:inline">▲ 1</span></span></div>
+    <div class="setrow"><span style="color:var(--muted)">Set 2</span><span style="font-variant-numeric:tabular-nums;font-weight:700">32.5 kg × 8 <span class="ex-d fl" style="display:inline">— 0</span></span></div>
+    <div class="setrow"><span style="color:var(--dim)">Set 3</span><span style="font-variant-numeric:tabular-nums;font-weight:700;color:var(--dim)">32.5 kg × — <span class="ex-d fl" style="display:inline">last: 8</span></span></div>
+  </div>
+
+  <div class="row" style="margin-bottom:12px"><div class="cell act go">Log set</div></div>
+</div>
+<figcaption><b>Push · Exercise detail</b>
+  What it is, then how you're doing at it. The steps replace the old text-only "how to" — three
+  numbered cues is what a beginner reads standing at the bench.
+</figcaption>
+</figure>
+
+<!-- ========================= TAB 3 · ACTIVITIES + STRAVA ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>ACTIVITIES</div>
+    <div class="bar-r"><div class="time">THIS WEEK</div><div class="av">TK</div></div>
+  </div>
+
+  <div class="row" style="margin-bottom:12px">
+    <div class="cell act ghost" style="padding:10px">GYM</div>
+    <div class="cell act go" style="padding:10px">ACTIVITIES</div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">What did you do?</span><span class="tag" style="color:var(--dim)">32 SPORTS</span></div>
+    <div class="card-b">
+      <div class="chips">
+        <span class="chip on"><svg viewBox="0 0 48 48" aria-hidden="true"><use href="#act-badminton"/></svg>Badminton</span>
+        <span class="chip"><svg viewBox="0 0 48 48" aria-hidden="true"><use href="#act-pickle"/></svg>Pickleball</span>
+        <span class="chip"><svg viewBox="0 0 48 48" aria-hidden="true"><use href="#act-cricket"/></svg>Cricket</span>
+        <span class="chip"><svg viewBox="0 0 48 48" aria-hidden="true"><use href="#act-cycle"/></svg>Cycling</span>
+        <span class="chip"><svg viewBox="0 0 48 48" aria-hidden="true"><use href="#act-run"/></svg>Running</span>
+        <span class="chip"><svg viewBox="0 0 48 48" aria-hidden="true"><use href="#act-swim"/></svg>Swimming</span>
+        <span class="chip"><svg viewBox="0 0 48 48" aria-hidden="true"><use href="#act-row"/></svg>Rowing</span>
+        <span class="chip"><svg viewBox="0 0 48 48" aria-hidden="true"><use href="#act-walk"/></svg>Walking</span>
+        <span class="chip"><svg viewBox="0 0 48 48" aria-hidden="true"><use href="#act-hiit"/></svg>HIIT</span>
+      </div>
+      <div class="row" style="margin-top:13px">
+        <div class="cell"><div class="lbl">Duration</div><div class="v">45m</div><div class="s">tap to edit</div></div>
+        <div class="cell"><div class="lbl">Avg HR</div><div class="v">138</div><div class="s">bpm</div></div>
+        <div class="cell"><div class="lbl">Est. burn</div><div class="v">380</div><div class="s">kcal</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Arrived on their own</span>
+      <span class="tag" style="color:var(--strava)">STRAVA</span></div>
+    <div class="imp">
+      <div>
+        <div class="imp-n">Sarjapur loop</div>
+        <div class="imp-s">Thu · 1 h 22 · 34.6 km</div>
+        <div class="src" style="margin-top:4px"><svg viewBox="0 0 24 24" style="color:var(--strava)" aria-hidden="true"><use href="#i-strava"/></svg>Strava</div>
+      </div>
+      <div class="imp-r"><div style="font-weight:700;font-size:15px">842</div><div class="imp-s">kcal</div></div>
+    </div>
+    <div class="imp">
+      <div>
+        <div class="imp-n">Morning commute</div>
+        <div class="imp-s">Thu · 21 min · 7.4 km</div>
+        <div class="src" style="margin-top:4px"><svg viewBox="0 0 24 24" style="color:var(--strava)" aria-hidden="true"><use href="#i-strava"/></svg>Strava</div>
+      </div>
+      <div class="imp-r"><div style="font-weight:700;font-size:15px">178</div><div class="imp-s">kcal</div></div>
+    </div>
+    <div class="imp">
+      <div>
+        <div class="imp-n">Cricket, nets</div>
+        <div class="imp-s">Wed · 90 min</div>
+        <div class="src" style="margin-top:4px"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-watch"/></svg>Apple Watch</div>
+      </div>
+      <div class="imp-r"><div style="font-weight:700;font-size:15px">470</div><div class="imp-s">kcal</div></div>
+    </div>
+    <div class="card-b" style="border-top:1px solid var(--hair)">
+      <div class="plain">The Sarjapur ride came from Strava <em>and</em> Apple Health. Same start, same distance —
+        <b>it's one ride, counted once.</b></div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-bottom:12px"><div class="cell act go">Log activity</div></div>
+
+  <div class="tabs">
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-home"/></svg>Home</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-nut"/></svg>Nutrition</div>
+    <div class="tab on"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-train"/></svg>Trainer</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chart"/></svg>Progress</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-user"/></svg>Profile</div>
+  </div>
+</div>
+<figcaption><b>Tab 3 · Activities — sport, cardio, and Strava</b>
+  Cyclists already log on Strava; asking them to log twice loses them. Rides land here by themselves,
+  and the deduplication line is the reassurance that connecting a second source didn't break anything.
+</figcaption>
+</figure>
+
+<!-- ========================= STRAVA RIDE DETAIL ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar"><div class="brand"><span class="dot"></span>SARJAPUR LOOP</div><div class="time">THU · 18:04</div></div>
+
+  <div class="card">
+    <svg viewBox="0 0 300 110" style="padding:14px 14px 0" role="img" aria-label="Route traced by the ride.">
+      <path d="M28 84 C50 42, 78 30, 110 40 S158 76, 190 58 S232 20, 258 38 C272 48, 264 74, 244 78 S186 88, 150 95 S72 102, 48 94"
+            fill="none" stroke="var(--brand)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="28" cy="84" r="4.5" fill="none" stroke="var(--dim)" stroke-width="1.8"/>
+      <circle cx="48" cy="94" r="4" fill="var(--brand)"/>
+    </svg>
+    <div class="card-b">
+      <div class="row">
+        <div class="cell"><div class="lbl">Distance</div><div class="v">34.6</div><div class="s">km</div></div>
+        <div class="cell"><div class="lbl">Moving</div><div class="v">1:22</div><div class="s">h:mm</div></div>
+        <div class="cell"><div class="lbl">Climb</div><div class="v">412</div><div class="s">m</div></div>
+      </div>
+      <svg viewBox="0 0 300 48" style="margin-top:13px" role="img" aria-label="Elevation profile of the ride.">
+        <path d="M0 46 L0 34 L30 29 L60 36 L90 15 L120 20 L150 8 L180 25 L210 13 L240 32 L270 27 L300 37 L300 46 Z"
+              fill="var(--brand-tint)"/>
+        <path d="M0 34 L30 29 L60 36 L90 15 L120 20 L150 8 L180 25 L210 13 L240 32 L270 27 L300 37"
+              fill="none" stroke="var(--brand)" stroke-width="1.6" opacity=".8"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Energy</span><span class="tag" style="color:var(--dim)">TWO ESTIMATES</span></div>
+    <div class="card-b">
+      <div class="row">
+        <div class="cell" style="border:1px solid var(--s-strength)">
+          <div class="lbl" style="color:var(--s-strength)">From power</div><div class="v">842</div><div class="s">1,012 kJ measured</div>
+        </div>
+        <div class="cell"><div class="lbl">Strava est.</div><div class="v" style="color:var(--muted)">831</div><div class="s">their model</div></div>
+      </div>
+      <div class="plain" style="margin-top:13px">
+        Your ride had a power meter, so the burn comes from <b>measured work</b>, not a model.
+        The two agree within 1.3% — when they don't, Trace keeps the measured one.
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Where this goes</span></div>
+    <div class="setrow"><span>Activity list</span><span class="setrow-r" style="color:var(--brand)">Added</span></div>
+    <div class="setrow"><span>Weekly training load</span><span class="setrow-r" style="color:var(--brand)">Added</span></div>
+    <div class="setrow"><span>Today's calorie target</span><span class="setrow-r">Unchanged</span></div>
+    <div class="card-b" style="border-top:1px solid var(--hair)">
+      <div class="plain amber">842 kcal does <b>not</b> become 842 kcal to eat. Your target already
+        contains the riding you normally do — adding it back is the single most common way a tracker
+        makes you gain fat.</div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-bottom:10px">
+    <div class="cell act ghost" style="flex:0 0 96px">Discard</div>
+    <div class="cell act go">Keep ride</div>
+  </div>
+  <div class="src" style="justify-content:center;padding-bottom:14px">
+    <svg viewBox="0 0 24 24" style="color:var(--strava)" aria-hidden="true"><use href="#i-strava"/></svg>Powered by Strava
+  </div>
+</div>
+<figcaption><b>Push · A ride, as it arrives</b>
+  Two burn numbers side by side, with the measured one marked — that's the honesty pattern from the
+  scan screen applied to hardware. "Where this goes" is the anti-double-counting explainer.
+</figcaption>
+</figure>
+
+<!-- ========================= PROGRESS ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar"><div class="brand"><span class="dot"></span>PROGRESS</div><div class="time">10 WEEKS</div></div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Is it working?</span><span class="tag" style="color:var(--brand)">▲ MOSTLY MUSCLE</span></div>
+    <div class="card-b">
+      <div class="hero"><div class="n" style="color:var(--brand)">+3.1<span style="font-size:22px"> kg</span></div>
+        <div class="u">gained since 5 June</div></div>
+      <svg viewBox="0 0 300 76" style="margin-top:14px" role="img"
+           aria-label="Of 3.1 kilograms gained, an estimated 2.2 is lean mass and 0.9 is fat.">
+        <rect x="0" y="6" width="300" height="30" rx="7" fill="#1C2126"/>
+        <rect x="0" y="6" width="211" height="30" rx="7" fill="var(--s-strength)"/>
+        <rect x="215" y="6" width="85" height="30" rx="7" fill="var(--s-energy)"/>
+        <text x="12"  y="26" fill="#04140C" font-size="12" font-weight="700">2.2 kg lean</text>
+        <text x="288" y="26" fill="#1A1204" font-size="12" font-weight="700" text-anchor="end">0.9 fat</text>
+        <text x="0"   y="58" fill="var(--muted)" font-size="11">Roughly 7 of every 10 kg you've gained is muscle.</text>
+        <text x="0"   y="72" fill="var(--dim)" font-size="10">Estimated from weight + strength trend. Not a body scan.</text>
+      </svg>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Weight</span><span class="tag" style="color:var(--muted)">+0.31 KG / WK</span></div>
+    <svg viewBox="0 0 320 150" role="img"
+         aria-label="Daily weigh-ins scattered around a rising trend line, inside the target gain band.">
+      <defs><pattern id="hatch" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+        <line x1="0" y1="0" x2="0" y2="6" stroke="#2E86D9" stroke-opacity=".18" stroke-width="3"/></pattern></defs>
+      <path d="M22 104 L300 44 L300 72 L22 118 Z" fill="url(#hatch)"/>
+      <text x="300" y="40" fill="var(--dim)" font-size="9" text-anchor="end">TARGET RANGE</text>
+      <g class="grid"><line x1="22" y1="30" x2="300" y2="30"/><line x1="22" y1="70" x2="300" y2="70"/><line x1="22" y1="110" x2="300" y2="110"/></g>
+      <g class="axis"><text x="0" y="33">76</text><text x="0" y="73">74</text><text x="0" y="113">72</text></g>
+      <g fill="#3F4A55">
+        <circle cx="40" cy="112" r="2.5"/><circle cx="62" cy="104" r="2.5"/><circle cx="84" cy="115" r="2.5"/>
+        <circle cx="106" cy="99" r="2.5"/><circle cx="128" cy="106" r="2.5"/><circle cx="150" cy="92" r="2.5"/>
+        <circle cx="172" cy="99" r="2.5"/><circle cx="194" cy="84" r="2.5"/><circle cx="216" cy="91" r="2.5"/>
+        <circle cx="238" cy="76" r="2.5"/><circle cx="260" cy="83" r="2.5"/><circle cx="282" cy="68" r="2.5"/>
+      </g>
+      <path d="M40 110 L84 105 L128 99 L172 92 L216 84 L260 76 L296 68" fill="none"
+            stroke="var(--s-weight)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <g class="hot" data-l="Trend today" data-v="74.6 kg"><circle class="mk" cx="296" cy="68" r="5" fill="var(--s-weight)" stroke="var(--panel)" stroke-width="2"/></g>
+      <text x="296" y="56" class="dlabel" fill="var(--s-weight)" text-anchor="end">TREND 74.6</text>
+      <text x="40" y="140" class="axis">JUN</text><text x="286" y="140" class="axis" text-anchor="end">AUG</text>
+    </svg>
+    <div class="legend">
+      <span><i style="background:#3F4A55"></i>Daily weigh-in</span>
+      <span><i style="background:var(--s-weight)"></i>Trend</span>
+      <span><i style="background:#2E86D9;opacity:.35"></i>Target range</span>
+    </div>
+    <div class="card-b" style="padding-top:0">
+      <div class="plain">The faint dots are water and salt. <b>Only the blue line means anything</b> — and it's inside the band.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Strength</span><span class="tag" style="color:var(--s-strength)">ALL RISING</span></div>
+    <svg viewBox="0 0 320 150" role="img"
+         aria-label="Estimated one-rep max rising over ten weeks for squat, bench and deadlift.">
+      <g class="grid"><line x1="8" y1="26" x2="300" y2="26"/><line x1="8" y1="76" x2="300" y2="76"/><line x1="8" y1="126" x2="300" y2="126"/></g>
+      <path d="M20 66 L66 62 L112 54 L158 48 L204 40 L250 34 L292 26" fill="none" stroke="var(--s-strength)" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M20 104 L66 100 L112 96 L158 88 L204 86 L250 78 L292 72" fill="none" stroke="var(--s-weight)" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M20 128 L66 126 L112 120 L158 118 L204 112 L250 108 L292 104" fill="none" stroke="var(--s-sleep)" stroke-width="2.5" stroke-linecap="round"/>
+      <circle cx="292" cy="26" r="4.5" fill="var(--s-strength)"/><text x="286" y="18" class="dlabel" fill="var(--s-strength)" text-anchor="end">DEADLIFT +14</text>
+      <circle cx="292" cy="72" r="4.5" fill="var(--s-weight)"/><text x="286" y="64" class="dlabel" fill="var(--s-weight)" text-anchor="end">SQUAT +11</text>
+      <circle cx="292" cy="104" r="4.5" fill="var(--s-sleep)"/><text x="286" y="96" class="dlabel" fill="var(--s-sleep)" text-anchor="end">BENCH +5</text>
+      <text x="20" y="145" class="axis">WK 1</text><text x="292" y="145" class="axis" text-anchor="end">WK 10</text>
+    </svg>
+    <div class="card-b" style="padding-top:2px">
+      <div class="plain">All three main lifts are up. That's the evidence the weight you gained went somewhere useful.</div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-home"/></svg>Home</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-nut"/></svg>Nutrition</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-train"/></svg>Trainer</div>
+    <div class="tab on"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chart"/></svg>Progress</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-user"/></svg>Profile</div>
+  </div>
+</div>
+<figcaption><b>Tab 4 · Progress — the screen that makes Trace different</b>
+  Nobody else answers "was it muscle or fat?". The split bar is the headline; the two charts below
+  are the evidence. The weigh-in dots stay visible but recede, so a bad morning reads as noise.
+</figcaption>
+</figure>
+
+<!-- ========================= STRENGTH OVER TIME ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar"><div class="brand"><span class="dot"></span>INCLINE DB PRESS</div><div class="time">CHEST · DUMBBELL</div></div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Estimated 1RM</span><span class="tag" style="color:var(--s-strength)">▲ 4.2% VS LAST WEEK</span></div>
+    <div class="hero" style="padding:16px 0 4px">
+      <div class="n">41.8<span style="font-size:20px"> kg</span></div>
+      <div class="u">up 1.7 kg over six weeks</div>
+    </div>
+    <svg viewBox="0 0 320 116" style="margin-top:6px" role="img"
+         aria-label="Six weeks of smoothed estimated one-rep max, rising from 38.1 to 41.8 kilograms.">
+      <g class="grid"><line x1="14" y1="22" x2="306" y2="22"/><line x1="14" y1="58" x2="306" y2="58"/><line x1="14" y1="94" x2="306" y2="94"/></g>
+      <path d="M28 84 L84 74 L140 80 L196 58 L252 64 L296 36" fill="none" stroke="var(--s-strength)"
+            stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <g fill="var(--s-strength)" opacity=".45">
+        <circle cx="28" cy="84" r="3"/><circle cx="84" cy="74" r="3"/><circle cx="140" cy="80" r="3"/>
+        <circle cx="196" cy="58" r="3"/><circle cx="252" cy="64" r="3"/>
+      </g>
+      <circle cx="296" cy="36" r="5" fill="var(--s-strength)" stroke="var(--panel)" stroke-width="2"/>
+      <text x="296" y="26" class="dlabel" fill="var(--s-strength)" text-anchor="end">41.8</text>
+      <g class="axis"><text x="28" y="110">W1</text><text x="296" y="110" text-anchor="end">W6</text></g>
+    </svg>
+    <div class="card-b" style="padding-top:2px">
+      <div class="plain">Gaining strength. Six weeks of smoothed e1RM, up 1.7 kg. Combined with a flat
+        weight trend, <b>this is the recomposition signal</b> the weekly verdict reads.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">This week vs last</span><span class="tag" style="color:var(--dim)">3 SESSIONS</span></div>
+    <div class="card-b">
+      <div class="row">
+        <div class="cell"><div class="lbl">Est. 1RM</div><div class="v">41.8<span>kg</span></div><div class="s" style="color:var(--s-strength);font-weight:700">▲ 4.2%</div></div>
+        <div class="cell"><div class="lbl">Volume</div><div class="v">2,340<span>kg</span></div><div class="s" style="color:var(--s-strength);font-weight:700">▲ 12.1%</div></div>
+        <div class="cell"><div class="lbl">Sets</div><div class="v">11</div><div class="s" style="color:var(--s-strength);font-weight:700">▲ 2</div></div>
+      </div>
+      <div class="row" style="margin-top:9px">
+        <div class="cell"><div class="lbl">Reps</div><div class="v">86</div><div class="s" style="color:var(--s-strength);font-weight:700">▲ 9</div></div>
+        <div class="cell"><div class="lbl">Top set</div><div class="v">32.5<span>kg</span></div><div class="s">— 0.0%</div></div>
+        <div class="cell"><div class="lbl">Avg reps</div><div class="v">7.8</div><div class="s" style="color:var(--s-strength);font-weight:700">▲ 0.6</div></div>
+      </div>
+      <div class="plain" style="margin-top:13px">Same top weight, more reps at it — that's why estimated 1RM
+        moved while top set didn't. <b>Weight alone would have shown no progress this week.</b></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Week by week</span><span class="tag" style="color:var(--dim)">BEST E1RM</span></div>
+    <div class="setrow"><span style="color:var(--muted)">This week</span><span style="display:flex;gap:12px;align-items:baseline"><span style="font-variant-numeric:tabular-nums;font-weight:700">41.8 kg</span><span class="ex-d up">▲ 4.2%</span></span></div>
+    <div class="setrow"><span style="color:var(--muted)">Last week</span><span style="display:flex;gap:12px;align-items:baseline"><span style="font-variant-numeric:tabular-nums;font-weight:700">40.1 kg</span><span class="ex-d dn">▼ 1.2%</span></span></div>
+    <div class="setrow"><span style="color:var(--muted)">2 weeks ago</span><span style="display:flex;gap:12px;align-items:baseline"><span style="font-variant-numeric:tabular-nums;font-weight:700">40.6 kg</span><span class="ex-d up">▲ 3.3%</span></span></div>
+    <div class="setrow"><span style="color:var(--muted)">3 weeks ago</span><span style="display:flex;gap:12px;align-items:baseline"><span style="font-variant-numeric:tabular-nums;font-weight:700">39.3 kg</span><span class="ex-d up">▲ 1.8%</span></span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Recent sessions</span></div>
+    <div class="setrow"><span style="color:var(--muted)">Fri 15 Aug</span><span style="font-variant-numeric:tabular-nums;font-weight:700">32.5 kg × 9</span></div>
+    <div class="setrow"><span style="color:var(--muted)">Tue 12 Aug</span><span style="font-variant-numeric:tabular-nums;font-weight:700">32.5 kg × 8</span></div>
+    <div class="setrow"><span style="color:var(--muted)">Sat 09 Aug</span><span style="font-variant-numeric:tabular-nums;font-weight:700">30 kg × 10</span></div>
+    <div class="setrow"><span style="color:var(--muted)">Wed 06 Aug</span><span style="font-variant-numeric:tabular-nums;font-weight:700">30 kg × 9</span></div>
+  </div>
+</div>
+<figcaption><b>Push · Strength over time</b>
+  Back from the earlier artifact, unchanged in structure: one hero number, the six-week line, then the
+  week-vs-week grid that explains it. This is the most minimal screen in the app and it should stay that way.
+</figcaption>
+</figure>
+
+<!-- ========================= SLEEP + BURN ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar"><div class="brand"><span class="dot"></span>THIS WEEK</div><div class="time">SLEEP · BURN</div></div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Sleep</span><span class="tag" style="color:var(--s-sleep)">7H 02M AVG</span></div>
+    <svg viewBox="0 0 320 130" role="img"
+         aria-label="Sleep by night this week, most nights above the seven hour line. Friday was 4 hours 50.">
+      <line x1="26" y1="46" x2="300" y2="46" stroke="var(--s-sleep)" stroke-width="1" stroke-dasharray="4 4" opacity=".7"/>
+      <text x="300" y="42" fill="var(--s-sleep)" font-size="9" text-anchor="end">7H TARGET</text>
+      <g fill="var(--s-sleep)" opacity=".85">
+        <rect x="30"  y="56" width="30" height="42" rx="5"/><rect x="70"  y="38" width="30" height="60" rx="5"/>
+        <rect x="110" y="62" width="30" height="36" rx="5"/><rect x="150" y="30" width="30" height="68" rx="5"/>
+        <rect x="190" y="44" width="30" height="54" rx="5"/><rect x="230" y="70" width="30" height="28" rx="5" fill="var(--bad)"/>
+        <rect x="270" y="34" width="30" height="64" rx="5"/>
+      </g>
+      <g class="axis" text-anchor="middle">
+        <text x="45" y="114">S</text><text x="85" y="114">M</text><text x="125" y="114">T</text><text x="165" y="114">W</text>
+        <text x="205" y="114">T</text><text x="245" y="114" fill="var(--bad)">F</text><text x="285" y="114">S</text>
+      </g>
+      <text x="245" y="128" fill="var(--bad)" font-size="9" text-anchor="middle">4h 50m</text>
+    </svg>
+    <div class="card-b" style="padding-top:0">
+      <div class="plain amber">Friday was short. If your lifts feel flat on Saturday, <b>that's why — not your diet.</b></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Where your burn comes from</span></div>
+    <div class="card-b">
+      <svg viewBox="0 0 300 120" role="img"
+           aria-label="Daily burn of 2,740 kcal: 1,680 at rest, 640 from daily movement, 300 from training, 120 from digesting food.">
+        <g>
+          <rect x="0"   y="10" width="180" height="26" rx="6" fill="var(--s-weight)"/>
+          <rect x="184" y="10" width="68"  height="26" rx="6" fill="var(--s-strength)"/>
+          <rect x="256" y="10" width="32"  height="26" rx="6" fill="var(--s-energy)"/>
+          <rect x="292" y="10" width="8"   height="26" rx="3" fill="var(--s-sleep)"/>
+        </g>
+        <g font-size="11">
+          <circle cx="5" cy="56" r="4" fill="var(--s-weight)"/><text x="16" y="60" fill="var(--muted)">Just being alive</text><text x="300" y="60" fill="var(--text)" text-anchor="end" font-weight="700">1,680</text>
+          <circle cx="5" cy="78" r="4" fill="var(--s-strength)"/><text x="16" y="82" fill="var(--muted)">Walking around</text><text x="300" y="82" fill="var(--text)" text-anchor="end" font-weight="700">640</text>
+          <circle cx="5" cy="100" r="4" fill="var(--s-energy)"/><text x="16" y="104" fill="var(--muted)">Training</text><text x="300" y="104" fill="var(--text)" text-anchor="end" font-weight="700">300</text>
+          <circle cx="5" cy="122" r="4" fill="var(--s-sleep)"/><text x="16" y="126" fill="var(--muted)">Digesting food</text><text x="300" y="126" fill="var(--text)" text-anchor="end" font-weight="700">120</text>
+        </g>
+      </svg>
+      <div class="plain" style="margin-top:26px">
+        Notice how small training is. <b>Walking is twice the lever the gym is</b> — which is why an extra
+        2,000 steps a day matters more than an extra set.
+      </div>
+    </div>
+  </div>
+</div>
+<figcaption><b>Push · Sleep and burn — teaching, not just reporting</b>
+  Each chart carries one sentence explaining what to <em>do</em> about it. The burn breakdown is the
+  single best explainer in the app: it shows why exercise calories are already counted.
+</figcaption>
+</figure>
+
+<!-- ========================= TAB 4 · PROFILE ========================= -->
+<figure>
+<div class="phone">
+  <div class="bar"><div class="brand"><span class="dot"></span>PROFILE</div><div class="av">TK</div></div>
+
+  <div class="card"><div class="card-b" style="display:flex;align-items:center;gap:13px">
+    <div class="av" style="width:46px;height:46px;font-size:15px;color:var(--text)">TK</div>
+    <div><div style="font-size:16px;font-weight:600">Tejas Khandelwal</div>
+      <div style="font-size:12px;color:var(--dim);margin-top:2px">tejas.khz1@gmail.com</div></div>
+  </div></div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Connected</span><span class="tag" style="color:var(--dim)">2 OF 4</span></div>
+    <div class="setrow">
+      <span style="display:flex;align-items:center;gap:10px"><svg class="ico" viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--muted)" aria-hidden="true"><use href="#i-heart"/></svg>Apple Health</span>
+      <span class="setrow-r" style="color:var(--brand)">Syncing</span>
+    </div>
+    <div class="setrow">
+      <span style="display:flex;align-items:center;gap:10px"><svg viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--strava)" aria-hidden="true"><use href="#i-strava"/></svg>Strava</span>
+      <span class="setrow-r" style="color:var(--brand)">3 rides this week</span>
+    </div>
+    <div class="setrow">
+      <span style="display:flex;align-items:center;gap:10px"><svg class="ico" viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--dim)" aria-hidden="true"><use href="#i-link"/></svg>Garmin</span>
+      <span class="setrow-r">Connect<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chev"/></svg></span>
+    </div>
+    <div class="setrow">
+      <span style="display:flex;align-items:center;gap:10px"><svg class="ico" viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--dim)" aria-hidden="true"><use href="#i-link"/></svg>Health Connect</span>
+      <span class="setrow-r">Android only</span>
+    </div>
+    <div class="setrow"><span>Same session from two apps</span><span class="setrow-r">Keep Strava<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chev"/></svg></span></div>
+    <div class="card-b" style="border-top:1px solid var(--hair)">
+      <div class="plain">Disconnecting Strava deletes every ride it sent, as their terms require.
+        <b>Rides you edited by hand stay.</b></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">Goal</span></div>
+    <div class="setrow"><span>Aim</span><span class="setrow-r">Lean gain<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chev"/></svg></span></div>
+    <div class="setrow"><span>Weekly rate</span><span class="setrow-r">+0.31 kg / wk<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chev"/></svg></span></div>
+    <div class="setrow"><span>Units</span><span class="setrow-r">kg · cm · kcal<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chev"/></svg></span></div>
+    <div class="setrow"><span>Surface</span><span class="mini"><span class="on">Dark</span><span>Black</span></span></div>
+    <div class="setrow"><span>Accent</span><span class="mini"><span>Green</span><span class="on">White</span></span></div>
+    <div class="card-b" style="border-top:1px solid var(--hair)">
+      <div class="plain">Accent changes buttons, the active tab and the ring's centre — <b>never a chart</b>.
+        Data colours mean something, so they stay put whichever you pick.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="lbl">This week's change</span><span class="tag" style="color:var(--s-energy)">+90 KCAL</span></div>
+    <div class="card-b">
+      <svg viewBox="0 0 300 58" role="img" aria-label="Target moving from 2,650 to 2,740 kcal.">
+        <text x="0" y="14" fill="var(--muted)" font-size="10.5" letter-spacing=".1em">WAS</text>
+        <text x="0" y="40" fill="var(--muted)" font-size="26" font-weight="700">2,650</text>
+        <path d="M96 32 L128 32 M120 26 L128 32 L120 38" stroke="var(--s-energy)" stroke-width="2" fill="none" stroke-linecap="round"/>
+        <text x="140" y="14" fill="var(--brand)" font-size="10.5" letter-spacing=".1em">NOW</text>
+        <text x="140" y="40" fill="var(--brand)" font-size="26" font-weight="700">2,740</text>
+      </svg>
+      <table>
+        <tr><th>What Trace saw</th><th style="text-align:right">Value</th></tr>
+        <tr><td>Trend weight change</td><td style="text-align:right">+0.18 kg / wk</td></tr>
+        <tr><td>You aimed for</td><td style="text-align:right">+0.31 kg / wk</td></tr>
+        <tr><td>Days logged</td><td style="text-align:right">12 of 14</td></tr>
+        <tr><td>Deadlift e1RM</td><td style="text-align:right;color:var(--s-strength)">+4.5 kg</td></tr>
+      </table>
+      <div class="plain" style="margin-top:12px">
+        You gained slower than planned and your lifts kept climbing, so there's room to eat more.
+        <b>Adding 90 kcal.</b>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div class="cell act go">ACCEPT</div>
+        <div class="cell act ghost">NOT THIS WEEK</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-home"/></svg>Home</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-nut"/></svg>Nutrition</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-train"/></svg>Trainer</div>
+    <div class="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chart"/></svg>Progress</div>
+    <div class="tab on"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-user"/></svg>Profile</div>
+  </div>
+</div>
+<figcaption><b>Tab 4 · Profile</b>
+  Account, connected sources, goal — and the weekly check-in, which shows its working and then asks
+  permission. The app recommends, you decide. That's what stops it feeling like a black box.
+</figcaption>
+</figure>
+
+</div>
+
+<!-- ==================================================================== -->
+<div class="sec">
+  <h2>The web</h2>
+  <p>Same account, same day, same numbers. A phone left at home isn't a reason to stop logging.</p>
+</div>
+
+<div class="webs">
+
+  <div class="browser">
+    <div class="chrome">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="urlbar"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-lock"/></svg><b>trace.app</b>/today</div>
+    </div>
+    <div class="app">
+      <nav class="side">
+        <div style="display:flex;align-items:center;gap:8px;padding:0 8px">
+          <span class="dot"></span><span style="font-weight:700;letter-spacing:.18em;font-size:11px">TRACE</span>
+        </div>
+        <div class="side-nav">
+          <div class="nav-i on"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-home"/></svg>Today</div>
+          <div class="nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-nut"/></svg>Nutrition</div>
+          <div class="nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-train"/></svg>Trainer</div>
+          <div class="nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chart"/></svg>Progress</div>
+          <div class="nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-gear"/></svg>Settings</div>
+        </div>
+        <div class="side-foot"><div class="av">TK</div><div><div class="sn">Tejas</div><div class="se">Free plan</div></div></div>
+      </nav>
+
+      <main class="main">
+        <div class="main-top">
+          <div><div class="lbl">Friday 15 August</div><h3 style="margin-top:4px">Today</h3></div>
+          <span class="src"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-watch"/></svg>Synced from iPhone 09:12</span>
+        </div>
+
+        <div class="cols">
+          <div class="card">
+            <div class="card-h"><span class="lbl">Remaining today</span><span class="tag" style="color:var(--brand)">ON TRACK</span></div>
+            <div class="card-b">
+              <svg viewBox="0 0 260 150" role="img" aria-label="640 kilocalories remaining of a 2,740 target.">
+                <path d="M30 132 A100 100 0 1 1 230 132" fill="none" stroke="#1C2126" stroke-width="15" stroke-linecap="round"/>
+                <path d="M30 132 A100 100 0 1 1 230 132" fill="none" stroke="var(--brand)" stroke-width="15"
+                      stroke-linecap="round" stroke-dasharray="470" stroke-dashoffset="108"/>
+                <text x="130" y="96" text-anchor="middle" fill="var(--text)" font-size="46" font-weight="700"
+                      letter-spacing="-1.5" style="font-variant-numeric:tabular-nums">640</text>
+                <text x="130" y="118" text-anchor="middle" fill="var(--muted)" font-size="11" letter-spacing="1.4">KCAL LEFT</text>
+              </svg>
+              <div class="plain" style="margin-top:6px">About <b>two rotis and a bowl of dal</b> worth of room left.</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><span class="lbl">Macros</span><span class="tag" style="color:var(--dim)">LEFT TODAY</span></div>
+            <div class="card-b">
+              <svg viewBox="0 0 300 86" role="img" aria-label="Protein 118 of 165 grams, carbs 214 of 300, fat 58 of 78.">
+                <g font-size="10.5" letter-spacing=".08em">
+                  <text x="0" y="10" fill="var(--muted)">PROTEIN</text><text x="300" y="10" fill="var(--text)" text-anchor="end" font-weight="700">118 / 165 g</text>
+                  <rect x="0" y="15" width="300" height="7" rx="3.5" fill="#1C2126"/><rect x="0" y="15" width="215" height="7" rx="3.5" fill="var(--s-strength)"/>
+                  <text x="0" y="40" fill="var(--muted)">CARBS</text><text x="300" y="40" fill="var(--text)" text-anchor="end" font-weight="700">214 / 300 g</text>
+                  <rect x="0" y="45" width="300" height="7" rx="3.5" fill="#1C2126"/><rect x="0" y="45" width="214" height="7" rx="3.5" fill="var(--s-weight)"/>
+                  <text x="0" y="70" fill="var(--muted)">FAT</text><text x="300" y="70" fill="var(--text)" text-anchor="end" font-weight="700">58 / 78 g</text>
+                  <rect x="0" y="75" width="300" height="7" rx="3.5" fill="#1C2126"/><rect x="0" y="75" width="223" height="7" rx="3.5" fill="var(--s-energy)"/>
+                </g>
+              </svg>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><span class="lbl">Worth watching</span><span class="tag" style="color:var(--bad)">1 OVER</span></div>
+            <div class="card-b">
+              <svg viewBox="0 0 300 60" role="img" aria-label="Sodium 2,610 of 2,300 milligrams, over. Potassium 2,140 of 3,400.">
+                <g font-size="10.5" letter-spacing=".08em">
+                  <text x="0" y="10" fill="var(--bad)" font-weight="700">SODIUM</text><text x="300" y="10" fill="var(--bad)" text-anchor="end" font-weight="700">2,610 / 2,300 mg</text>
+                  <rect x="0" y="15" width="300" height="7" rx="3.5" fill="#1C2126"/><rect x="0" y="15" width="300" height="7" rx="3.5" fill="var(--bad)"/>
+                  <text x="0" y="40" fill="var(--muted)">POTASSIUM</text><text x="300" y="40" fill="var(--text)" text-anchor="end" font-weight="700">2,140 / 3,400 mg</text>
+                  <rect x="0" y="45" width="300" height="7" rx="3.5" fill="#1C2126"/><rect x="0" y="45" width="189" height="7" rx="3.5" fill="var(--s-weight)"/>
+                </g>
+              </svg>
+              <div class="plain red" style="margin-top:14px">Sodium is <b>310 mg over</b> your ceiling.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><span class="lbl">Logged today</span><span class="tag" style="color:var(--dim)">3 MEALS · 2,100 KCAL</span></div>
+          <div class="tblwrap">
+            <table class="wt">
+              <thead><tr><th>Food</th><th>Portion</th><th>Source</th><th style="text-align:right">Protein</th><th style="text-align:right">kcal</th></tr></thead>
+              <tbody>
+                <tr><td class="nm">Poha with peanuts</td><td>1.5 katori</td><td>AI scan · iPhone</td><td class="r">7 g</td><td class="r">286</td></tr>
+                <tr><td class="nm">Eggs, boiled</td><td>2 whole</td><td>Search</td><td class="r">13 g</td><td class="r">156</td></tr>
+                <tr><td class="nm">Puttu</td><td>2 pieces · 180 g</td><td>AI scan · iPhone</td><td class="r">6 g</td><td class="r">248</td></tr>
+                <tr><td class="nm">Kadala curry</td><td>1 katori · 150 g</td><td>AI scan · iPhone</td><td class="r">9 g</td><td class="r">196</td></tr>
+                <tr><td class="nm">Whey isolate</td><td>1 scoop · 32 g</td><td>Barcode · iPhone</td><td class="r">27 g</td><td class="r">120</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="browser">
+    <div class="chrome">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="urlbar"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-lock"/></svg><b>trace.app</b>/nutrition/add</div>
+    </div>
+    <div class="app locked">
+      <nav class="side">
+        <div style="display:flex;align-items:center;gap:8px;padding:0 8px">
+          <span class="dot"></span><span style="font-weight:700;letter-spacing:.18em;font-size:11px">TRACE</span>
+        </div>
+        <div class="side-nav">
+          <div class="nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-home"/></svg>Today</div>
+          <div class="nav-i on"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-nut"/></svg>Nutrition</div>
+          <div class="nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-train"/></svg>Trainer</div>
+          <div class="nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chart"/></svg>Progress</div>
+          <div class="nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-gear"/></svg>Settings</div>
+        </div>
+        <div class="side-foot"><div class="av">TK</div><div><div class="sn">Tejas</div><div class="se">Free plan</div></div></div>
+      </nav>
+
+      <main class="main">
+        <div class="main-top"><div><div class="lbl">Nutrition</div><h3 style="margin-top:4px">Add food</h3></div></div>
+        <div class="search" style="height:46px;margin-bottom:0"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-search"/></svg>Search foods, brands, restaurants…</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div class="btn-go" style="flex:1 1 150px">Search database</div>
+          <div class="btn-off" style="flex:1 1 150px"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-camera"/></svg>AI scan</div>
+          <div class="btn-off" style="flex:1 1 150px"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-barcode"/></svg>Barcode</div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><span class="lbl">Results</span><span class="tag" style="color:var(--dim)">SEARCH: “DAL”</span></div>
+          <div class="tblwrap">
+            <table class="wt">
+              <thead><tr><th>Food</th><th>Per serving</th><th style="text-align:right">Protein</th><th style="text-align:right">kcal</th></tr></thead>
+              <tbody>
+                <tr><td class="nm">Dal tadka, restaurant</td><td>1 katori · 150 g</td><td class="r">9 g</td><td class="r">184</td></tr>
+                <tr><td class="nm">Dal makhani</td><td>1 katori · 150 g</td><td class="r">8 g</td><td class="r">278</td></tr>
+                <tr><td class="nm">Dal, moong, home</td><td>1 katori · 150 g</td><td class="r">7 g</td><td class="r">128</td></tr>
+                <tr><td class="nm">Dal fry, Haldiram's</td><td>1 pouch · 300 g</td><td class="r">14 g</td><td class="r">330</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </main>
+
+      <div class="modal">
+        <div class="modal-c">
+          <div class="modal-b">
+            <div style="display:flex;gap:14px;align-items:flex-start">
+              <div class="qr" aria-hidden="true">
+                <i class="k"></i><i class="k"></i><i></i><i class="k"></i><i class="k"></i>
+                <i class="k"></i><i></i><i class="k"></i><i></i><i class="k"></i>
+                <i></i><i class="k"></i><i class="k"></i><i class="k"></i><i></i>
+                <i class="k"></i><i></i><i class="k"></i><i></i><i class="k"></i>
+                <i class="k"></i><i class="k"></i><i></i><i class="k"></i><i class="k"></i>
+              </div>
+              <div>
+                <h4>Scanning needs the app</h4>
+                <p>The AI scan and the barcode reader use your phone's camera, so they only run in Trace
+                  on iOS and Android. Everything else — searching, logging, editing portions — works right here.</p>
+              </div>
+            </div>
+          </div>
+          <div class="modal-a">
+            <div class="btn-gh">Keep searching</div>
+            <div class="btn-go">Get the app</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ==================================================================== -->
+<div class="sec">
+  <h2>Shipping it</h2>
+  <p>Four deploys, in the order that unblocks the most work.</p>
+</div>
+
+<div class="ship">
+  <div class="ship-c">
+    <h4>API — Railway</h4>
+    <p>FastAPI is already the shared brain: both clients hit it. Point Railway at <code>services/api</code>, attach Postgres.</p>
+    <ol>
+      <li>Set <code>JWT_SECRET</code> explicitly, or every restart signs everyone out.</li>
+      <li>Add the web origin to CORS — a browser really does send <code>Origin</code>.</li>
+      <li>Run the ingestion scripts once to seed foods.</li>
+    </ol>
+  </div>
+  <div class="ship-c">
+    <h4>Web — Vercel</h4>
+    <p>A new <code>apps/web</code> workspace, its tokens generated from the same source as the app's.</p>
+    <ol>
+      <li><code>vercel --prod</code> from the workspace root.</li>
+      <li><code>NEXT_PUBLIC_API_URL</code> → the Railway URL.</li>
+      <li>Camera routes render the “scanning needs the app” card, never a dead button.</li>
+    </ol>
+  </div>
+  <div class="ship-c">
+    <h4>Strava — OAuth + webhook</h4>
+    <p><code>calories</code> lives only on <code>DetailedActivity</code>, so each new ride costs a second call against a 2,000/day budget.</p>
+    <ol>
+      <li>Scope <code>activity:read_all</code> so private rides come through.</li>
+      <li>Ack the webhook POST inside 2 s or it retries.</li>
+      <li>Dedupe against Apple Health on start time + distance.</li>
+      <li>Delete imported rides on disconnect — their terms require it.</li>
+    </ol>
+  </div>
+  <div class="ship-c">
+    <h4>App — EAS</h4>
+    <p>Expo builds in the cloud; TestFlight puts it on your phone. HealthKit needs a development build.</p>
+    <ol>
+      <li><code>eas build --profile preview --platform ios</code>.</li>
+      <li><code>EXPO_PUBLIC_*</code> is inlined at build time — a changed URL needs a new build.</li>
+      <li><code>eas submit</code> once the five tabs feel right.</li>
+    </ol>
+  </div>
+</div>
+
+</div><!-- /stage -->
+
+</div>
+
+<div class="tip" id="tip"></div>
+<script>
+const stage = document.querySelector('.stage');
+document.querySelectorAll('.aswitch button').forEach((b) => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.aswitch button').forEach((o) =>
+      o.setAttribute('aria-pressed', String(o === b)),
+    );
+    stage.dataset.accent = b.dataset.a;
+  });
+});
+
+const tip = document.getElementById('tip');
+document.querySelectorAll('.hot').forEach(el=>{
+  el.addEventListener('mousemove', e=>{
+    tip.innerHTML = `<b>${el.dataset.v}</b><br><span>${el.dataset.l}</span>`;
+    tip.style.left = (e.clientX + 14) + 'px';
+    tip.style.top  = (e.clientY - 40) + 'px';
+    tip.style.opacity = 1;
+  });
+  el.addEventListener('mouseleave', ()=> tip.style.opacity = 0);
+});
+</script>
+
+</body></html>
