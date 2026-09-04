@@ -1,3 +1,6 @@
 {
-  "python.defaultInterpreterPath": "${workspaceFolder}/services/api/.venv/Scripts/python.exe"
+  "python.defaultInterpreterPath": "${workspaceFolder}/services/api/.venv/Scripts/python.exe",
+  "claudeCode.environmentVariables": [],
+  "claudeCode.disableLoginPrompt": false,
+  "claudeCodeChat.wsl.enabled": false
 }
