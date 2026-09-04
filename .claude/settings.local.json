@@ -6,5 +6,10 @@
       "Bash(npm install *)",
       "Bash(.venv/Scripts/python -c ' *)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "claude-flow",
+    "ruv-swarm",
+    "flow-nexus"
+  ]
 }
