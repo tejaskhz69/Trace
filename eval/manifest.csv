@@ -1,26 +1,27 @@
 file,cuisine,dish,truth_kcal,truth_source,grams,has_scale_ref,hidden_fat,adversarial,notes
-in-001-dal-tadka-roti-thali.jpg,indian-north,"Dal tadka, 2 roti, salad",,weighed,,yes,high,,"THE headline case. Weigh dal before tempering AND record tsp of ghee/oil added. Steel thali gives scale ref."
-in-002-masala-dosa-sambar-chutney.jpg,indian-south,"Masala dosa, sambar, coconut chutney",,weighed,,yes,high,,"Oil on the tawa is invisible. Measure it. Coconut chutney is ~13g fat/100g."
-in-003-veg-biryani.jpg,indian-north,Veg biryani,,weighed,,yes,med,,"Rice volume hidden under gravy lid. Weigh the plated portion."
-in-004-paneer-butter-masala-naan.jpg,indian-north,"Paneer butter masala, 1 naan",,recipe,,yes,high,,"Cream + butter. Highest kcal variance of any common dish."
-in-005-idli-sambar.jpg,indian-south,"3 idli, sambar",,weighed,,yes,low,,"CONTROL: genuinely low-calorie. Checks it does not OVER-estimate."
-in-006-rajma-chawal.jpg,indian-north,"Rajma, rice",,weighed,,yes,med,,
-in-007-chole-bhature.jpg,indian-north,"Chole, 1 bhatura",,recipe,,yes,high,,"Deep-fried absorption. Weigh bhatura raw and cooked if you can."
-in-008-poha.jpg,indian-west,Poha,,weighed,,yes,med,,"Low visual density breakfast."
-in-009-full-thali-6-component.jpg,indian-south,"Full meals thali: rice, sambar, rasam, 2 thoran, papad, pickle",,weighed,,yes,high,,"6+ components. This is the one that should force escalation to the accurate model."
-in-010-vada-pav.jpg,indian-street,Vada pav,,recipe,,yes,high,,"Street food, deep-fried."
-in-011-puttu-kadala.jpg,indian-kerala,"Puttu 2 pieces, kadala curry",,weighed,,yes,high,,"Coconut oil in the curry. No incumbent app has this dish at all."
-in-012-lassi-or-buttermilk.jpg,indian-drink,Glass of sweet lassi,,label,,yes,med,,"AMBIGUOUS: lassi vs buttermilk vs water look similar. ~5x kcal difference."
-in-013-upma.jpg,indian-south,Upma,,weighed,,yes,med,,
-fo-001-pasta-cream.jpg,italian,Pasta with cream sauce,,weighed,,yes,high,,"Pair with fo-002. Looks similar, ~2x the fat."
-fo-002-pasta-tomato.jpg,italian,Pasta with tomato sauce,,weighed,,yes,low,,"Pair with fo-001."
-fo-003-sushi-platter.jpg,japanese,Mixed sushi platter,,menu,,yes,low,,"Rice is undercounted almost universally."
-fo-004-burger-fries.jpg,american,"Burger and fries",,menu,,yes,high,,"Chain with published nutrition only."
-fo-005-salad-dressed.jpg,western,Green salad with dressing already on,,weighed,,yes,high,,"The Western invisible-fat case. Weigh the dressing."
-fo-006-stirfry-oil-sheen.jpg,chinese,Vegetable stir-fry,,weighed,,yes,high,,"Visible oil sheen -- does it notice?"
-fo-007-grilled-chicken-rice-veg.jpg,western,"Grilled chicken, rice, steamed veg",,weighed,,yes,low,,"EASY CONTROL. If this is wrong, something is fundamentally broken."
-fo-008-packaged-bar-with-label.jpg,packaged,Protein bar beside its nutrition panel,,label,,yes,low,,"Near-perfect truth. Score this to +/-2%."
-ad-001-no-scale-ref.jpg,indian-north,Curry in frame with nothing for scale,,weighed,,no,high,yes,"MUST widen range / lower confidence."
-ad-002-poor-lighting.jpg,indian-south,Dinner shot in dim light,,weighed,,yes,med,yes,"MUST widen range / lower confidence."
-ad-003-half-eaten.jpg,indian-north,Half-eaten plate,,weighed,,yes,med,yes,"Truth = what was EATEN, not what was served."
-ad-004-opaque-container.jpg,indian-street,Food in opaque takeaway container,,estimate,,no,high,yes,"EXPECTED TO REFUSE. Truth deliberately unknowable -- refusing is the pass condition."
+in-001-mtr-dal-makhani-rice.jpg,indian-north,"MTR dal makhani, steamed rice",,label,,yes,high,,POUCH. Weigh plated dal + rice separately. Panel is per 100g -- scale it. Rice from mess (weigh) or packet.
+in-002-mtr-paneer-butter-masala-roti.jpg,indian-north,"MTR paneer butter masala, 2 roti",,label,,yes,high,,POUCH + mess roti. Weigh roti; roti kcal from IFCT (~275/100g).
+in-003-haldiram-chole-rice.jpg,indian-north,"Haldiram chole, rice",,label,,yes,high,,POUCH.
+in-004-mtr-palak-paneer-roti.jpg,indian-north,"MTR palak paneer, 2 roti",,label,,yes,high,,POUCH.
+in-005-mtr-rajma-rice.jpg,indian-north,"MTR rajma masala, rice",,label,,yes,med,,POUCH.
+in-006-mtr-bisibele-bath.jpg,indian-south,MTR bisibele bath,,label,,yes,med,,POUCH. Single-dish plate.
+in-007-mtr-upma.jpg,indian-south,MTR upma,,label,,yes,med,,"POUCH or instant mix. If mix, weigh the oil YOU add and record it."
+in-008-mess-thali-full.jpg,indian-south,"Mess thali: rice, sambar, rasam, thoran, papad",,recipe,,yes,high,,MESS. Weigh EVERY component on your own plate. Ask the cook how much oil per batch -- see DORM.md.
+in-009-mess-dal-rice.jpg,indian-north,"Mess dal, rice",,recipe,,yes,high,,MESS. Weigh both. Ask about the tempering.
+in-010-idli-sambar-mess.jpg,indian-south,"3 idli, sambar",,recipe,,yes,low,,MESS. CONTROL: genuinely low-calorie. Checks it does not OVER-estimate.
+in-011-curd-rice-assembled.jpg,indian-south,Rice with a cup of curd,,label,,yes,low,,ASSEMBLED: mess rice (weighed) + packaged curd cup (label). Fully computable.
+in-012-maggi-cooked.jpg,indian-street,Maggi noodles,,label,,yes,high,,"KETTLE. Whole packet, panel on the wrapper. Add nothing, or weigh what you add."
+in-013-poha-or-oats-instant.jpg,indian-west,Instant poha / masala oats,,label,,yes,med,,KETTLE. Cup or packet with a panel.
+fo-001-bread-butter-eggs.jpg,western,"2 bread slices, butter, 2 boiled eggs",,label,,yes,high,,ASSEMBLED. Bread + butter panels; egg ~78 kcal each. Butter is the invisible-fat case.
+fo-002-protein-bar-with-label.jpg,packaged,Kirkland Signature protein bar beside its nutrition panel,190,label,60,yes,low,,"CALIBRATION ROW -- score to +/-2%. Shoot the panel in the SAME frame. Chocolate Brownie F6 C22 (fibre 10, erythritol 2) P21 Na140mg; Cookie Dough F7 C22 (fibre 10, erythritol 2) P21 Na190mg -- calories identical, macros differ, so RECORD WHICH FLAVOUR. PRE-REGISTERED PREDICTION: naive Atwater gives 6x9 + 22x4 + 21x4 = 226, 19% above the label's 190. The gap is fibre and erythritol. If the model returns ~225 the failure is sugar-alcohol arithmetic, not vision -- a different bug with a different fix, and this row is the only one that can tell them apart."
+fo-003-chain-burger-fries.jpg,american,Chain burger and fries,,menu,,yes,high,,McDonald's / Burger King -- published nutrition. Note exact items.
+fo-004-chain-pizza-slices.jpg,italian,2 slices chain pizza,,menu,,yes,high,,Domino's / Pizza Hut published nutrition.
+fo-005-packaged-sandwich.jpg,western,Packaged sandwich,,label,,yes,med,,Convenience-store sandwich with a panel.
+fo-006-milk-glass.jpg,packaged,Glass of toned milk,,label,,yes,low,,Weigh the pour. Amul/Nandini panel. Tests liquid volume estimation.
+fo-007-banana-and-biscuits.jpg,packaged,"Banana, 4 biscuits",,label,,yes,low,,Weigh banana (IFCT ~89 kcal/100g edible); biscuits from panel.
+fo-008-instant-noodles-cup.jpg,asian,Cup noodles,,label,,yes,high,,KETTLE. Panel on the cup.
+fo-009-white-sauce-pasta-homemade.jpg,western,"Homemade pasta, paneer-curd white sauce",,recipe,,yes,med,,"OWN RECIPE, photo in place. RESOLVED: 399 g COOKED pasta (bowl tared), whole batch in one bowl, whole 6 g masala sachet. BLOCKED on cheese: two handfuls of Del Monte, unweighed, 50-70 g band = 60 kcal swing. Weigh two handfuls and shoot the panel. Everything else totals 999 kcal. See recipes/fo-009-*.yaml."
+ad-001-no-scale-ref.jpg,indian-north,Pouch curry with nothing in frame for scale,,label,,no,high,yes,MUST widen range / lower confidence. Reuse any pouch dish.
+ad-002-poor-lighting.jpg,indian-south,Mess dinner shot in dim light,,recipe,,yes,med,yes,MUST widen range / lower confidence.
+ad-003-half-eaten.jpg,indian-north,Half-eaten pouch meal,,label,,yes,med,yes,Weigh the plate BEFORE and AFTER. Truth = what was EATEN.
+ad-004-opaque-container.jpg,indian-street,Food in an opaque takeaway box,,estimate,,no,high,yes,EXPECTED TO REFUSE. Truth deliberately unknowable -- refusing is the pass.

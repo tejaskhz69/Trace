@@ -130,8 +130,23 @@ async def main() -> None:
                     "model": res.model_used,
                     "latency_ms": res.latency_ms,
                     "cost_usd": res.cost_usd,
+                    # score.py grades the adversarial rows on this key by name.
+                    # Without it the scorer falls back to band-and-confidence
+                    # and an explicit refusal can never be credited -- which
+                    # is the one behaviour those rows exist to measure.
+                    "refused": bool(res.payload.get("refused", False)),
+                    "refusal_reason": res.payload.get("refusal_reason", ""),
                 }
-                print(f" {done[name]['kcal']:.0f} kcal, conf {done[name]['confidence']:.2f}")
+                if done[name]["refused"]:
+                    # A refusal has no items, so the kcal line would read
+                    # "0 kcal, conf 0.00" and look like a crash. It is a pass.
+                    reason = done[name]["refusal_reason"] or "no reason given"
+                    print(f" REFUSED -- {reason[:70]}")
+                else:
+                    print(
+                        f" {done[name]['kcal']:.0f} kcal, "
+                        f"conf {done[name]['confidence']:.2f}"
+                    )
                 break
             except Exception as exc:
                 msg = re.sub(r"(key=)[^&\s]+", r"\1<redacted>", str(exc))
