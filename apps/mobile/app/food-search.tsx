@@ -61,6 +61,12 @@ import {
   IconSearch,
 } from '../src/components/icons';
 import { attributionFor } from '../src/lib/attribution';
+import {
+  QUALITY_LABEL,
+  basisLabel,
+  isIncomplete,
+  qualityStatus,
+} from '../src/lib/serving-basis';
 import { FoodItem, api, request } from '../src/lib/api';
 import { useToday } from '../src/state/useToday';
 import { useAccent, useSurfaces } from '../src/state/useTheme';
@@ -106,7 +112,12 @@ const QUICK: { group: string; terms: string[] }[] = [
 ];
 
 export default function FoodSearchScreen() {
-  const params = useLocalSearchParams<{ q?: string; barcode?: string }>();
+  const params = useLocalSearchParams<{
+    q?: string;
+    barcode?: string;
+    /** A FoodItem the scanner already resolved, so we do not look it up twice. */
+    prefetched?: string;
+  }>();
   const router = useRouter();
   const accent = useAccent();
   const surfaces = useSurfaces();
@@ -188,17 +199,43 @@ export default function FoodSearchScreen() {
   /**
    * A barcode arrived from the scanner.
    *
-   * The lookup already happened on the scan screen, but the resolved item was
-   * not carried across — passing a whole food object through route params
-   * would mean URL-encoding a nutrition table. Re-resolving costs one request
-   * that now hits the local row the first lookup persisted, so it is a
-   * database read rather than a second trip to Open Food Facts.
+   * The scanner has usually already resolved it and hands the food over in
+   * `prefetched`, so the common path does no request at all. The lookup below
+   * is the fallback for a direct link, a stale param, or a payload that failed
+   * to parse — it is not the normal route, and it used to be: this effect
+   * re-resolved every scanned code, so each successful scan cost two identical
+   * lookups and, on a catalogue miss, two full fan-outs to Open Food Facts.
    */
   const [barcodeMiss, setBarcodeMiss] = useState<string | null>(null);
 
   useEffect(() => {
     const code = params.barcode;
     if (!code) return;
+
+    // THE SCANNER MAY HAVE ALREADY DONE THIS.
+    //
+    // scan.tsx resolves the barcode, then navigates here with the code — and
+    // this effect resolved it a second time. Every successful scan cost two
+    // identical lookups: two local queries, and on a catalogue miss two full
+    // fan-outs to Open Food Facts and USDA, with the second one racing the
+    // first to write the same row. The scanner now hands the resolved item
+    // over in `prefetched`, so the common path costs one lookup and the user
+    // sees the portion picker without a second spinner.
+    //
+    // It is still only a hint: a direct link here, or a stale param, falls
+    // through to the request below.
+    if (params.prefetched) {
+      try {
+        const item = JSON.parse(params.prefetched) as FoodItem;
+        if (item?.id) {
+          select(item);
+          return;
+        }
+      } catch {
+        // Malformed param: ignore it and resolve properly.
+      }
+    }
+
     let alive = true;
     setSearching(true);
     api
@@ -418,6 +455,62 @@ export default function FoodSearchScreen() {
                 <Macro label="Fat" value={totals?.fat ?? 0} color={palette.fat} />
               </View>
 
+              {/* WHICH BASIS THESE NUMBERS ARE ON, and what they are worth.
+                  Three bases meet here and share one set of digits: the
+                  catalogue stores per 100 g/ml, the packet prints per serving,
+                  and the figures above are for the portion the user dialled
+                  in. Nothing on screen said which, so a disagreement with the
+                  label in their hand was indistinguishable from a units
+                  mismatch. Both lines come from `src/lib/serving-basis.ts`,
+                  which is pure so every case is testable without a renderer. */}
+              <Text style={styles.basis} accessibilityLabel={basisLabel({
+                isLiquid: selected.is_liquid,
+                portionGrams: totals?.grams,
+                servingName: prepared ? null : serving.name,
+                servingCount: pieces,
+              })}>
+                {basisLabel({
+                  isLiquid: selected.is_liquid,
+                  portionGrams: totals?.grams,
+                  servingName: prepared ? null : serving.name,
+                  servingCount: pieces,
+                })}
+              </Text>
+
+              <Text style={styles.basis}>
+                {QUALITY_LABEL[
+                  qualityStatus({
+                    isVerified: selected.is_verified,
+                    verificationTier: selected.verification_tier,
+                    incomplete: isIncomplete(selected),
+                  })
+                ]}
+              </Text>
+
+              {/* SOURCE, AT THE MOMENT THE NUMBERS ARE READ.
+                  The list row carries a three-word tag, which is all a dense
+                  row can hold; this is the only place the full sentence fits,
+                  and it is where the user is actually looking at the figures
+                  being credited. A tag alone names a source without saying
+                  under what terms it is used. Rendered only when the server
+                  says a third party is owed credit — our own dishes and a
+                  user's own foods show nothing rather than an empty notice. */}
+              {(() => {
+                const attr = attributionFor(selected);
+                if (!attr.required || !attr.detail) return null;
+                return (
+                  <>
+                    <Rule style={styles.gapV} />
+                    <Text
+                      style={styles.attribution}
+                      accessibilityLabel={attr.accessibilityLabel ?? undefined}
+                    >
+                      {attr.detail}
+                    </Text>
+                  </>
+                );
+              })()}
+
               {error ? <Plain tone="danger" style={styles.gapV}>{error}</Plain> : null}
 
               <Button
@@ -597,6 +690,29 @@ const FoodRow = React.memo(
     const grams = def?.grams ?? 100;
     const kcal = Math.round((item.calories * grams) / 100);
     const protein = Math.round((item.protein_g * grams) / 100);
+    const attr = attributionFor(item);
+
+    // ONE LABEL FOR THE WHOLE ROW.
+    //
+    // The row is a Pressable, so it is a single accessibility element and the
+    // Text children inside it are never focused individually -- an
+    // accessibilityLabel on the attribution tag alone was therefore read by
+    // nobody. Everything a sighted user can see in this row has to be in this
+    // string, including the source, spelled out rather than abbreviated:
+    // "OPEN FOOD FACTS" as a tag is a visual shorthand, not something a
+    // screen reader should be left to pronounce on its own.
+    const spoken = [
+      item.brand ? `${item.brand}, ${item.name}` : item.name,
+      `${kcal} calories per ${def?.name ?? '100 g'}`,
+      `${protein} grams protein`,
+      item.is_verified ? 'Verified' : null,
+      item.matched_via === 'alias' && item.matched_alias
+        ? `Matched on ${item.matched_alias}`
+        : null,
+      attr.accessibilityLabel,
+    ]
+      .filter(Boolean)
+      .join('. ');
 
     return (
       <>
@@ -604,7 +720,7 @@ const FoodRow = React.memo(
         <Pressable
           onPress={() => onPress(item)}
           accessibilityRole="button"
-          accessibilityLabel={item.name}
+          accessibilityLabel={spoken}
           style={[styles.row, boxed && styles.rowBoxed]}
         >
           <View style={styles.rowMid}>
@@ -638,19 +754,24 @@ const FoodRow = React.memo(
             ) : null}
             {/* Per-row attribution. Curated and user rows return required
                 === false and render nothing, so our own dishes are never
-                labelled as somebody else's data. */}
-            {(() => {
-              const attr = attributionFor(item);
-              return attr.required && attr.tag ? (
-                <Text
-                  style={styles.rowTag}
-                  numberOfLines={1}
-                  accessibilityLabel={attr.accessibilityLabel ?? undefined}
-                >
-                  {attr.tag}
-                </Text>
-              ) : null;
-            })()}
+                labelled as somebody else's data.
+
+                `numberOfLines={1}` bounds a long source name to the row
+                instead of reflowing it; the unabbreviated wording is in the
+                row's accessibilityLabel and the full sentence is on the
+                detail sheet, so nothing is lost by truncating here.
+                `importantForAccessibility="no"` because the parent Pressable
+                already speaks this — without it VoiceOver reads the tag
+                twice on platforms that flatten the subtree. */}
+            {attr.required && attr.tag ? (
+              <Text
+                style={styles.rowTag}
+                numberOfLines={1}
+                importantForAccessibility="no"
+              >
+                {attr.tag}
+              </Text>
+            ) : null}
           </View>
         </Pressable>
       </>
@@ -708,9 +829,31 @@ const styles = StyleSheet.create({
   rowRight: { alignItems: 'flex-end', gap: 2 },
   rowKcal: { ...type.valueSm, fontSize: 17, color: palette.text },
   rowUnit: { ...type.labelSm, color: palette.textDim },
-  rowTag: { ...type.labelSm },
+  /* An explicit colour, because there is no global default text colour in
+     this app: a Text with none renders in React Native's built-in black, and
+     on `palette.void` (#07090B) that is invisible. The VERIFIED tag overrode
+     it and looked fine; the attribution tag did not, so the per-row credit
+     was in the tree, passing its tests, and unreadable on the screen.
+     `textDim` rather than `textFaint` — 6.6:1 against the panel instead of
+     3.4:1, and a licence notice is the last thing that should be squinted at. */
+  rowTag: { ...type.labelSm, color: palette.textDim },
 
   selectedName: { ...type.title, color: palette.text },
+
+  /* Attribution is a legal notice, not a data readout: sentence case at
+     caption size, quiet but not faint, above the primary action so it is on
+     screen without competing with it. `textDim` clears 4.5:1 against the
+     panel; `textFaint` does not, and a notice nobody can read is not a
+     notice. */
+  /* The basis line and the data-quality line: tracked micro-labels, dimmest
+     step that still clears contrast, sitting directly under the numbers they
+     qualify. */
+  basis: { ...type.labelSm, color: palette.textDim, marginTop: space.sm },
+  attribution: {
+    ...type.caption,
+    color: palette.textDim,
+    marginTop: space.md,
+  },
 
   totalRow: {
     flexDirection: 'row',

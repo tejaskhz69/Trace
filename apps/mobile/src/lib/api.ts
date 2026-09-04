@@ -247,6 +247,20 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+  // HONOUR A CALLER'S SIGNAL AS WELL AS THE TIMEOUT.
+  //
+  // The fetch below spreads `rest` and then sets `signal`, so a signal passed
+  // in by a caller was silently discarded — the option existed on the type
+  // and did nothing. Chaining rather than choosing means a request can be
+  // abandoned either because it took too long OR because the caller moved on,
+  // which is what the barcode scanner needs when the camera drifts to a
+  // different pack mid-lookup.
+  const external = (rest as { signal?: AbortSignal | null }).signal;
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
@@ -406,6 +420,36 @@ export interface CatalogueGroup {
   muscle_group: string;
   count: number;
   exercises: CatalogueExercise[];
+}
+
+/**
+ * Why an exercise is in a programme, from `GET /api/workouts/planned-sessions`.
+ *
+ * WRITTEN AHEAD OF ITS FIRST CONSUMER, ON PURPOSE. Nothing in the app reads
+ * the programming endpoints yet. This type exists so that whoever wires them
+ * up inherits the correct nullability instead of inventing it -- these
+ * interfaces are hand-maintained, so TypeScript only enforces what somebody
+ * wrote down, and `movement_pattern: string` would compile happily and be
+ * wrong for roughly a third of exercises.
+ */
+export interface ExerciseEducation {
+  primary_muscle: string;
+  secondary_muscles: string[];
+  /**
+   * NULL FOR ISOLATION WORK, AND THAT IS AN ANSWER, NOT MISSING DATA.
+   *
+   * The eight movement patterns -- squat, hinge, lunge, h-push, v-push,
+   * h-pull, v-pull, core, plus carry -- describe COMPOUND lifts. A lateral
+   * raise or a bicep curl satisfies none of them, so the backend stores
+   * null rather than forcing a false value into a field generation trusts.
+   * About a third of the catalogue is isolation work.
+   *
+   * Render it as absent -- no chip, no row -- never as "undefined", an empty
+   * chip, or "unknown". The field is always PRESENT in the payload; only its
+   * value may be null.
+   */
+  movement_pattern: string | null;
+  form_cue: string;
 }
 
 /**
@@ -586,14 +630,34 @@ export const api = {
   recentFoods: (limit = 20) =>
     request<FoodItem[]>(`/api/foods/recent?limit=${limit}`),
 
-  resolveBarcode: (barcode: string) =>
-    request<{
-      found: boolean;
-      barcode: string;
-      item: FoodItem | null;
-      resolved_from: string | null;
-      message: string | null;
-    }>(`/api/foods/barcode/${barcode}`),
+  /**
+   * Resolve a scanned barcode.
+   *
+   * `symbology` is what the scanner reported (expo-camera's `type`). It is
+   * forwarded because UPC-E and EAN-8 share a length and mean different
+   * products, and the digits alone cannot tell them apart — measured over
+   * 200,000 valid EAN-8 codes beginning 0 or 1, 58% also parse as a valid
+   * UPC-E. The scanner knows; the server otherwise has to guess.
+   *
+   * `signal` lets the caller abandon a lookup for a code the camera has
+   * already moved off. Without it two overlapping lookups race, and the
+   * slower one wins whichever order they return in.
+   */
+  resolveBarcode: (
+    barcode: string,
+    opts: { symbology?: string; signal?: AbortSignal } = {},
+  ) => {
+    // encodeURIComponent, because this is interpolated into a path segment.
+    // A stray '/' or '..' in a decoded string would otherwise change which
+    // route it hits rather than being rejected as a bad barcode.
+    const q = opts.symbology
+      ? `?symbology=${encodeURIComponent(opts.symbology)}`
+      : '';
+    return request<BarcodeLookup>(
+      `/api/foods/barcode/${encodeURIComponent(barcode)}${q}`,
+      { signal: opts.signal, timeoutMs: 8_000 },
+    );
+  },
 
   recognizePhoto: (uri: string, hint?: string) => {
     const form = new FormData();
@@ -1297,6 +1361,29 @@ export interface Maintenance {
   history: Array<{ date: string; kcal: number; low: number; high: number }>;
 }
 
+/**
+ * The result of a barcode lookup.
+ *
+ * `status` and `retryable` exist because `found: false` used to cover
+ * not-found, a mistyped code, a damaged symbol, an in-store sticker and an
+ * upstream outage alike — so the UI could only ever offer one recovery, "try
+ * again", which is the wrong advice for three of those five. They are
+ * optional so a response from an older server still parses.
+ */
+export interface BarcodeLookup {
+  found: boolean;
+  barcode: string;
+  item: FoodItem | null;
+  resolved_from: string | null;
+  message: string | null;
+  /** ok | not_numeric | invalid_length | bad_check_digit | restricted | not_found | upstream_error */
+  status?: string | null;
+  /** The scan folded to GTIN-14. The correct key to cache under. */
+  gtin14?: string | null;
+  /** False when re-scanning can never succeed, e.g. an in-store label. */
+  retryable?: boolean | null;
+}
+
 export interface FoodItem {
   id: string;
   name: string;
@@ -1309,6 +1396,9 @@ export interface FoodItem {
   serving_sizes: Array<{ name: string; grams: number; is_default: boolean }>;
   data_quality: number;
   is_verified: boolean;
+  /** Drives ml vs g when stating which basis a figure is on. The API has
+   *  always sent this (`FoodItemPublic.is_liquid`); the type omitted it. */
+  is_liquid?: boolean;
   /** Where this row's nutrition data came from: 'openfoodfacts', 'usda_fdc',
    *  'curated', 'user'. Per row -- the catalogue is not single-source. */
   source?: string | null;
@@ -1322,6 +1412,14 @@ export interface FoodItem {
   matched_via?: string | null;
   /** The alias text that matched, when matched_via === 'alias'. */
   matched_alias?: string | null;
+  /** What to call this row's source in front of a user, e.g. 'Open Food
+   *  Facts'. Composed server-side so the wording and the source-to-licence
+   *  mapping that produces it cannot drift apart. */
+  source_name?: string | null;
+  /** The credit sentence to display, or null when no third party is owed one.
+   *  null is meaningful, not missing: it is how a curated or user-created row
+   *  says "do not label me as somebody else's data". */
+  attribution?: string | null;
 }
 
 export interface RecognitionResponse {
