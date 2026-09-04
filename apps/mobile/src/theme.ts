@@ -122,6 +122,11 @@ export const palette = {
   warn: '#C2871F',
   danger: '#D9534F',
   info: '#2E86D9',        // also "on track" / synced
+  // Chip washes at the same alpha as `brandTint`, so a row of chips reads as
+  // one family whichever state each one is in. These existed inline as
+  // rgba() literals on the session screen before they were tokens.
+  warnTint: 'rgba(194,135,31,0.14)',
+  dangerTint: 'rgba(217,83,79,0.14)',
 
   // --- Chart series ------------------------------------------------------
   // Validated for a dark surface before use: lightness band, chroma floor,
@@ -357,6 +362,73 @@ export const verdictStyle: Record<
   fat_gain: { color: palette.warn, label: 'Fat gain', glyph: '▲' },
   muscle_loss_risk: { color: palette.danger, label: 'Muscle loss', glyph: '▼' },
   insufficient_data: { color: palette.textFaint, label: 'No read', glyph: '—' },
+};
+
+/* ------------------------------------------------------------------ *
+ * Strength state: the three-colour reading of a set or a lift.
+ *
+ * ONE FACT, ONE HOME. This mapping was previously written out three times
+ * -- the trend chip and the set pips on the summary screen, and the verdict
+ * chip on the live-session screen -- with a different answer in each. The
+ * pips called a decline orange while the chip called it orange too and gave
+ * "no change" plain grey, so a lift going backwards and a lift holding
+ * steady were indistinguishable in one place and swapped in another.
+ *
+ *   up      green   -- the estimated max rose. THE accent, spent here.
+ *   flat    orange  -- it held. Real information, not an absence.
+ *   down    red     -- it fell.
+ *   unrated neutral -- no reference to compare against. NOT a state; a
+ *                      first-ever lift has not "held", it has no history,
+ *                      and colouring it would invent a reading.
+ *
+ * `up` resolves to the user's chosen accent rather than `palette.signal`,
+ * which is why this is a function and not a static map.
+ * ------------------------------------------------------------------ */
+
+export type StrengthState = 'up' | 'flat' | 'down' | 'unrated';
+
+export function strengthStateColor(state: StrengthState, brand: string): string {
+  switch (state) {
+    case 'up':
+      return brand;
+    case 'flat':
+      return palette.warn;
+    case 'down':
+      return palette.danger;
+    case 'unrated':
+      return palette.textGhost;
+  }
+}
+
+/** Background wash behind a chip of the same state. */
+export function strengthStateTint(state: StrengthState, brandTint: string): string {
+  switch (state) {
+    case 'up':
+      return brandTint;
+    case 'flat':
+      return palette.warnTint;
+    case 'down':
+      return palette.dangerTint;
+    case 'unrated':
+      return palette.glass;
+  }
+}
+
+/** `SetVerdict` from the API -> state. Keyed loosely so theme.ts stays
+ *  independent of the API client's types. */
+export const SET_VERDICT_STATE: Record<string, StrengthState> = {
+  PURPLE: 'up',
+  ON_TARGET: 'flat',
+  UNDER: 'down',
+  UNRATED: 'unrated',
+};
+
+/** `ExerciseTrend` from the API -> state, plus the words on screen. */
+export const TREND_STATE: Record<string, { state: StrengthState; label: string }> = {
+  CONFIRMED: { state: 'up', label: 'UP' },
+  NO_CHANGE: { state: 'flat', label: 'HELD' },
+  DECLINE: { state: 'down', label: 'DOWN' },
+  FIRST_TIME: { state: 'unrated', label: 'FIRST TIME' },
 };
 
 export const leverStyle: Record<string, { color: string; label: string }> = {
