@@ -142,6 +142,12 @@ Poha row lists `kanda poha` and nothing else.
 
 ## Attribution and licensing — NEEDS HUMAN/LEGAL REVIEW
 
+> **The full note now lives in [`LICENSING_REVIEW.md`](LICENSING_REVIEW.md)**,
+> with a per-source row census, the exact UI locations attribution appears in,
+> and 21 numbered questions for a qualified reviewer. The summary below is
+> kept because it is what most readers of this file need.
+
+
 The app credits each food's data source per row: Open Food Facts (ODbL), USDA
 FoodData Central (public domain), or Trace's own curated dishes. Curated and
 user-created rows are never labelled as Open Food Facts, and an unrecognised

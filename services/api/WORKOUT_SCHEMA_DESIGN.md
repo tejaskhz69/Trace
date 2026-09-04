@@ -78,6 +78,7 @@ build it**. Each is called out again at the table that would carry it.
 | Cardio-aware volume | Depends on `ActivityDay` / HealthKit coverage that varies by user | none |
 | Deloading | Needs the fatigue model. Authority is settled: the system recommends, the user confirms (§10.2) | none — `deload_events` is deferred entirely |
 | Learned preferences | Requires a signal history that does not exist yet | `training_profiles.disliked_exercise_ids` covers the explicit case only |
+| Plateau response (levels 3-4, options 4-6) | Needs an approved adjustment cycle and readiness data neither of which the MVP collects (§14.9) | none - `plateau_events` is deferred entirely |
 
 `readiness_checkins` is created in the MVP migration despite readiness
 adjustment being deferred, because the check-in is worth **capturing** before
@@ -1256,3 +1257,244 @@ Consequences, stated plainly:
   will not contain it.
 - Nutrition data is unaffected in every case. `food_items` and `food_aliases`
   are never read, written, altered or dropped by this migration or its reverse.
+
+---
+
+## 14. Plateau detection and response
+
+**Status:** design only. Not implemented.
+
+A plateau claim is an assertion about someone's training, made by software, on
+evidence they did not curate. Get it wrong in the eager direction and the app
+tells a lifter who is progressing fine that they have stalled, then changes
+their programme. That is worse than saying nothing, so every rule below is
+biased toward **not** calling a plateau.
+
+### 14.1 Definition
+
+A **qualifying exposure** is one performed session that satisfies *all* of:
+
+| Condition | Why it is required |
+|---|---|
+| Same `exercise_id`, or one in a user-confirmed equivalence group | A different movement is a different data series |
+| Same equipment, and same `is_unilateral` | Dumbbell 20 kg and machine 20 kg are not comparable numbers |
+| At least ⌈0.8 × prescribed sets⌉ completed | Three sets of a prescribed five is not evidence about the load |
+| Not inside a deload window | A deload is a deliberate reduction, not a stall |
+| `pain_flag` false for that day | Handled by §14.3 level 4, never as an ordinary plateau |
+| Readiness not unusually poor, where recorded | Sleep/stress-driven bad sessions are noise, not trend |
+
+A **possible plateau** requires **≥ 3 qualifying exposures** spanning
+**≥ 21 and ≤ 35 days**, with no meaningful improvement in *any* tracked metric.
+
+**Tracked metrics**, all four, from existing data:
+
+1. **Top-set e1RM** — `strength.e1rm(weight, reps, rir)`, already RIR-adjusted.
+2. **Total volume load** — Σ(weight × reps) across working sets.
+3. **Reps at the working load** — the double-progression signal.
+4. **RIR at the working load** — same reps at lower RIR is improvement.
+
+**Meaningful improvement** reuses the band already in `strength.py`:
+`CONFIRM_BAND = 0.02`. A 2% rise in e1RM or 5% in volume load counts. Anything
+smaller is noise, and so is anything smaller in the other direction.
+
+### 14.2 When it is NOT a plateau
+
+Each of these returns a *named non-plateau status*, never a silent `false`:
+
+| Condition | Status returned |
+|---|---|
+| Fewer than 3 qualifying exposures | `insufficient_data` |
+| Reps rising at constant load | `progressing` |
+| e1RM or volume load rising past the band | `progressing` |
+| RIR falling at constant load and reps | `progressing` |
+| Exercise, equipment, tempo, ROM or unilateral flag changed | `not_comparable` |
+| Most prescribed sets missed | `incomplete_execution` |
+| Inside a deload window | `deload_period` |
+| `pain_flag` set | `safety_stop` (§14.3) |
+| Readiness markedly poor across the window | `confounded` |
+
+`not_comparable` is deliberately distinct from `insufficient_data`: one means
+"we cannot compare these", the other "we have not seen enough yet", and the
+user-facing sentence differs.
+
+### 14.3 Levels
+
+Escalation is staged. Nothing below level 2 is shown; nothing at any level
+changes a programme without confirmation.
+
+| Level | Trigger | System behaviour |
+|---|---|---|
+| **1 · Watch** | Stable, evidence still short of 3 exposures | Programme unchanged. Not surfaced as a plateau. Encourage consistent logging. |
+| **2 · Confirmed** | ≥ 3 qualifying exposures, no metric improved | Show the evidence, offer options, **ask**. Never apply silently. |
+| **3 · Persistent** | Still stalled after one *approved* adjustment cycle | Recommend structured variation, volume change, or deload review. Confirmation required. |
+| **4 · Safety stop** | `pain_flag`, concerning symptom text, or repeated form breakdown | Never recommend adding load. Advise stopping the movement and, where appropriate, seeking qualified professional guidance. |
+
+**Level 4 is not a medical judgement and must never read as one.** It says: we
+are not going to keep telling you to add weight. It does not name a condition,
+does not diagnose, and does not prescribe treatment. Wording needs the same
+review as the readiness copy (§10.8).
+
+### 14.4 Detector shape — pure, deterministic, explainable
+
+`services/plateau.py`, pure functions, no I/O — same as `programming.py`.
+
+**Inputs** (assembled by the router, passed in): exercise id and equivalence
+group · equipment · prescribed vs completed sets · reps · target and actual
+RIR · e1RM per session · volume load · session dates · deload flags · readiness
+and pain where recorded · user-confirmed substitutions.
+
+**Output** — one frozen dataclass, never a bare boolean:
+
+```
+PlateauAssessment
+  status                 insufficient_data | progressing | not_comparable |
+                         incomplete_execution | deload_period | confounded |
+                         watch | confirmed | persistent | safety_stop
+  confidence             0.0 – 1.0
+  evidence_sessions      [ (session_id, date, load, reps, rir, e1rm, volume) ]
+  baseline               the first qualifying exposure's metrics
+  current                the most recent qualifying exposure's metrics
+  stalled_metric         which of the four stopped moving (or None)
+  reason                 one plain sentence, user-safe
+  recommendation         see 14.5
+  requires_confirmation  bool — true for every action that alters a programme
+```
+
+`evidence_sessions` is the part that makes it explainable: the user sees the
+exact sessions considered, not a verdict.
+
+### 14.5 Response hierarchy
+
+Evaluated in order; the first applicable option is recommended, the rest
+offered.
+
+1. **Verify execution.** Were the sets completed? Reps and RIR present? Same
+   equipment and exercise? **And is the load a unit mix-up** — a jump that is
+   almost exactly ×2.2 or ÷2.2 is a lb/kg confusion, and `units.kg_to_lb`
+   already exists to spot it. Cheapest possible fix, so it is checked first.
+2. **Double progression.** If reps can still rise at target RIR, **keep the
+   load**. Only when the top of the range is hit on every prescribed set does
+   load increase, by the smallest available increment, with reps reset to the
+   bottom of the range.
+3. **Microloading.** Smallest real increment from `strength.WEIGHT_STEP_KG`,
+   with `units.round_to_step()` and `plates_from_total()` confirming the load
+   is actually loadable. **`bodyweight` and `band` have step 0.0** — there is no
+   smaller increment, so those fall through to option 4 rather than producing
+   an impossible prescription.
+4. **Adjust stimulus.** Confirmation required. One extra set within
+   `volume.py` landmarks; rep-range change; rest change; tempo; paused or
+   ROM variation; approved equivalent exercise; or reduced fatigue from
+   lower-priority work.
+5. **Deload review.** Recommended when fatigue or repeated failed sessions are
+   present. **Recommended, never applied** — §10.2. Records whether it was
+   system-recommended or user-initiated.
+6. **Exercise variation.** Only when the movement is technically sound but
+   persistently stalled. Creates a **new prescription**; the original exercise's
+   history is preserved untouched.
+
+### 14.6 Safety constraints
+
+Never automatically: add a large load increase; prescribe a 1RM attempt; change
+an exercise after one bad session; infer a medical condition; blame the user;
+alter a completed session; erase or rewrite `set_logs`; silently modify an
+active programme; treat pain as an ordinary plateau.
+
+Two are enforced by the schema rather than by care: `set_logs` and
+`workout_sessions` are append-only from programming's side, and
+`prescribed_exercises` writes go to *new* rows. The rest are enforced by
+`requires_confirmation` and by the detector returning a recommendation rather
+than performing one.
+
+### 14.7 User control
+
+The UI must show: the evidence that triggered it · the exact sessions
+considered · the available options · the trade-off of each · confirm/cancel ·
+and dismiss-or-postpone. A dismissed recommendation must not re-fire on the
+next session — postponement needs a cooldown, not a re-prompt.
+
+Target copy, matching the tone already used in the app:
+
+> Your dumbbell bench press has stayed at 20 kg for 4 qualifying sessions.
+> You are still completing 8–9 reps at about 2 RIR, so this looks like a
+> progression plateau rather than a failed session. We can keep the weight and
+> aim for 10 reps, try the smallest available increase, add one set, or review
+> a temporary variation. What would you like to do?
+
+Note what it does not do: it does not say "you have stalled", does not imply
+fault, and states the evidence before the conclusion.
+
+### 14.8 Data-model impact
+
+**Detection needs no new table.** Everything required is already recorded:
+`set_logs` (weight, reps, rir, e1rm, performed_at), `workout_sessions` (dates),
+`strength_snapshots` (weekly rollups), plus `prescribed_exercises` for what was
+*asked for* versus done. `strength.e1rm`, `strength.WEIGHT_STEP_KG`,
+`units.round_to_step` and `volume.build_report` cover the arithmetic. A derived
+detector is therefore the correct shape and is what this design proposes.
+
+**Persistence is needed for one thing only: the user's decision.** A
+recommendation shown, declined, and re-shown next session is a bug, and
+"declined" is not derivable from performed history. If and when levels 2–3 ship:
+
+```
+plateau_events   -- DEFERRED, not part of the MVP
+  id, user_id FK CASCADE, exercise_id FK RESTRICT
+  detected_at, window_start, window_end
+  status, confidence, stalled_metric
+  evidence            jsonb   session ids + metrics
+  recommended_action  text
+  user_decision       text    accepted | declined | postponed | null
+  decided_at, applied_at
+  initiated_by        text    system | user
+  UNIQUE (user_id, exercise_id, window_start)
+  INDEX (user_id, detected_at DESC)
+```
+
+**No existing performed-history table is altered.** Not `set_logs`, not
+`workout_sessions`, not `strength_snapshots`.
+
+### 14.9 MVP versus deferred
+
+| Scope | Item |
+|---|---|
+| **MVP** | The pure detector; levels 1–2 (watch, confirmed); response options 1–3 (verify execution, double progression, microloading); read-only assessment surfaced on the exercise screen |
+| **Deferred** | `plateau_events` persistence; level 3 persistent and level 4 safety stop; options 4–6 (stimulus adjustment, deload review, exercise variation); readiness-confounding (needs `readiness_checkins` data, §10.5); automatic programme revision |
+
+Levels 3–4 are deferred because both depend on data the MVP does not yet
+collect — an approved adjustment cycle, and readiness/pain check-ins.
+
+### 14.10 Test plan
+
+All pure — fixtures are lists of synthetic sessions, no database, no HTTP.
+Target file `tests/test_plateau.py`. Each row names the expected `status`, so a
+detector that returns the right answer for the wrong reason still fails.
+
+| # | Fixture | Expected `status` | What it protects |
+|---|---|---|---|
+| 1 | 2 qualifying exposures, flat | `insufficient_data` | The eager-detection failure. Two flat sessions is not a plateau |
+| 2 | Same load, reps 8 → 9 → 10 | `progressing` | Double progression in flight is progress, not a stall |
+| 3 | e1RM rising 3% across the window | `progressing` | Above `CONFIRM_BAND` counts |
+| 4 | e1RM rising 0.5% | `confirmed` | Below the band is noise, not improvement |
+| 5 | 3 exposures, all four metrics flat | `confirmed` | The core positive case |
+| 6 | 4 exposures over 28 days, flat | `confirmed` | The four-week case |
+| 7 | 3 exposures but 2 of 4 sets completed | `incomplete_execution` | Not evidence about the load |
+| 8 | Window overlapping a deload | `deload_period` | A deliberate reduction is not a stall |
+| 9 | Exercise id changes mid-window | `not_comparable` | Different movement, different series |
+| 10 | Same exercise, equipment dumbbell → machine | `not_comparable` | 20 kg is not 20 kg |
+| 11 | Readiness poor across the window | `confounded` | Bad sleep is noise |
+| 12 | `pain_flag` set on any exposure | `safety_stop` | Pain is never an ordinary plateau |
+| 13 | Reps below top of range at target RIR | recommendation = `double_progression`, load unchanged | Never add load while reps can still rise |
+| 14 | Top of range hit on every set, dumbbell | recommendation = `microload`, +2.0 kg | Smallest **real** increment, from `WEIGHT_STEP_KG` |
+| 15 | Top of range hit, bodyweight (step 0.0) | recommendation ≠ `microload` | No smaller increment exists; must fall through, not emit an impossible load |
+| 16 | Persistent after an approved cycle | recommendation = `adjust_stimulus`, `requires_confirmation` true | Volume change needs consent |
+| 17 | User declined previously | no re-prompt inside the cooldown | A declined recommendation re-firing is a bug |
+| 18 | User accepts a variation | new prescription proposed; original exercise history untouched | Variation must not rewrite history |
+| 19 | Any assessment | input `set_logs` fixtures unchanged after the call | Detector is read-only by construction |
+| 20 | Same input twice | identical output | Determinism |
+| 21 | Any `confirmed` result | recommended load increase ≤ one `WEIGHT_STEP_KG` | No large automatic jump |
+| 22 | Load jumps ×2.2 between sessions | `verify_execution`, flagged as a possible lb/kg mix-up | Cheapest fix checked first |
+| 23 | Every status value | `reason` is non-empty and contains no diagnostic language | No medical claims, asserted the way the form-cue tests do |
+
+Tests 15, 21 and 23 are the ones worth writing first: an impossible load, a
+large automatic jump, and medical-sounding copy are the three failures that
+would do real harm rather than merely be wrong.
