@@ -25,6 +25,23 @@ export type Attributable = {
   source?: string | null;
   source_licence?: string | null;
   verification_tier?: number | null;
+  /**
+   * Server-composed name and credit sentence, from
+   * `services/api/app/services/licensing.py`.
+   *
+   * WHY THESE ARE PREFERRED OVER THE TABLES BELOW
+   * The local tables are a hand-maintained mirror of the server's mapping,
+   * and mirrors drift: `nutritionix` was added to the API and never here, so
+   * metered rows rendered "SOURCE UNKNOWN" and dropped a credit we are
+   * contractually obliged to show. When the server sends these, they win.
+   * The tables stay as the fallback for responses that predate the fields.
+   *
+   * `attribution: null` from the server is MEANINGFUL, not missing: it is how
+   * a curated or user-created row says "no third party to credit". It is only
+   * treated as absent when `source_name` is absent too.
+   */
+  source_name?: string | null;
+  attribution?: string | null;
 };
 
 export type Attribution = {
@@ -48,14 +65,25 @@ const NONE: Attribution = {
   required: false,
 };
 
-/** Display names, keyed by the `source` values the API actually returns. */
+/**
+ * Display names, keyed by the `source` values the API actually returns.
+ *
+ * FALLBACK ONLY — the server sends `source_name` now. This must stay
+ * exhaustive over the `FoodSource` enum in `services/api/app/models.py`
+ * anyway, because an old client talking to a new server has nothing else.
+ */
 const SOURCE_NAMES: Record<string, string> = {
   openfoodfacts: 'Open Food Facts',
   usda_fdc: 'USDA FoodData Central',
   ifct: 'Indian Food Composition Tables',
+  nutritionix: 'Nutritionix',
+  ai_estimated: 'Trace estimate',
   curated: 'Trace',
   user: 'You',
 };
+
+/** Sources that are ours, so there is nobody else to credit. */
+const OURS = new Set(['curated', 'user', 'ai_estimated']);
 
 /** Licence shorthand -> human phrase. Only what the database records. */
 const LICENCE_PHRASES: Record<string, string> = {
@@ -78,6 +106,25 @@ export function attributionFor(item: Attributable | null | undefined): Attributi
   if (!item || !item.source) return NONE;
 
   const source = String(item.source);
+
+  // SERVER WINS. `source_name` present means this response carries composed
+  // attribution, so render it verbatim rather than re-deriving it from a
+  // table that may be a release behind.
+  if (item.source_name) {
+    const sentence = item.attribution ?? null;
+    if (!sentence) {
+      // A named source with no credit sentence is our own data. Never tag it.
+      return { ...NONE, licence: item.source_licence ?? null };
+    }
+    return {
+      tag: item.source_name.toUpperCase(),
+      detail: sentence,
+      licence: item.source_licence ?? null,
+      accessibilityLabel: sentence,
+      required: true,
+    };
+  }
+
   const name = SOURCE_NAMES[source];
 
   // An unrecognised source is reported as unknown rather than guessed at.
@@ -91,7 +138,7 @@ export function attributionFor(item: Attributable | null | undefined): Attributi
     };
   }
 
-  if (source === 'curated' || source === 'user') {
+  if (OURS.has(source)) {
     return { ...NONE, licence: item.source_licence ?? null };
   }
 

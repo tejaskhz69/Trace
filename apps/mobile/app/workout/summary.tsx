@@ -36,7 +36,16 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Button, Label, Panel, Rule } from '../../src/components/instrument';
 import { api, type ExerciseTrend, type SessionSummary } from '../../src/lib/api';
 import { useAccent, useSurfaces } from '../../src/state/useTheme';
-import { motion, palette, radius, space, type } from '../../src/theme';
+import {
+  motion,
+  palette,
+  radius,
+  space,
+  strengthStateColor,
+  SET_VERDICT_STATE,
+  TREND_STATE,
+  type,
+} from '../../src/theme';
 
 export default function SummaryScreen() {
   const { session } = useLocalSearchParams<{ session: string }>();
@@ -111,54 +120,66 @@ export default function SummaryScreen() {
       {/* ------------------------------------------------------ the lifts */}
       <Animated.View entering={FadeInDown.duration(motion.base).delay(80)}>
         <Panel label="Lifts" padded={false}>
-          {data.exercises.map((e, i) => (
-            <View key={e.exercise_id}>
-              {i > 0 ? <Rule /> : null}
-              <View style={styles.liftRow}>
-                <View style={styles.liftMain}>
-                  <View style={styles.liftHead}>
-                    <Text style={styles.liftIndex}>
-                      {String(i + 1).padStart(2, '0')}
+          {data.exercises.map((e, i) => {
+            // Both estimates are already in the payload; the movement between
+            // them is not, and it is the number a lifter can act on.
+            const deltaKg =
+              e.best_e1rm != null && e.previous_e1rm != null
+                ? e.best_e1rm - e.previous_e1rm
+                : null;
+            return (
+              <View key={e.exercise_id}>
+                {i > 0 ? <Rule /> : null}
+                <View style={styles.liftRow}>
+                  <View style={styles.liftMain}>
+                    <View style={styles.liftHead}>
+                      <Text style={styles.liftIndex}>
+                        {String(i + 1).padStart(2, '0')}
+                      </Text>
+                      <Text style={styles.liftName} numberOfLines={1}>
+                        {e.name}
+                      </Text>
+                      <TrendChip trend={e.trend} deltaKg={deltaKg} />
+                    </View>
+                    <Text style={styles.liftMeta}>
+                      {e.sets} set{e.sets === 1 ? '' : 's'} · top {e.top_weight_kg} kg ·{' '}
+                      {Math.round(e.volume_kg).toLocaleString('en-US')} kg volume
                     </Text>
-                    <Text style={styles.liftName} numberOfLines={1}>
-                      {e.name}
+                    <ComparisonLine
+                      trend={e.trend}
+                      deltaKg={deltaKg}
+                      deltaPct={e.delta_pct}
+                    />
+                    {/* One pip per working set, coloured by its verdict, from
+                        the same map the chip above uses. The shape of a
+                        session is visible before any number is read. */}
+                    <View style={styles.pips}>
+                      {e.set_verdicts.map((v, k) => (
+                        <View
+                          key={k}
+                          style={[
+                            styles.pip,
+                            {
+                              backgroundColor: strengthStateColor(
+                                SET_VERDICT_STATE[v] ?? 'unrated',
+                                accent.brand,
+                              ),
+                            },
+                          ]}
+                        />
+                      ))}
+                    </View>
+                  </View>
+                  <View style={styles.liftRight}>
+                    <Text style={styles.liftE1rm}>
+                      {e.best_e1rm ? `${e.best_e1rm}` : '—'}
                     </Text>
-                    <TrendChip trend={e.trend} delta={e.delta_pct} />
+                    <Text style={styles.liftE1rmUnit}>KG EST.</Text>
                   </View>
-                  <Text style={styles.liftMeta}>
-                    {e.sets} set{e.sets === 1 ? '' : 's'} · top {e.top_weight_kg} kg ·{' '}
-                    {Math.round(e.volume_kg).toLocaleString('en-US')} kg volume
-                  </Text>
-                  {/* One pip per working set, coloured by its verdict. The
-                      shape of a session is visible before any number is read. */}
-                  <View style={styles.pips}>
-                    {e.set_verdicts.map((v, k) => (
-                      <View
-                        key={k}
-                        style={[
-                          styles.pip,
-                          {
-                            backgroundColor:
-                              v === 'PURPLE'
-                                ? accent.brand
-                                : v === 'UNDER'
-                                  ? palette.warn
-                                  : palette.textGhost,
-                          },
-                        ]}
-                      />
-                    ))}
-                  </View>
-                </View>
-                <View style={styles.liftRight}>
-                  <Text style={styles.liftE1rm}>
-                    {e.best_e1rm ? `${e.best_e1rm}` : '—'}
-                  </Text>
-                  <Text style={styles.liftE1rmUnit}>KG EST.</Text>
                 </View>
               </View>
-            </View>
-          ))}
+            );
+          })}
           {data.exercises.length === 0 ? (
             <Text style={styles.empty}>No sets were logged in this session.</Text>
           ) : null}
@@ -201,9 +222,22 @@ export default function SummaryScreen() {
 
       {/* --------------------------------------------------------- legend */}
       <View style={styles.legend}>
-        <LegendRow color={accent.brand} text="Raised your estimated max" />
-        <LegendRow color={palette.textGhost} text="Held it" />
-        <LegendRow color={palette.warn} text="Below your recent best" />
+        <LegendRow
+          color={strengthStateColor('up', accent.brand)}
+          text="Raised your estimated max"
+        />
+        <LegendRow
+          color={strengthStateColor('flat', accent.brand)}
+          text="Held it — no change either way"
+        />
+        <LegendRow
+          color={strengthStateColor('down', accent.brand)}
+          text="Below your recent best"
+        />
+        <LegendRow
+          color={strengthStateColor('unrated', accent.brand)}
+          text="No history yet — nothing to compare"
+        />
       </View>
 
       <Text style={styles.caveat}>
@@ -234,31 +268,85 @@ function Total({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+/**
+ * Status plus the movement, in kilograms.
+ *
+ * WHY KILOGRAMS AND NOT THE PERCENTAGE
+ * The chip used to read "+2%". Two percent of what? A percentage of an
+ * estimated one-rep max is a number nobody can act on — it does not tell you
+ * what to put on the bar next week, and it makes a 2 kg move on a lateral
+ * raise look identical to a 2.8 kg move on a squat. Kilograms are the unit the
+ * gym is actually calibrated in. The percentage still earns its place on the
+ * comparison line below, where it does the one job it is good at: making two
+ * lifts of very different absolute loads comparable.
+ *
+ * Derived on the client from `best_e1rm - previous_e1rm`, both of which are
+ * already in the payload. No API change, and nothing is shown that the server
+ * did not measure: when either estimate is missing there is no comparison to
+ * draw and the chip says so instead of rendering a zero.
+ */
 function TrendChip({
   trend,
-  delta,
+  deltaKg,
 }: {
   trend: ExerciseTrend;
-  delta: number | null;
+  deltaKg: number | null;
 }) {
   const accent = useAccent();
-  const map: Record<ExerciseTrend, { fg: string; text: string }> = {
-    CONFIRMED: { fg: accent.brand, text: 'CONFIRMED' },
-    NO_CHANGE: { fg: palette.textFaint, text: 'NO CHANGE' },
-    DECLINE: { fg: palette.warn, text: 'DOWN' },
-    FIRST_TIME: { fg: palette.textGhost, text: 'FIRST TIME' },
-  };
-  const t = map[trend];
+  const t = TREND_STATE[trend];
+  const fg = strengthStateColor(t.state, accent.brand);
   return (
     <View style={styles.trendChip}>
-      <Text style={[styles.trendText, { color: t.fg }]}>{t.text}</Text>
-      {delta != null ? (
-        <Text style={[styles.trendDelta, { color: t.fg }]}>
-          {delta > 0 ? '+' : ''}
-          {delta}%
+      <Text style={[styles.trendText, { color: fg }]}>{t.label}</Text>
+      {deltaKg != null && Math.abs(deltaKg) >= 0.05 ? (
+        <Text style={[styles.trendDelta, { color: fg }]}>
+          {deltaKg > 0 ? '+' : '−'}
+          {Math.abs(deltaKg).toFixed(1)} KG
         </Text>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * The sentence that says what "CONFIRMED" was measured against.
+ *
+ * The screen has always compared each lift to its best estimate in the last
+ * six weeks, excluding this session — it is in this file's docstring and in
+ * `REFERENCE_WINDOW_DAYS = 42` on the server. It was never on screen. A trend
+ * badge whose baseline is invisible is a verdict without evidence, which is
+ * the one thing this product is not supposed to ship.
+ */
+function ComparisonLine({
+  trend,
+  deltaKg,
+  deltaPct,
+}: {
+  trend: ExerciseTrend;
+  deltaKg: number | null;
+  deltaPct: number | null;
+}) {
+  if (trend === 'FIRST_TIME') {
+    return (
+      <Text style={styles.liftCompare}>
+        First time logged — nothing to compare against yet.
+      </Text>
+    );
+  }
+  if (deltaKg == null || Math.abs(deltaKg) < 0.05) {
+    return (
+      <Text style={styles.liftCompare}>
+        Level with your best estimate of the last 6 weeks.
+      </Text>
+    );
+  }
+  const verb = deltaKg > 0 ? 'above' : 'below';
+  const pct = deltaPct != null ? ` (${deltaPct > 0 ? '+' : ''}${deltaPct}%)` : '';
+  return (
+    <Text style={styles.liftCompare}>
+      {Math.abs(deltaKg).toFixed(1)} kg {verb} your best of the last 6 weeks
+      {pct}.
+    </Text>
   );
 }
 
@@ -294,6 +382,10 @@ const styles = StyleSheet.create({
   liftIndex: { ...type.labelSm, color: palette.textGhost },
   liftName: { ...type.heading, color: palette.text, flexShrink: 1 },
   liftMeta: { ...type.labelSm, color: palette.textFaint },
+  /* The baseline behind the badge. Sentence case, not a tracked label: it is
+     a claim about evidence, and tracked caps read as a readout rather than as
+     something to be read. */
+  liftCompare: { ...type.caption, color: palette.textDim, marginTop: space.xxs },
   pips: { flexDirection: 'row', gap: 3, marginTop: 2 },
   pip: { width: 14, height: 3, borderRadius: 2 },
   liftRight: { alignItems: 'flex-end' },

@@ -60,6 +60,19 @@ const DATA_SOURCES: ReadonlyArray<{ name: string; note: string }> = [
     name: 'Trace',
     note: 'Curated dishes composed from published food composition tables and standard recipes.',
   },
+  // The two below produce rows that reach a user's log exactly like the three
+  // above, so leaving them off made this panel a partial answer to the
+  // question it claims to answer. They are listed unconditionally rather than
+  // only when the account has such a row: the panel describes where Trace's
+  // food data comes from, not an audit of one person's history.
+  {
+    name: 'Nutritionix',
+    note: 'Some packaged products are looked up in a commercial database and used under licence.',
+  },
+  {
+    name: 'Photo estimates',
+    note: 'Foods identified from a photo are estimates produced by Trace, shown with a range rather than a single figure.',
+  },
 ];
 
 function initials(name: string | null, email: string): string {

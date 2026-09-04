@@ -47,7 +47,16 @@ import {
 } from '../../src/components/instrument';
 import { api, type NextSet, type SetResult, type SetVerdict } from '../../src/lib/api';
 import { useAccent, useSurfaces } from '../../src/state/useTheme';
-import { motion, palette, radius, space, type } from '../../src/theme';
+import {
+  motion,
+  palette,
+  radius,
+  space,
+  strengthStateColor,
+  strengthStateTint,
+  SET_VERDICT_STATE,
+  type,
+} from '../../src/theme';
 
 /** How many reps in reserve the lifter can claim. 5+ collapses the tail. */
 const RIR_CHOICES = [0, 1, 2, 3, 4, 5] as const;
@@ -318,16 +327,22 @@ function VerdictChip({ verdict }: { verdict: SetVerdict | null }) {
   const accent = useAccent();
   if (!verdict || verdict === 'UNRATED') return null;
 
-  const tone =
-    verdict === 'PURPLE'
-      ? { bg: accent.brandTint, fg: accent.brand, text: 'NEW BEST' }
-      : verdict === 'UNDER'
-        ? { bg: 'rgba(194,135,31,0.14)', fg: palette.warn, text: 'UNDER' }
-        : { bg: palette.glass, fg: palette.textDim, text: 'ON TARGET' };
+  const state = SET_VERDICT_STATE[verdict] ?? 'unrated';
+  const text =
+    state === 'up' ? 'NEW BEST' : state === 'down' ? 'UNDER' : 'HELD';
 
   return (
-    <View style={[styles.chip, { backgroundColor: tone.bg }]}>
-      <Text style={[styles.chipText, { color: tone.fg }]}>{tone.text}</Text>
+    <View
+      style={[
+        styles.chip,
+        { backgroundColor: strengthStateTint(state, accent.brandTint) },
+      ]}
+    >
+      <Text
+        style={[styles.chipText, { color: strengthStateColor(state, accent.brand) }]}
+      >
+        {text}
+      </Text>
     </View>
   );
 }
