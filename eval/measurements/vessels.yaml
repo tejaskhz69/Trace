@@ -1,0 +1,60 @@
+# Vessel capacities and measured contents.
+#
+# Measured 2026-09-05 by Tejas on a HealthSense kitchen scale (1 g steps,
+# tare). Provisional noise floor +/-1 g -- see README.md. Every figure below
+# inherits it.
+#
+# ---------------------------------------------------------------------------
+# THE FINDING THAT MATTERS
+#
+# Volume x density works for POURABLE foods that self-level -- dal, milk,
+# water. For MOUNDABLE foods -- curd, rice, sabzi -- it UNDERESTIMATES,
+# because water only ever fills a vessel to level while a served portion sits
+# heaped above the rim.
+#
+# Measured here: katori_A holds 126 ml to the rim, but took 145 g of curd.
+# That implies an apparent density of 1.15 g/ml. Nothing dairy is 1.15 --
+# curd is ~1.03-1.06. The excess is the mound, and it is ~15% of the portion.
+#
+# Consequence: Trace CANNOT derive katori weights from a single capacity
+# figure. A vessel needs either a level/heaped distinction, or measured
+# weights per food. See the note on serving_sizes in README.md.
+# ---------------------------------------------------------------------------
+
+katori_A:
+  empty_g: 60
+  water_ml: 126            # filled level to the rim = true capacity
+  fill_style_note: >
+    water_ml is a LEVEL measurement. Contents below were served as a person
+    would actually serve them, which for curd and rice means heaped.
+  contents:
+    dal_cooked_g: 130      # density 1.03 g/ml -- pourable, self-levels
+    rice_cooked_cold_g: 100    # density 0.79 g/ml, refrigerated overnight
+    curd_g: 145            # apparent density 1.15 g/ml -- HEAPED above rim
+  derived:
+    # NOT a density. This is grams-as-served divided by LEVEL capacity, so it
+    # folds the mound into a number wearing density's units. Anything that
+    # reads it as g/ml will be wrong. Renamed 2026-09-06 for that reason.
+    curd_g_per_level_ml_as_served: 1.15
+    curd_true_density_g_per_ml: [1.03, 1.06]   # reference range, not measured
+    curd_mound_excess_fraction: 0.15           # 1.15 / ~1.045, rounded
+    # CAUTION -- ONE OBSERVATION, NOT A RULE.
+    # Rice in the SAME vessel showed no mound excess at all:
+    #   126 ml x 0.79 g/ml = 99.5 g   vs   100 g measured   (exact)
+    # So curd mounds and rice did not. Do not generalise this to "moundable
+    # foods" -- the dataset contains one food that does and one that does not.
+
+glass:
+  empty_g: 260
+  normal_pour_ml: 240
+  brim_ml: 290
+  derived:
+    milk_1_glass_g: 247    # 240 ml x 1.03 g/ml -- milk is pourable, so this
+                           # derivation is sound in a way the curd one is not
+
+bowl_ikea_steel:
+  empty_g: 76
+  water_ml: null           # NOT MEASURED. Left null deliberately -- do not
+                           # estimate it from the contents below.
+  contents:
+    penne_dry_g: 112

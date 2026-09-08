@@ -1,0 +1,57 @@
+# D'lecta Mozzarella Shreds -- a label-tier reference row.
+#
+# Panel transcribed 2026-09-05 by Tejas from the physical pack. Pack weighed
+# on a HealthSense kitchen scale (1 g steps, tare).
+#
+# WHY THIS ROW EXISTS
+# The August sweep found roughly 1 in 3 Indian packaged panels carrying at
+# least one implausible value (sample of 55). This one is clean. It is kept
+# as a validator fixture for a panel that SHOULD pass -- a test suite that
+# only contains failures cannot tell a working validator from a paranoid one.
+
+product: D'lecta Mozzarella Shreds
+manufacturer: Dlecta Foods Pvt Ltd, Umbre
+truth_tier: label
+
+pack:
+  declared_g: 140            # pack states "7 serves per pack", 20 g per serve
+  measured_g: 138            # second weighing gave 139 g
+  measurements_g: [138, 139]
+  accuracy_vs_declared: -1.4%   # using 138; -0.7% using 139
+  note: >
+    Within ~1% of declared, which is the basis for the provisional
+    instrument-accuracy claim in README.md. Note this is a check of the
+    SCALE against a declared pack weight, not a check of the pack -- either
+    could be the source of the 1-2 g difference and this measurement cannot
+    separate them.
+
+storage: below -18C
+
+per_100g:
+  energy_kcal: 284
+  protein_g: 24.5
+  carbohydrates_g: 0.5
+  total_sugar_g: 0.5
+  added_sugar_g: 0
+  total_fat_g: 20.5
+  saturated_fat_g: 12.9
+  trans_fat_g: 0.73
+  cholesterol_mg: 64.62
+  sodium_mg: 640
+
+# Atwater reconciliation, by hand:
+#   24.5 x 4  +  0.5 x 4  +  20.5 x 9
+#   =  98     +  2        +  184.5      =  284.5 kcal   vs 284 declared
+#   discrepancy 0.5 kcal = 0.2%
+#
+# Macro mass: 24.5 + 0.5 + 20.5 = 45.5 g per 100 g. The remaining 54.5 g is
+# water and ash, which is right for mozzarella at ~50% moisture.
+
+barcode: null                # NOT LEGIBLE in the photograph
+ingredients: null            # NOT LEGIBLE in the photograph
+# Both left null deliberately. Do NOT fill these from Open Food Facts --
+# OFF is the source whose defect rate this project is trying to measure
+# against, and importing from it would make this row circular.
+
+measured_by: Tejas
+measured_on: 2026-09-05

@@ -1,0 +1,57 @@
+# Measured preparation yields: dry weight in, cooked weight out.
+#
+# Measured 2026-09-05 by Tejas, HealthSense kitchen scale (1 g steps, tare).
+# Noise floor +/-1 g. At these magnitudes (100-250 g) that is <1% and does
+# not affect the ratio meaningfully.
+#
+# These slot alongside the yields already encoded in
+# services/api/app/services/preparation.py, which derives finished weight by
+# mass balance (dry mix + added ingredients - evaporation) rather than from a
+# stated ratio.
+
+pasta_penne_dry_to_cooked:
+  dry_g: 112
+  cooked_drained_g: 245
+  yield: 2.188
+  water_absorbed_g: 133
+  note: >
+    Firm / al dente. A softer boil yields more -- the pasta keeps absorbing
+    until it disintegrates, so this ratio is a point on a curve, not a
+    constant. Treat 2.1-2.4 as the plausible band for "cooked normally".
+  measured_by: Tejas
+  measured_on: 2026-09-05
+
+# ---------------------------------------------------------------------------
+# For comparison, the yields already in preparation.py (NOT measured here --
+# these come from pack statements and are recorded for context only):
+#   upma       4.32x   MTR, 1 cup mix : 2.5 cups boiling water
+#   rice idli  3.35x   Gits, ~11 g dry mix per idli, ~36 g finished
+#   dosa       2.16x   Gits, 200 g -> 8 dosas
+# ---------------------------------------------------------------------------
+
+# HOW THIS FITS THE EXISTING STRUCTURE
+#
+# It fits with NO new field and NO code change. PreparationSpec models a dish
+# as dry_mix_g + added ingredients, then applies evaporation_fraction. For
+# boiled-and-drained pasta:
+#
+#   dry_mix_g = 112
+#   added     = [AddedIngredient("water", 133, user_adjustable=False,
+#                                "absorbed from the boil; excess is drained")]
+#   evaporation_fraction = 0.0
+#   -> wet_weight = 245, dilution_factor() = 2.188   [exact match]
+#
+# "water" is already a known key in INGREDIENTS, so nothing is skipped.
+#
+# ONE SEMANTIC GAP, worth a small addition:
+# Transform has steamed / griddled / deep_fried / simmered / no_cook. None
+# describes boil-in-excess-then-drain. `simmered` is the closest and would
+# work arithmetically (evaporation 0), but its comment says "upma, payasam,
+# sambar -- some evaporation", which is a different physical process:
+# there the water is measured in and stays; here it is unmeasured, absorbed,
+# and the remainder poured away.
+#
+# Recommendation: add Transform.boiled_drained. It changes no arithmetic --
+# it makes the model honest about which process produced the number, and it
+# gives a place to hang the "yield varies with boil time" caveat that does
+# NOT apply to a measured-water dish like upma.

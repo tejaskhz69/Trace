@@ -1,0 +1,54 @@
+# Olive oil spray: mass per spray.
+#
+# Measured 2026-09-05 by Tejas, HealthSense kitchen scale (1 g steps, tare).
+#
+# BOTH RUNS ARE KEPT ON PURPOSE. run_1 is a worked example of a measurement
+# taken at the instrument's resolution limit, and it is wrong by a factor of
+# about three. The eval methodology document should cite it: it is the
+# clearest demonstration in this dataset of why the +/-1 g noise floor is not
+# a footnote.
+
+olive_oil_spray:
+
+  run_1:
+    sprays: 6
+    delta_g: 1
+    method: bottle_before_after
+    reliability: poor
+    implied_g_per_spray: 0.167
+    why_poor: >
+      A 1 g reading on a 1 g scale carries +/-1 g of uncertainty -- the true
+      delta is somewhere in 0-2 g, so the per-spray figure is anywhere from
+      0 to 0.33 g. That is +/-50% at best, and the sign of the error is not
+      knowable. Weighing the bottle also measures the bottle, which is heavy
+      relative to the quantity removed: a 300 g bottle losing 1 g is a 0.3%
+      change against an instrument that resolves 0.7%.
+
+  run_2:
+    sprays: 40
+    mass_g: 6
+    method: sprayed_into_tared_bowl
+    reliability: good
+    implied_g_per_spray: 0.15
+    why_good: >
+      Spraying into a tared bowl measures only the oil. 40 sprays puts the
+      total at 6 g, where +/-1 g is +/-17% on the total and about +/-8% once
+      spread across the count. Increasing the spray count is the whole trick:
+      the absolute error stays at 1 g while the signal grows.
+
+  accepted:
+    g_per_spray: 0.15
+    kcal_per_spray: 1.35        # 0.15 g x 9 kcal/g
+    from_run: run_2
+
+  reference:
+    level_tsp_poured_g: 4.6
+    level_tsp_kcal: 41
+    sprays_equivalent_to_1_tsp: 31
+    note: >
+      A sprayed pan is roughly one thirty-first of a poured teaspoon, or about
+      one fourteenth of a tablespoon. No user can eyeball that difference, and
+      no existing app asks. See the product proposal in README.md.
+
+  measured_by: Tejas
+  measured_on: 2026-09-05

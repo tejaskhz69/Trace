@@ -1,0 +1,91 @@
+# fo-009 white sauce pasta -- partial unblock, 2026-09-05.
+#
+# STATUS: STILL BLOCKED. Do not promote to a scorable row.
+
+row: fo-009-white-sauce-pasta-homemade.jpg
+truth_tier_target: recipe
+status: blocked
+blocked_on: [cheese_quantity, white_sauce_composition, masala_packet]
+
+# ---------------------------------------------------------------------------
+resolved:
+  pasta:
+    cooked_weighed_g: 399        # tared bowl, weighed at the time
+    yield_used: 2.188            # measured 2026-09-05, see preparation_factors.yaml
+    dry_derived_g: 182
+    dry_band_g: [166, 190]       # at yields 2.4 and 2.1 respectively
+    kcal_per_g_dry: 3.55
+    kcal_point: 648
+    kcal_band: [590, 675]
+    confidence: derived-from-measurement
+    note: >
+      A BAND, not a point. The 399 g was measured, but the yield that converts
+      it back to dry weight was measured on a different day with a different
+      pan and a different sense of "done". That plate may have been boiled
+      longer or drained harder.
+
+# ---------------------------------------------------------------------------
+not_recoverable:
+  cheese:
+    reported_as:
+      - {value: "two handfuls", when: "at the time", source: recall}
+      - {value: "roughly 20-25 g, or half a handful", when: "weeks later", source: recall}
+    conflict_factor: [2, 4]      # the two accounts differ by 2-4x
+    resolution: NONE
+    truth_tier_if_entered: estimate
+    decision: >
+      DO NOT ENTER 20-25 g AS TRUTH. Both figures are recall, not measurement,
+      and they disagree by a factor of two to four. `estimate` tier is refused
+      by the eval by design -- entering either number would launder a guess
+      into the ground-truth set, which is the exact failure the placeholder
+      photographs already taught us to look for.
+
+  white_sauce:
+    components: [butter, flour, milk]
+    quantities: unknown
+    note: Never weighed. Not recoverable from memory at any useful precision.
+
+  masala_packet:
+    declared_g: 6
+    panel: unknown
+    note: Whole sachet used, but its nutrition panel was not captured.
+
+# ---------------------------------------------------------------------------
+# THE RE-COOK PROCEDURE
+#
+# This converts fo-009 from a blocked row into a clean recipe-tier row. Every
+# line is a weighing. Nothing below is optional -- the reason this row is
+# blocked is that three of these were skipped the first time.
+recook_procedure:
+  before_cooking:
+    - "Tare the bowl. Weigh DRY pasta into it. Record grams."
+    - "Weigh the butter before it goes in the pan. Record grams."
+    - "Weigh the flour. Record grams."
+    - "Weigh the milk (tare a jug, pour, record). Millilitres are not grams."
+    - "Weigh the cheese. Not a handful -- the scale. Photograph its panel."
+    - "Weigh the masala sachet, or photograph its panel if sealed."
+    - "Weigh any oil, or if sprayed, COUNT the sprays (0.15 g each)."
+  after_cooking:
+    - "Weigh the whole pot, tared. This is the batch total."
+    - "Weigh the served portion, tared. This gives plate_fraction honestly."
+    - "Photograph the plated portion the way a user would -- one shot, phone
+       held naturally, whatever light you are eating in."
+  then:
+    - "truth_kcal = sum of weighed inputs x their panels, x plate_fraction."
+    - "Every input either has a panel or a USDA figure. No handfuls."
+  estimated_effort: "About four extra minutes over cooking it normally."
+
+# ---------------------------------------------------------------------------
+# THIS IS PRODUCT EVIDENCE, NOT JUST A BLOCKED ROW
+#
+# The person who built this tracker, who knew the measurement mattered, who
+# had a scale in the kitchen, could not recall a cheese portion within a
+# factor of two, weeks later.
+#
+# If retrospective logging fails for the most motivated possible user on the
+# single input they most needed, it is not a viable input for anyone. The
+# implication is not "train users to remember better" -- it is that the
+# product must ask AT LOG TIME, while the packet is still on the counter.
+#
+# This belongs in the eval methodology document as an argument, with this row
+# as the worked example.

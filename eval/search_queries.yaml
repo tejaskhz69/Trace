@@ -1,0 +1,126 @@
+# Search baseline -- fifty queries a real Indian user would type.
+#
+# DRAFT. The labels are judgement calls and they are the user's to make.
+# Nothing has been scored against these yet.
+#
+# Each entry:
+#   q          what gets typed
+#   shape      dish | brand   -- dish-shaped queries are where packaged
+#              products outranking generic dishes is the defect we are
+#              trying to measure (partition pollution)
+#   expect     the food that should rank first
+#   equiv      other names that MUST resolve to the same food
+#   note       why this query is in the set
+#
+# A query can fail two ways and they need opposite fixes:
+#   COVERAGE  the right answer is not in the catalogue at all
+#   RANKING   the right answer is there but something else outranks it
+# With 347 curated Indian rows against 565,814 Open Food Facts rows, I expect
+# coverage to dominate. That is a finding about the catalogue, not the ranker.
+
+queries:
+
+  # -- Colloquial equivalents that must resolve together -------------------
+  - {q: "roti",            shape: dish,  expect: "Roti (whole wheat)",
+     equiv: [chapati, phulka, chapathi],
+     note: "The canonical equivalence test. Three names, one food."}
+  - {q: "chapati",         shape: dish,  expect: "Roti (whole wheat)",
+     equiv: [roti, phulka]}
+  - {q: "phulka",          shape: dish,  expect: "Roti (whole wheat)",
+     equiv: [roti, chapati],
+     note: "Least common of the three; most likely to miss."}
+  - {q: "curd",            shape: dish,  expect: "Curd (dahi)",
+     equiv: [dahi, yoghurt, yogurt, thayir]}
+  - {q: "dahi",            shape: dish,  expect: "Curd (dahi)",
+     equiv: [curd, yoghurt]}
+  - {q: "brinjal",         shape: dish,  expect: "Brinjal (baingan)",
+     equiv: [baingan, aubergine, eggplant, vangi],
+     note: "Four regional names plus two English ones."}
+  - {q: "ladies finger",   shape: dish,  expect: "Okra (bhindi)",
+     equiv: [bhindi, okra, vendakkai],
+     note: "Indian English. No Western catalogue carries this phrasing."}
+  - {q: "capsicum",        shape: dish,  expect: "Capsicum (bell pepper)",
+     equiv: [bell pepper, shimla mirch]}
+  - {q: "coriander",       shape: dish,  expect: "Coriander leaves (dhania)",
+     equiv: [dhania, cilantro, kothamalli]}
+  - {q: "curd rice",       shape: dish,  expect: "Curd rice (thayir sadam)",
+     equiv: [thayir sadam, bagala bath, mosaru anna]}
+
+  # -- Core dishes, dish-shaped -------------------------------------------
+  - {q: "dal",             shape: dish,  expect: "Dal (cooked, generic)",
+     equiv: [daal, dhal, dal tadka]}
+  - {q: "dal tadka",       shape: dish,  expect: "Dal tadka"}
+  - {q: "rajma",           shape: dish,  expect: "Rajma (kidney bean curry)",
+     equiv: [rajma chawal]}
+  - {q: "chole",           shape: dish,  expect: "Chole (chickpea curry)",
+     equiv: [chana masala, chhole]}
+  - {q: "idli",            shape: dish,  expect: "Idli (steamed)",
+     equiv: [iddli, idly]}
+  - {q: "dosa",            shape: dish,  expect: "Dosa (plain)",
+     equiv: [dosai, thosai]}
+  - {q: "masala dosa",     shape: dish,  expect: "Masala dosa"}
+  - {q: "sambar",          shape: dish,  expect: "Sambar",
+     equiv: [sambhar, saambar]}
+  - {q: "rasam",           shape: dish,  expect: "Rasam",
+     equiv: [saaru, chaaru]}
+  - {q: "upma",            shape: dish,  expect: "Upma",
+     equiv: [uppuma, uppittu]}
+  - {q: "poha",            shape: dish,  expect: "Poha",
+     equiv: [pohe, aval, atukulu]}
+  - {q: "paneer butter masala", shape: dish, expect: "Paneer butter masala",
+     equiv: [paneer makhani]}
+  - {q: "palak paneer",    shape: dish,  expect: "Palak paneer"}
+  - {q: "biryani",         shape: dish,  expect: "Biryani (veg)",
+     equiv: [biriyani, briyani]}
+  - {q: "veg biryani",     shape: dish,  expect: "Biryani (veg)"}
+  - {q: "pulao",           shape: dish,  expect: "Pulao",
+     equiv: [pulav, pilaf]}
+  - {q: "khichdi",         shape: dish,  expect: "Khichdi",
+     equiv: [khichri, pongal]}
+  - {q: "vada pav",        shape: dish,  expect: "Vada pav",
+     equiv: [wada pav]}
+  - {q: "pav bhaji",       shape: dish,  expect: "Pav bhaji"}
+  - {q: "samosa",          shape: dish,  expect: "Samosa"}
+  - {q: "puttu",           shape: dish,  expect: "Puttu",
+     note: "Kerala. No incumbent app carries this dish at all."}
+  - {q: "kadala curry",    shape: dish,  expect: "Kadala curry",
+     equiv: [black chana curry]}
+  - {q: "thoran",          shape: dish,  expect: "Thoran (cabbage/beans)",
+     note: "THE partition-pollution case. Currently returns Thorntons
+            chocolate above every generic dish."}
+  - {q: "avial",           shape: dish,  expect: "Avial",
+     equiv: [aviyal]}
+  - {q: "bisibele bath",   shape: dish,  expect: "Bisi bele bath",
+     equiv: [bisibelebath, bisi bele huliyanna],
+     note: "Known to return 1 result today. Coverage, not ranking."}
+  - {q: "misal pav",       shape: dish,  expect: "Misal pav"}
+  - {q: "dhokla",          shape: dish,  expect: "Dhokla"}
+  - {q: "litti chokha",    shape: dish,  expect: "Litti chokha",
+     note: "Bihar. Almost certainly absent -- a coverage probe."}
+  - {q: "momos",           shape: dish,  expect: "Momo (steamed, veg)",
+     equiv: [momo, dumpling]}
+  - {q: "chai",            shape: dish,  expect: "Tea with milk and sugar",
+     equiv: [tea, masala chai, cutting chai],
+     note: "The single most-logged Indian item there is."}
+
+  # -- Misspellings --------------------------------------------------------
+  - {q: "panner",          shape: dish,  expect: "Paneer",
+     note: "MISSPELLING. Doubled-n is the most common paneer typo."}
+  - {q: "biriyani",        shape: dish,  expect: "Biryani (veg)",
+     note: "MISSPELLING, and also a legitimate regional spelling."}
+  - {q: "chapathi",        shape: dish,  expect: "Roti (whole wheat)",
+     note: "MISSPELLING / South Indian transliteration."}
+  - {q: "dhal",            shape: dish,  expect: "Dal (cooked, generic)",
+     note: "MISSPELLING / British-Indian spelling."}
+  - {q: "curdrice",        shape: dish,  expect: "Curd rice (thayir sadam)",
+     note: "MISSPELLING -- no space. Tests tokenisation, not just trigrams."}
+
+  # -- Brand-shaped: a packaged product SHOULD win these -------------------
+  - {q: "maggi",           shape: brand, expect: "Maggi 2-Minute Noodles Masala",
+     note: "Brand-shaped. A packaged row winning here is CORRECT."}
+  - {q: "amul butter",     shape: brand, expect: "Amul Butter"}
+  - {q: "mtr rava idli mix", shape: brand, expect: "MTR Rava Idli Mix",
+     note: "Also the row with the 1.5 g protein defect."}
+  - {q: "britannia marie", shape: brand, expect: "Britannia Marie Gold"}
+  - {q: "nandini milk",    shape: brand, expect: "Nandini Toned Milk",
+     note: "Karnataka co-operative. Regional brand coverage probe."}
