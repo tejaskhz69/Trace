@@ -222,6 +222,9 @@ def assess(raw: dict[str, Any]) -> LabelReading:
     # regardless of how confidently it was read.
     checked = validate(
         {k: v for k, v in panel.items() if v is not None},  # type: ignore[arg-type]
+        name=(str(raw.get("product_name")).strip() or None)
+        if raw.get("product_name")
+        else None,
         source_quality=0.9 if legible else 0.4,
     )
     if checked.verdict is Verdict.quarantine:

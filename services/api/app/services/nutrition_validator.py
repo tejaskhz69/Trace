@@ -34,6 +34,7 @@ mutated -- an auto-correction is always reported so it can be audited.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -44,6 +45,35 @@ KCAL_CARB = 4.0
 KCAL_FAT = 9.0
 KCAL_FIBRE = 2.0  # partially fermented; EU uses 2 kcal/g
 
+#: FIBRE ENERGY IS A RANGE, NOT A NUMBER. Insoluble fibre passes through and
+#: yields nothing; soluble fibre is fermented to short-chain fatty acids and
+#: yields around 2 kcal/g. Regulators split the difference differently: the EU
+#: assigns 2, the US counts fibre inside total carbohydrate at 4. So fibre
+#: contributes somewhere between these, and pretending otherwise is what makes
+#: bran look defective.
+KCAL_FIBRE_LOW = 2.0
+KCAL_FIBRE_HIGH = 4.0
+
+#: Which convention a source uses for `carbs_g`. MEASURED, not assumed:
+#:
+#:   usda        "Carbohydrate, by difference" (nutrient 205) INCLUDES fibre.
+#:               Verified on the cached FDC release -- of 7,931 fibre-bearing
+#:               rows, ZERO had fibre > carbs, which could not hold if carbs
+#:               excluded it.
+#:   off         Open Food Facts follows EU label wording, where fibre is
+#:               declared separately and carbohydrate is available carbohydrate.
+#:               NOT yet verified against our corpus -- see `unknown`.
+#:   unknown     The honest default. The expected-energy band is widened to
+#:               span both conventions rather than guessing one.
+#:
+#: THIS IS A DATA-MODEL BUG, recorded here rather than papered over: both
+#: conventions land in the same `carbs_g` column and nothing on the row says
+#: which. Until a column records it, `unknown` is the correct answer for any
+#: row whose importer did not say.
+CARB_TOTAL = "total"          # carbs_g includes fibre (USDA)
+CARB_AVAILABLE = "available"  # carbs_g excludes fibre (EU labelling)
+CARB_UNKNOWN = "unknown"
+
 ATWATER_TOLERANCE = 0.15   # 15% drift before we complain
 ATWATER_HARD_LIMIT = 0.35  # beyond this the row is unusable
 
@@ -52,12 +82,32 @@ class Severity(str, Enum):
     info = "info"          # noted, does not block
     warning = "warning"    # accept but downgrade data_quality
     error = "error"        # quarantine: do not serve to users
+    #: WE CANNOT ASSESS THIS, which is not the same as "this is wrong".
+    #:
+    #: A check that cannot model what a food contains must say so rather than
+    #: convict it. Beer does not reconcile at 4/4/9 because ethanol carries
+    #: 7 kcal/g, and that is a fact about the check, not about the beer.
+    #: Never counts toward `too_many_warnings` -- compounding unverifiables
+    #: means we know less, not that the row is worse.
+    unverifiable = "unverifiable"
 
 
 class Verdict(str, Enum):
     accept = "accept"
     accept_with_corrections = "accept_with_corrections"
     quarantine = "quarantine"
+    #: The panel could not be READ -- required fields absent, or present under
+    #: names this validator does not recognise. Distinct from `quarantine`,
+    #: which is a claim ABOUT the nutrition. Collapsing the two makes a
+    #: field-name bug indistinguishable from bad data, and every downstream
+    #: defect rate then partly measures the importer instead of the food.
+    unreadable = "unreadable"
+    #: The panel was read and nothing in it looks wrong, but at least one
+    #: check could not be applied. Servable -- the row is usable data, it is
+    #: simply less checked than an `accept`. Distinct from `quarantine` for
+    #: the same reason `unreadable` is: a defect rate that counts these has
+    #: stopped measuring food and started measuring our own coverage.
+    unverifiable = "unverifiable"
 
 
 @dataclass
@@ -74,8 +124,10 @@ class Issue:
 class ValidationResult:
     verdict: Verdict
     issues: list[Issue] = field(default_factory=list)
-    corrections: dict[str, float] = field(default_factory=dict)
     quality_score: float = 0.5
+    #: Populated on every result. Non-None `schema.aliased` on an `unreadable`
+    #: verdict is the signature of a caller using label wording.
+    schema: "SchemaReport | None" = None
 
     @property
     def errors(self) -> list[Issue]:
@@ -86,8 +138,20 @@ class ValidationResult:
         return [i for i in self.issues if i.severity is Severity.warning]
 
     @property
+    def unverifiable(self) -> list[Issue]:
+        return [i for i in self.issues if i.severity is Severity.unverifiable]
+
+    @property
     def is_servable(self) -> bool:
-        return self.verdict is not Verdict.quarantine
+        # `unreadable` is not servable -- we know nothing about it at all.
+        # `unverifiable` IS servable: the data is fine, one check could not be
+        # applied to it, and withholding beer because we cannot audit ethanol
+        # would be the same mistake in the other direction.
+        return self.verdict in (
+            Verdict.accept,
+            Verdict.accept_with_corrections,
+            Verdict.unverifiable,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +197,186 @@ INGREDIENT_PROTEIN: dict[str, float] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Salt evidence
+#
+# WHY THIS EXISTS
+# `check_sodium` asks "is a near-zero sodium figure a contradiction?" That is
+# only a fair question if the product contains salt. The parameter used to
+# default to True, so the check fired on raw chicken, plain rice, milk, olive
+# oil and boiled lentils -- foods whose low sodium is the correct answer.
+#
+# The rule now is EVIDENCE OR SILENCE. Three states, not two: True (salt is
+# attested), False (salt is attested absent), None (we do not know, so we do
+# not fire). A false positive on a curated whole food is far more expensive
+# than a missed low-sodium claim, because it teaches people to click through
+# the moderation queue.
+# ---------------------------------------------------------------------------
+
+#: Names for salt as they appear in ingredient declarations, including the
+#: Indian-language forms that an English-only list would miss.
+SALT_TERMS: tuple[str, ...] = (
+    "salt", "common salt", "edible common salt", "table salt",
+    "iodised salt", "iodized salt", "iodised common salt",
+    "sea salt", "rock salt", "black salt", "pink salt",
+    "sodium chloride", "nacl",
+    "namak", "kala namak", "sendha namak", "saindhava lavana", "lavana",
+    "uppu", "upu",
+    # MSG is included deliberately: it is used only in savoury products and at
+    # levels that move the sodium figure. Sodium benzoate and the like are NOT
+    # included -- they are preservatives at fractions of a percent and imply
+    # nothing about the sodium total.
+    "monosodium glutamate", "msg", "ajinomoto",
+)
+
+#: Phrases that mean the opposite even though they contain the word "salt".
+#: These MUST be tested before SALT_TERMS -- "unsalted butter" contains "salt".
+SALT_NEGATIONS: tuple[str, ...] = (
+    "unsalted", "un-salted", "no added salt", "no salt added", "without salt",
+    "salt free", "salt-free", "saltfree",
+    "sodium free", "sodium-free", "low sodium", "low-sodium", "reduced sodium",
+)
+
+#: Categories where salt is present as a matter of course, used only when the
+#: ingredient list is absent. Deliberately SHORT.
+#:
+#: What is missing from this list is the point of it. `meat` is not here: the
+#: USDA importer maps both "beef products" (raw) and "sausages and luncheon
+#: meats" (cured) onto it, so the category cannot separate a raw brisket from
+#: a slice of ham. `bakery` is not here for the same reason -- it carries both
+#: bread and cake. `snack` covers sweet and savoury alike. `spice` is pure
+#: turmeric as often as it is chaat masala. Where a category cannot answer the
+#: question, it must not be allowed to guess.
+SALTED_CATEGORIES: frozenset[str] = frozenset({
+    # Indian mixes -- the vocabulary in CATEGORY_BANDS above
+    "dry_mix", "masala", "prepared", "batter", "podi", "namkeen", "pickle",
+    "savoury_mix", "chutney",
+    # Global vocabulary written by ingest_usda.CATEGORY_MAP
+    "soup",          # "soups, sauces, and gravies"
+    "fast_food", "restaurant",
+})
+
+#: A sweet product is not salted whatever its category says. Gulab jamun mix
+#: and rava idli mix are both `dry_mix`; only one of them contains salt.
+SWEET_NAME_TERMS: tuple[str, ...] = (
+    "gulab", "jamun", "payasam", "kheer", "halwa", "halva", "sheera",
+    "sweet", "sugar", "mithai", "barfi", "burfi", "ladoo", "laddu", "laddoo",
+    "jalebi", "rasgulla", "rasagulla", "rasmalai", "peda", "chikki",
+    "dessert", "custard", "ice cream", "kulfi", "syrup", "jam", "honey",
+    "chocolate", "cocoa", "brownie", "cake mix", "basundi", "shrikhand",
+)
+
+#: Pure spices and single-spice powders. These sit in `masala` and `spice`
+#: alongside genuinely salted blends, and they contain no salt at all --
+#: garam masala runs about 50 mg sodium per 100 g, which is exactly the value
+#: the check would have condemned.
+PURE_SPICE_NAME_TERMS: tuple[str, ...] = (
+    "garam masala", "turmeric", "haldi", "chilli powder", "chili powder",
+    "red chilli", "mirchi", "coriander powder", "dhania powder",
+    "cumin", "jeera powder", "pepper powder", "black pepper",
+    "cinnamon", "dalchini", "cardamom", "elaichi", "clove", "laung",
+    "asafoetida", "hing", "fenugreek", "methi", "kasuri methi",
+    "mustard seed", "rai", "bay leaf", "tej patta", "amchur", "amchoor",
+    "saffron", "kesar", "nutmeg", "jaiphal", "mace", "star anise",
+    "curry leaf", "curry leaves", "poppy seed", "sesame seed",
+)
+
+#: Foods that are salted regardless of how they were categorised. Narrow on
+#: purpose: every entry here is a food with no meaningful unsalted variant in
+#: normal commerce.
+SALTED_NAME_TERMS: tuple[str, ...] = (
+    "pickle", "achar", "namkeen", "bhujia", "sev ", "papad", "appalam",
+    "chips", "crisps", "wafers", "ketchup", "soy sauce", "soya sauce",
+    "fish sauce", "instant noodles", "cup noodles", "ramen", "bouillon",
+    "stock cube", "soup mix", "olives", "anchov", "salami", "pepperoni",
+    "bacon", " ham", "sausage", "frankfurter", "cured", "brined",
+    "chaat masala", "sambar powder", "rasam powder", "idli podi",
+    "cheese", "bread", "pav", "bun",
+)
+
+
+def _contains(haystack: str, terms: tuple[str, ...]) -> bool:
+    return any(t in haystack for t in terms)
+
+
+def _names_salt(text: str) -> bool:
+    """Salt-term test that will not fire on a word that merely contains one.
+
+    Padding the haystack lets short entries such as "msg" and "nacl" be matched
+    as whole tokens rather than as fragments of a longer word.
+    """
+    padded = f" {text} "
+    for t in SALT_TERMS:
+        t = t.strip()
+        if " " in t:
+            if t in text:
+                return True
+        elif f" {t} " in padded or f" {t}," in padded or f" {t}." in padded:
+            return True
+    return False
+
+
+def infer_is_salted(
+    *,
+    name: str | None = None,
+    category: str | None = None,
+    ingredients: list[tuple[str, float]] | None = None,
+    ingredients_text: str | None = None,
+) -> bool | None:
+    """Decide whether a product contains salt, or admit that we cannot.
+
+    Returns True (salt attested), False (attested absent, or a sweet), or None
+    (no evidence -- the sodium contradiction check stays silent).
+
+    Evidence is taken in order of strength:
+
+      1. THE INGREDIENT LIST, where one exists. If it names salt, a near-zero
+         sodium figure is a real contradiction. If a list exists and salt is
+         not on it, that is evidence of absence, not merely of ignorance.
+      2. THE NAME, for the cases a category cannot resolve: a sweet in a
+         savoury category, a pure spice in a blend category.
+      3. THE CATEGORY, which is the weakest signal and the last one tried.
+      4. Otherwise None.
+
+    NOTE ON WHAT IS AVAILABLE IN PRACTICE: `food_items` has no ingredients
+    column and never has, so step 1 is reachable only at ingest time, while
+    the source record is still in hand. Anything auditing stored rows gets
+    steps 2 and 3 only.
+    """
+    text = " ".join(
+        part.lower()
+        for part in (
+            ingredients_text or "",
+            " ".join(nm for nm, _ in (ingredients or [])),
+        )
+        if part
+    ).strip()
+
+    if text:
+        if _contains(text, SALT_NEGATIONS):
+            return False
+        if _names_salt(text):
+            return True
+        # A list was supplied and salt is not on it. That is an answer.
+        return False
+
+    lowered = (name or "").lower().strip()
+    if lowered:
+        if _contains(lowered, PURE_SPICE_NAME_TERMS):
+            return False
+        if _contains(lowered, SALT_NEGATIONS):
+            return False
+        if _contains(lowered, SWEET_NAME_TERMS):
+            return False
+        if _contains(lowered, SALTED_NAME_TERMS):
+            return True
+
+    if category and category in SALTED_CATEGORIES:
+        return True
+
+    return None
+
+
 def _band(category: str | None) -> dict[str, tuple[float, float]] | None:
     if not category:
         return None
@@ -170,43 +414,206 @@ def check_macro_sum(n: dict[str, float]) -> list[Issue]:
     return []
 
 
-def check_atwater(n: dict[str, float]) -> list[Issue]:
-    """Declared energy must roughly match energy derived from the macros."""
+#: Things that carry energy the 4/4/9 sum cannot see. Detected from name and
+#: category because there is no column for any of them.
+#:
+#: These do not excuse a row from checking. They move a FAILING check from
+#: "this row is wrong" to "we cannot tell", which is the only honest reading
+#: when the arithmetic was never applicable in the first place.
+UNMODELLED_ENERGY: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    # ORDER MATTERS. "Vinegar, red wine" is an acid problem, not an alcohol
+    # one, so the acid terms get first refusal; a table wine matches nothing
+    # here and falls through to alcohol correctly.
+    (
+        "organic_acid",
+        "citric and malic acid yield about 2.5 kcal/g",
+        ("lemon", "lemons", "lime", "limes", "citrus", "vinegar", "cranberry",
+         "cranberries", "rhubarb", "tamarind", "gooseberry", "kombucha",
+         "pickled", "kimchi", "sauerkraut", "amla", "kokum", "verjuice"),
+    ),
+    (
+        "alcohol",
+        "ethanol carries 7 kcal/g and appears in no macro column",
+        ("alcoholic", "alcohol", "ethyl", "beer", "lager", "ale", "stout",
+         "porter", "wine", "sake", "liquor", "liqueur", "whisky", "whiskey",
+         "vodka", "rum", "gin", "brandy", "tequila", "bourbon", "cider",
+         "mead", "cocktail", "martini", "daiquiri", "margarita", "schnapps",
+         "vermouth", "sherry", "port wine", "champagne"),
+    ),
+    (
+        "polyol",
+        "sugar alcohols yield about 2.4 kcal/g, not 4",
+        ("sugar free", "sugar-free", "sugarfree", "no sugar", "low calorie",
+         "reduced calorie", "diet", "sweetener", "aspartame", "sucralose",
+         "saccharin", "stevia", "erythritol", "xylitol", "sorbitol",
+         "maltitol", "isomalt", "mannitol", "polyol", "sugar alcohol",
+         "sugar alcohols"),
+    ),
+    (
+        "unusual_fibre",
+        "fibre yields 2-4 kcal/g depending on fermentability",
+        ("bran", "psyllium", "inulin", "chicory root", "baobab", "husk",
+         "cellulose", "high fiber", "high fibre", "added fiber",
+         "added fibre", "resistant starch", "oligosaccharide"),
+    ),
+    (
+        "gelling_agent",
+        "gelatin, pectin and gums are not counted consistently",
+        ("gelatin", "gelatine", "jellyfish", "agar", "pectin", "carrageenan",
+         "xanthan", "guar gum", "collagen", "aspic"),
+    ),
+)
+
+#: Compiled once. WORD BOUNDARIES, not substrings.
+#:
+#: Substring matching made "ale," match "Kale, frozen", "rum," match "Fish,
+#: drum, freshwater", and "sour" match every Sweet And Sour Pork row in the
+#: survey release. A marker only bites a row that ALSO fails the energy band,
+#: so none of those had visibly misfired yet -- but the effect of a false
+#: marker is to EXCUSE a defect, and a check that quietly stops catching
+#: things is worse than one that never caught them.
+_MARKER_PATTERNS: tuple[tuple[str, str, "re.Pattern[str]"], ...] = tuple(
+    (
+        marker,
+        why,
+        re.compile(
+            r"(?<![a-z])(?:" + "|".join(re.escape(t) for t in terms) + r")(?![a-z])"
+        ),
+    )
+    for marker, why, terms in UNMODELLED_ENERGY
+)
+
+
+def unmodelled_energy_marker(
+    name: str | None, category: str | None
+) -> tuple[str, str] | None:
+    """Does this row contain energy the macro sum cannot account for?
+
+    Returns (marker, why) or None. Name and category only -- we have no
+    column for alcohol, polyols or acidity, and inferring one from the
+    numbers would be circular: the numbers are what is in question.
+    """
+    haystack = " ".join(
+        part.lower() for part in (name or "", category or "") if part
+    )
+    if not haystack:
+        return None
+    for marker, why, pattern in _MARKER_PATTERNS:
+        if pattern.search(haystack):
+            return marker, why
+    return None
+
+
+def expected_energy_band(
+    n: dict[str, float], carb_convention: str = CARB_UNKNOWN
+) -> tuple[float, float]:
+    """Energy the macros can account for, as a RANGE.
+
+    A point estimate would be a lie twice over: fibre's energy yield is a
+    genuine range, and we do not always know whether `carbs_g` already
+    contains the fibre. The band spans both, so a row is only ever flagged
+    for a gap no reading of its own numbers can close.
+
+    This is the same posture the rest of the product takes -- a photo scan
+    returns low/point/high rather than one confident number.
+    """
+    protein = n.get("protein_g", 0.0) or 0.0
+    carbs = n.get("carbs_g", 0.0) or 0.0
+    fat = n.get("fat_g", 0.0) or 0.0
+    fibre = n.get("fiber_g", 0.0) or 0.0
+
+    base = protein * KCAL_PROTEIN + fat * KCAL_FAT
+    if fibre <= 0:
+        return base + carbs * KCAL_CARB, base + carbs * KCAL_CARB
+
+    # carbs INCLUDES fibre: the fibre share yields 2-4 instead of a flat 4.
+    total_lo = base + max(0.0, carbs - fibre) * KCAL_CARB + fibre * KCAL_FIBRE_LOW
+    total_hi = base + max(0.0, carbs - fibre) * KCAL_CARB + fibre * KCAL_FIBRE_HIGH
+    # carbs EXCLUDES fibre: the fibre is additional energy on top.
+    avail_lo = base + carbs * KCAL_CARB + fibre * KCAL_FIBRE_LOW
+    avail_hi = base + carbs * KCAL_CARB + fibre * KCAL_FIBRE_HIGH
+
+    if carb_convention == CARB_TOTAL:
+        return total_lo, total_hi
+    if carb_convention == CARB_AVAILABLE:
+        return avail_lo, avail_hi
+    # Unknown: span both rather than pick one.
+    return min(total_lo, avail_lo), max(total_hi, avail_hi)
+
+
+def check_atwater(
+    n: dict[str, float],
+    *,
+    name: str | None = None,
+    category: str | None = None,
+    carb_convention: str = CARB_UNKNOWN,
+) -> list[Issue]:
+    """Declared energy must match what the macros can account for.
+
+    Three outcomes, not two. The row reconciles; the row does not reconcile
+    and nothing explains why (a defect); or the row does not reconcile and it
+    contains something this sum was never able to model (`energy_unexplained`,
+    which asserts nothing about the food).
+    """
     stated = n.get("calories", 0)
     if stated <= 0:
         return [Issue("no_energy", Severity.error, "No energy value declared.")]
 
-    derived = (
-        n.get("protein_g", 0) * KCAL_PROTEIN
-        + n.get("carbs_g", 0) * KCAL_CARB
-        + n.get("fat_g", 0) * KCAL_FAT
-    )
-    if derived <= 0:
+    lo, hi = expected_energy_band(n, carb_convention)
+    if hi <= 0:
         return [Issue("no_macros", Severity.error, "No macros declared.")]
 
-    drift = abs(derived - stated) / stated
+    # Drift is measured to the NEAREST EDGE. Anything inside the band is
+    # accounted for, and there is nothing to explain.
+    if lo <= stated <= hi:
+        return []
+    nearest = lo if stated < lo else hi
+    drift = abs(nearest - stated) / stated
+
+    if drift <= ATWATER_TOLERANCE:
+        return []
+
+    marker = unmodelled_energy_marker(name, category)
+    span = f"{lo:.0f}-{hi:.0f}" if hi > lo else f"{lo:.0f}"
+
+    if marker is not None:
+        # The arithmetic was never applicable. Say that, and say why, rather
+        # than convicting a correct row.
+        what, why = marker
+        return [
+            Issue(
+                "energy_unexplained",
+                Severity.unverifiable,
+                f"Macros account for {span} kcal but {stated:.0f} kcal is "
+                f"declared. This row looks like it contains {what} -- {why} -- "
+                f"so the macro sum cannot settle the question either way.",
+                field="calories",
+                observed=round(drift, 3),
+                expected=span,
+            )
+        ]
+
     if drift > ATWATER_HARD_LIMIT:
         return [
             Issue(
                 "atwater_mismatch_severe",
                 Severity.error,
-                f"Macros imply {derived:.0f} kcal but {stated:.0f} kcal is "
-                f"declared ({drift:.0%} drift). One of them is wrong.",
+                f"Macros account for {span} kcal but {stated:.0f} kcal is "
+                f"declared ({drift:.0%} beyond the band). One of them is wrong.",
                 observed=round(drift, 3),
-                expected=f"<{ATWATER_HARD_LIMIT:.0%}",
+                expected=span,
             )
         ]
-    if drift > ATWATER_TOLERANCE:
-        return [
-            Issue(
-                "atwater_mismatch",
-                Severity.warning,
-                f"Macros imply {derived:.0f} kcal vs {stated:.0f} declared "
-                f"({drift:.0%} drift).",
-                observed=round(drift, 3),
-            )
-        ]
-    return []
+    return [
+        Issue(
+            "atwater_mismatch",
+            Severity.warning,
+            f"Macros account for {span} kcal vs {stated:.0f} declared "
+            f"({drift:.0%} beyond the band).",
+            observed=round(drift, 3),
+            expected=span,
+        )
+    ]
 
 
 def check_category_band(n: dict[str, float], category: str | None) -> list[Issue]:
@@ -321,11 +728,72 @@ def check_ingredient_consistency(
     return []
 
 
-def check_sodium(n: dict[str, float], is_salted: bool = True) -> list[Issue]:
+#: Foods that genuinely exceed 8,000 mg sodium per 100 g.
+#:
+#: The g/mg unit error is a real failure and this check should keep catching
+#: it. But "no food contains this much sodium" is false, and it was false for
+#: a whole shelf of them: table salt is 38,758 mg/100 g, a stock cube around
+#: 24,000, MSG about 12,000, dried salted fish and jellyfish 7,000-10,000.
+#: Calling those transcription errors quarantined correct rows, and because
+#: every importer drops a quarantined row rather than storing it, the effect
+#: was to delete real foods from the catalogue.
+EXTREME_SODIUM_TERMS: tuple[str, ...] = (
+    "salt", "namak", "uppu", "sodium chloride", "table salt", "rock salt",
+    "sea salt", "black salt", "kala namak", "seasoned salt", "celery salt",
+    "garlic salt", "onion salt", "curing salt",
+    "bouillon", "stock cube", "stock powder", "broth cube", "consomme",
+    "soy sauce", "soya sauce", "tamari", "fish sauce", "oyster sauce",
+    "worcestershire", "anchovy", "anchovies", "bonito",
+    "monosodium glutamate", "msg", "ajinomoto",
+    "baking soda", "sodium bicarbonate", "bicarbonate of soda",
+    "baking powder", "meat tenderizer", "meat tenderiser",
+    # Forms the corpus actually uses: "Jellyfish, dried, salted" separates
+    # the words with a comma, so "dried salted" as a phrase never matched.
+    "salted", "salting", "cured", "curing", "brine", "brined", "in brine",
+    "broth", "stock", "bouillon cube", "dried salted", "salt cured",
+    "capers", "olives in brine", "dashi", "miso", "gochujang",
+    "doenjang", "shrimp paste", "belacan", "marmite", "vegemite",
+    "yeast extract", "seasoning mix", "seasoning powder", "rub,",
+    "pickling spice", "papad", "appalam",
+)
+
+_EXTREME_SODIUM_RE = re.compile(
+    r"(?<![a-z])(?:" + "|".join(re.escape(t) for t in EXTREME_SODIUM_TERMS)
+    + r")(?![a-z])"
+)
+
+
+def sodium_extremity_is_explained(
+    name: str | None, category: str | None
+) -> bool:
+    """Is there a reason this food would legitimately be this salty?
+
+    Name and category only. Same shape as `unmodelled_energy_marker`: the
+    question is never "is this value right" -- we cannot know that -- but
+    "is there any reason other than a transcription error".
+    """
+    haystack = " ".join(
+        part.lower() for part in (name or "", category or "") if part
+    )
+    return bool(haystack) and bool(_EXTREME_SODIUM_RE.search(haystack))
+
+
+def check_sodium(
+    n: dict[str, float],
+    is_salted: bool | None = None,
+    *,
+    name: str | None = None,
+    category: str | None = None,
+) -> list[Issue]:
     """Sodium unit errors and rounding artefacts.
 
     Catches Bambino's "16.29 g" (should be mg) and the sodium=0 artefact on
     products that unambiguously contain salt.
+
+    `is_salted` is THREE-STATE. Only True fires the near-zero contradiction.
+    None means no evidence either way, and an unevidenced guess is what made
+    this check condemn raw chicken, plain rice, whole milk, olive oil and
+    boiled lentils -- every one of which has a genuinely low sodium figure.
     """
     issues: list[Issue] = []
     sodium = n.get("sodium_mg")
@@ -335,17 +803,48 @@ def check_sodium(n: dict[str, float], is_salted: bool = True) -> list[Issue]:
     # A g/mg unit error is the signature failure. If the value is absurd but
     # becomes plausible after dividing by 1000, that is what happened --
     # Bambino's "16.29 g" is really 16.29 mg.
-    if sodium > 8_000 and 0 < sodium / 1000 < 5_000:
+    #
+    # UNLESS the food is one that really is this salty. Salt, bouillon, soy
+    # sauce, miso and dried salted fish all clear 8,000 mg honestly, and
+    # dividing their sodium by 1000 produces a plausible-looking number that
+    # is simply wrong. `expected` below is ADVISORY ONLY -- nothing in this
+    # module or downstream of it applies a value from an Issue, and there is
+    # a test pinning that.
+    if sodium > 8_000 and sodium_extremity_is_explained(name, category):
+        issues.append(
+            Issue(
+                "sodium_extreme_but_expected",
+                Severity.unverifiable,
+                f"Sodium {sodium:g} mg/100 g ({sodium / 400:.0f} g salt) is "
+                f"extreme, but this food is one that reaches it legitimately. "
+                f"We cannot confirm the figure and we will not overwrite it.",
+                field="sodium_mg",
+                observed=sodium,
+            )
+        )
+    elif sodium > 8_000 and 0 < sodium / 1000 < 5_000:
         issues.append(
             Issue(
                 "sodium_unit_error",
                 Severity.error,
                 f"Sodium {sodium:g} mg/100 g ({sodium / 400:.0f} g salt) is "
-                f"impossible, but {sodium / 1000:g} mg is plausible. This is a "
-                f"g/mg unit error -- do not import without re-reading the label.",
+                f"implausible for this food, but {sodium / 1000:g} mg is not. "
+                f"This looks like a g/mg unit error -- re-read the label. The "
+                f"stored value is left exactly as it was found.",
                 field="sodium_mg",
                 observed=sodium,
                 expected=round(sodium / 1000, 2),
+            )
+        )
+    elif sodium > 5_000 and sodium_extremity_is_explained(name, category):
+        issues.append(
+            Issue(
+                "sodium_extreme_but_expected",
+                Severity.unverifiable,
+                f"Sodium {sodium:g} mg/100 g is very high, and this food is "
+                f"one that reaches it legitimately.",
+                field="sodium_mg",
+                observed=sodium,
             )
         )
     elif sodium > 5_000:
@@ -359,7 +858,7 @@ def check_sodium(n: dict[str, float], is_salted: bool = True) -> list[Issue]:
                 observed=sodium,
             )
         )
-    elif sodium < 50 and is_salted:
+    elif sodium < 50 and is_salted is True:
         # Catches both the flat 0 and Aachi Idli Podi's "2.3 mg" on a product
         # whose second ingredient is salt.
         issues.append(
@@ -579,26 +1078,138 @@ def flag_duplicate_panels(
 # ---------------------------------------------------------------------------
 
 
+#: Field names this validator reads. These match the FoodItem columns.
+REQUIRED_FIELDS = ("calories",)
+KNOWN_FIELDS = frozenset({
+    "calories", "protein_g", "carbs_g", "fat_g",
+    "fiber_g", "sugar_g", "sodium_mg", "saturated_fat_g",
+})
+
+#: Names that MEAN one of the canonical fields but are spelled differently.
+#:
+#: Every entry here has been seen in the wild: label transcriptions use the
+#: printed panel's wording, Open Food Facts uses its own suffixes, and USDA
+#: uses yet another set. This table exists to RECOGNISE them and say so --
+#: NOT to silently accept them. A caller passing `energy_kcal` has a bug, and
+#: the useful thing is to name it, not to paper over it.
+FIELD_ALIASES: dict[str, str] = {
+    # label / panel wording
+    "energy_kcal": "calories", "energy": "calories", "kcal": "calories",
+    "carbohydrates_g": "carbs_g", "carbohydrate_g": "carbs_g",
+    "total_fat_g": "fat_g", "total_carbohydrate_g": "carbs_g",
+    "total_sugar_g": "sugar_g", "sugars_g": "sugar_g",
+    "dietary_fibre_g": "fiber_g", "fibre_g": "fiber_g",
+    "protein": "protein_g", "fat": "fat_g", "carbs": "carbs_g",
+    # Open Food Facts
+    "energy-kcal_100g": "calories", "energy_100g": "calories",
+    "proteins_100g": "protein_g", "carbohydrates_100g": "carbs_g",
+    "fat_100g": "fat_g", "fiber_100g": "fiber_g",
+    "sugars_100g": "sugar_g", "sodium_100g": "sodium_mg",
+    "saturated-fat_100g": "saturated_fat_g",
+}
+
+
+@dataclass
+class SchemaReport:
+    """What a pre-check found. `ok` means the panel is worth validating."""
+
+    ok: bool
+    missing: list[str] = field(default_factory=list)
+    aliased: dict[str, str] = field(default_factory=dict)
+    unknown: list[str] = field(default_factory=list)
+
+
+def check_schema(nutriments: dict[str, Any]) -> SchemaReport:
+    """Can this record be read at all?
+
+    Runs BEFORE any nutritional logic. Three outcomes matter:
+
+      * a required field is absent          -> not readable
+      * a required field is present but under a recognised alias
+                                            -> not readable, and we can say why
+      * everything needed is present        -> proceed
+
+    The alias case is the one that motivated this function. `energy_kcal` is
+    a perfectly sensible name -- it is what the printed panel says -- and a
+    caller using it is not producing bad data, they are producing data this
+    validator cannot see. Reporting that as `quarantine` was wrong.
+    """
+    present = set(nutriments)
+    aliased = {k: FIELD_ALIASES[k] for k in present if k in FIELD_ALIASES}
+    unknown = sorted(present - KNOWN_FIELDS - set(FIELD_ALIASES))
+
+    # A required field counts as missing even if an alias for it is present:
+    # the value is there, but under a name nothing downstream will read.
+    missing = [f for f in REQUIRED_FIELDS if f not in present]
+
+    return SchemaReport(
+        ok=not missing,
+        missing=missing,
+        aliased=aliased,
+        unknown=unknown,
+    )
+
+
 def validate(
     nutriments: dict[str, float],
     *,
     category: str | None = None,
     ingredients: list[tuple[str, float]] | None = None,
-    is_salted: bool = True,
+    is_salted: bool | None = None,
     source_quality: float = 0.5,
+    name: str | None = None,
+    ingredients_text: str | None = None,
+    carb_convention: str = CARB_UNKNOWN,
 ) -> ValidationResult:
     """Run every check and return a verdict.
 
     `nutriments` is per 100 g and may contain:
       calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g,
       saturated_fat_g, sodium_mg
+
+    `is_salted` defaults to None, meaning DERIVE IT from `name`, `category`,
+    `ingredients` and `ingredients_text` via `infer_is_salted`. A caller that
+    actually knows can still pass True or False and be believed.
     """
+    schema = check_schema(nutriments)
+    if not schema.ok:
+        # UNREADABLE, not quarantine. Nothing has been asserted about the
+        # nutrition -- we never got far enough to look at it.
+        detail = f"missing {schema.missing}"
+        if schema.aliased:
+            pairs = ", ".join(f"{k} -> {v}" for k, v in sorted(schema.aliased.items()))
+            detail += (
+                f"; but recognised aliases are present ({pairs}). "
+                "The value exists under a name this validator does not read -- "
+                "this is a caller bug, not a bad panel."
+            )
+        return ValidationResult(
+            verdict=Verdict.unreadable,
+            issues=[Issue("unreadable_schema", Severity.error, detail,
+                          observed=sorted(nutriments), expected=list(REQUIRED_FIELDS))],
+            quality_score=0.0,
+            schema=schema,
+        )
+
     issues: list[Issue] = []
     issues += check_macro_sum(nutriments)
-    issues += check_atwater(nutriments)
+    issues += check_atwater(
+        nutriments, name=name, category=category,
+        carb_convention=carb_convention,
+    )
     issues += check_category_band(nutriments, category)
     issues += check_ingredient_consistency(nutriments, ingredients)
-    issues += check_sodium(nutriments, is_salted)
+    salted = (
+        is_salted
+        if is_salted is not None
+        else infer_is_salted(
+            name=name,
+            category=category,
+            ingredients=ingredients,
+            ingredients_text=ingredients_text,
+        )
+    )
+    issues += check_sodium(nutriments, salted, name=name, category=category)
     issues += check_fibre(nutriments)
     issues += check_saturated_fat(nutriments)
     issues += check_sugar(nutriments)
@@ -607,6 +1218,7 @@ def validate(
 
     errors = [i for i in issues if i.severity is Severity.error]
     warnings = [i for i in issues if i.severity is Severity.warning]
+    unverifiable = [i for i in issues if i.severity is Severity.unverifiable]
 
     # Many independent warnings compound into untrustworthiness even when no
     # single check is fatal. Four separate complaints about one panel means
@@ -630,12 +1242,19 @@ def validate(
         verdict = Verdict.accept_with_corrections
         # Each warning costs 15% of the source's baseline trust.
         quality = round(max(0.15, source_quality * (0.85 ** len(warnings))), 2)
+    elif unverifiable:
+        # Nothing is wrong with this row. One check could not be applied to
+        # it, so it is worth marginally less than a row that passed every
+        # check -- a single 10% dock, NOT compounded, because two checks we
+        # could not run are not evidence of two problems.
+        verdict = Verdict.unverifiable
+        quality = round(max(0.15, source_quality * 0.9), 2)
     else:
         verdict = Verdict.accept
         quality = source_quality
 
     return ValidationResult(
-        verdict=verdict, issues=issues, quality_score=quality
+        verdict=verdict, issues=issues, quality_score=quality, schema=schema
     )
 
 
@@ -643,6 +1262,14 @@ def explain(result: ValidationResult) -> str:
     """Human-readable summary for the moderation queue."""
     if result.verdict is Verdict.accept:
         return "Passed all checks."
+    if result.verdict is Verdict.unverifiable:
+        head = ("Verdict: unverifiable -- nothing looks wrong, but at least "
+                "one check could not be applied.")
+        return "\n".join([head] + [f"  {i.code}: {i.message}"
+                                   for i in result.issues])
+    if result.verdict is Verdict.unreadable:
+        head = "Verdict: unreadable -- nothing was asserted about the nutrition."
+        return "\n".join([head] + [f"  {i.message}" for i in result.issues])
     lines = [f"Verdict: {result.verdict.value} (quality {result.quality_score})"]
     for i in result.issues:
         lines.append(f"  [{i.severity.value:7}] {i.code}: {i.message}")

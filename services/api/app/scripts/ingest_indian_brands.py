@@ -104,12 +104,15 @@ def infer_category(name: str, categories_tags: list[str]) -> str | None:
     return None
 
 
-def infer_is_salted(name: str, category: str | None) -> bool:
-    lowered = name.lower()
-    if any(s in lowered for s in ("gulab", "jamun", "payasam", "kheer",
-                                 "halwa", "sweet", "sugar")):
-        return False
-    return category in ("dry_mix", "masala", "prepared", "batter")
+def infer_is_salted(name: str, category: str | None) -> bool | None:
+    """Delegate to the validator's version, which is the canonical one.
+
+    This function was the prototype. It now lives in `nutrition_validator`
+    because the same rule has to hold for every ingestion path, and because it
+    can return None there -- "no evidence" is a third answer that a bool could
+    not express.
+    """
+    return nv.infer_is_salted(name=name, category=category)
 
 
 def parse_ingredients(product: dict[str, Any]) -> list[tuple[str, float]] | None:

@@ -62,6 +62,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..db import engine
 from ..models import FoodItem, FoodSource
+from ..services import nutrition_validator as nv
 from ..services.nutrition_validator import Verdict, validate
 
 log = logging.getLogger("usda")
@@ -323,6 +324,11 @@ def to_row(food: dict, dataset: str) -> dict | None:
     result = validate(
         nutriments,
         category=category,
+        name=food["name"],
+        # Nutrient 205 is "Carbohydrate, by difference", which INCLUDES fibre.
+        # Saying so narrows the expected-energy band from the two-convention
+        # span to the one this source actually uses.
+        carb_convention=nv.CARB_TOTAL,
         source_quality=SOURCE_QUALITY.get(dataset, 0.8),
     )
     if result.verdict is Verdict.quarantine:

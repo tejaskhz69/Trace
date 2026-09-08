@@ -107,6 +107,8 @@ def _validated_quality(resolved) -> float | None:
             "saturated_fat_g": resolved.saturated_fat_g,
             "sodium_mg": resolved.sodium_mg,
         },
+        name=resolved.name,
+        ingredients_text=resolved.raw.get("ingredients_text") or None,
         source_quality=resolved.data_quality,
     )
     if result.verdict is Verdict.quarantine:
