@@ -556,10 +556,35 @@ def check_atwater(
     which asserts nothing about the food).
     """
     stated = n.get("calories", 0)
-    if stated <= 0:
-        return [Issue("no_energy", Severity.error, "No energy value declared.")]
-
     lo, hi = expected_energy_band(n, carb_convention)
+
+    if stated <= 0 and hi <= 0:
+        # A FILLED-IN TABLE THAT READS ZERO, which is a measurement, not a
+        # gap. Water, black coffee, plain tea, sparkling water, diet soda and
+        # sugar-free gum all declare a real panel of zeroes.
+        #
+        # The schema pre-check has already established that `calories` is
+        # PRESENT; a record missing it never reaches this function. So a zero
+        # here was declared, not defaulted, and "no data" and "no calories"
+        # stay the different facts that `food_sources._off_to_resolved` says
+        # they are.
+        return []
+
+    if stated <= 0:
+        # Zero energy but macros that carry some. That is a contradiction
+        # rather than a legitimate zero, and still worth catching.
+        return [
+            Issue(
+                "energy_missing_but_macros_present",
+                Severity.error,
+                f"No energy declared, but the macros account for "
+                f"{lo:.0f}-{hi:.0f} kcal. One of the two is wrong.",
+                field="calories",
+                observed=stated,
+                expected=f"{lo:.0f}-{hi:.0f}",
+            )
+        ]
+
     if hi <= 0:
         return [Issue("no_macros", Severity.error, "No macros declared.")]
 
