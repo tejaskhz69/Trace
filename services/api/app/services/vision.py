@@ -73,7 +73,9 @@ Middle Eastern, and African dishes with the same care.
 
 PORTION UNITS
 Use the unit a real person would use for that cuisine:
-  katori (~150 g liquid/semi-solid), chapati (~40 g), paratha (~65 g),
+  katori (~130 g for a liquid serving like dal -- measured, not fixed;
+          varies with the vessel, heaped servings run higher),
+  chapati (~40 g), paratha (~65 g),
   idli (~35 g), dosa (~85 g), medium bowl (~200 g), ladle (~60 g),
   standard glass (~200 ml), cup (~240 ml), slice, piece, tbsp, tsp.
 
